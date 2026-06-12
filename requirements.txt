@@ -1,0 +1,12 @@
+flask>=3.0
+numpy
+scipy
+soundfile
+scikit-learn
+faster-whisper>=1.0
+mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
+PyAudioWPatch; sys_platform == "win32"
+sounddevice; sys_platform != "win32"
+torch
+torchaudio
+speechbrain>=1.0

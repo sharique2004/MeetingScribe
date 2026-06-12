@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeetingScribe</title>
+<style>
+/* MeetingScribe — Mac-native pro-tool: SF type, hairline borders, tight density.
+   Theme via html[data-theme="dark"|"light"]. */
+:root {
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Menlo", "JetBrains Mono", monospace;
+  --r-sm: 6px; --r-md: 9px; --r-lg: 13px;
+  --sidebar-w: 264px;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #131316; --bg-sidebar: #18181c;
+  --panel: #1c1c21; --panel-2: #232329; --panel-3: #2a2a31;
+  --border: rgba(255,255,255,.075); --border-strong: rgba(255,255,255,.14);
+  --text: #ececf1; --text-dim: #9c9ca7; --text-faint: #65656f;
+  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #3fbe89; --warn: #d9a13c; --danger: #e0524d;
+  --mark-bg: rgba(217,161,60,.28);
+  --accent: #33bbd6; --accent-ink: #063038;
+  --spk-a: #8b8af5; --spk-b: #3fbe89; --spk-c: #e8920f;
+  --avatar-ink: #0e0e12;
+}
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f3f3f5; --bg-sidebar: #ebebee;
+  --panel: #ffffff; --panel-2: #f6f6f8; --panel-3: #ededf0;
+  --border: rgba(20,20,28,.09); --border-strong: rgba(20,20,28,.18);
+  --text: #1b1b20; --text-dim: #62626d; --text-faint: #9b9ba5;
+  --shadow-pop: 0 8px 28px rgba(20,20,40,.16), 0 0 0 1px rgba(20,20,28,.06);
+  --ok: #1f8a5b; --warn: #a3700a; --danger: #c2362f;
+  --mark-bg: rgba(217,161,60,.35);
+  --accent: #0c7186; --accent-ink: #ffffff;
+  --spk-a: #5957d8; --spk-b: #1f8a5b; --spk-c: #b06f02;
+  --avatar-ink: #ffffff;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; font-family: var(--font-ui); font-size: 13px; line-height: 1.45;
+  color: var(--text); background: var(--bg);
+  -webkit-font-smoothing: antialiased; overflow: hidden;
+}
+button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
+input, select { font: inherit; color: inherit; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.app { display: flex; height: 100vh; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+
+/* Sidebar */
+.sidebar { width: var(--sidebar-w); flex: none; display: flex; flex-direction: column; background: var(--bg-sidebar); border-right: 1px solid var(--border); }
+.sb-head { display: flex; align-items: center; gap: 9px; padding: 16px 16px 10px; }
+.sb-logo { width: 26px; height: 26px; border-radius: 7px; flex: none; display: grid; place-items: center; background: linear-gradient(145deg, var(--accent), color-mix(in oklab, var(--accent) 70%, #000)); color: #fff; }
+.sb-title { font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; }
+.sb-badge { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 550; color: var(--ok); white-space: nowrap; }
+.sb-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px color-mix(in oklab, var(--ok) 60%, transparent); }
+.sb-new { margin: 6px 14px 10px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 12.5px; transition: filter .12s; }
+.sb-new:hover { filter: brightness(1.07); }
+.sb-new.is-active { outline: 2px solid color-mix(in oklab, var(--accent) 50%, transparent); outline-offset: 2px; }
+.sb-search { position: relative; margin: 0 14px 10px; }
+.sb-search input { width: 100%; height: 28px; padding: 0 9px 0 28px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel); color: var(--text); outline: none; font-size: 12px; }
+.sb-search input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.sb-search input::placeholder { color: var(--text-faint); }
+.sb-search svg { position: absolute; left: 8px; top: 7px; color: var(--text-faint); }
+.sb-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+.sb-group { font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); padding: 12px 8px 5px; }
+.sb-item { display: block; width: 100%; text-align: left; padding: 7px 8px; border-radius: var(--r-md); transition: background .1s; }
+.sb-item:hover { background: color-mix(in oklab, var(--text) 6%, transparent); }
+.sb-item.is-active { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.sb-item-title { font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-item.is-active .sb-item-title { color: color-mix(in oklab, var(--accent) 60%, var(--text)); }
+.sb-item-meta { display: flex; align-items: center; gap: 6px; margin-top: 1px; font-size: 11px; color: var(--text-faint); }
+.sb-item-meta .sep { opacity: .6; }
+.sb-item-meta .st { display: inline-flex; align-items: center; gap: 4px; }
+.sb-item-meta .st .dot { width: 5px; height: 5px; border-radius: 50%; display: inline-block; }
+.sb-item-meta .st.processing { color: var(--warn); } .sb-item-meta .st.processing .dot { background: var(--warn); }
+.sb-item-meta .st.error { color: var(--danger); } .sb-item-meta .st.error .dot { background: var(--danger); }
+.sb-item-meta .st.recording { color: var(--danger); } .sb-item-meta .st.recording .dot { background: var(--danger); animation: ms-blink 1.4s ease-in-out infinite; }
+.sb-foot { border-top: 1px solid var(--border); padding: 10px 14px 12px; display: flex; flex-direction: column; gap: 7px; }
+.sb-dev { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); min-width: 0; }
+.sb-dev .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
+.sb-dev .dot.warn { background: var(--warn); } .sb-dev .dot.err { background: var(--danger); }
+.sb-dev .lbl { color: var(--text-faint); flex: none; }
+.sb-dev .val { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-foot-row { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
+.theme-btn { width: 28px; height: 28px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--text-dim); border: 1px solid var(--border); }
+.theme-btn:hover { background: var(--panel-2); color: var(--text); }
+.sb-quit { font-size: 11px; color: var(--text-faint); }
+.sb-quit:hover { color: var(--text-dim); }
+
+/* Review header */
+.rv-head { padding: 22px 28px 0; }
+.rv-title-row { display: flex; align-items: flex-start; gap: 16px; }
+.rv-title { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0; min-width: 0; flex: 1; border-radius: var(--r-sm); outline: none; }
+.rv-title[contenteditable]:focus { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 45%, transparent); }
+.rv-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 1px; }
+.rv-meta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
+.rv-meta .sep { color: var(--text-faint); }
+.rv-meta .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); font-size: 11px; color: var(--text-dim); }
+.rv-notes { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.note { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.note .ic { flex: none; display: grid; place-items: center; }
+.note.warn .ic { color: var(--warn); }
+.note.err .ic { color: var(--danger); }
+.note.tidy .ic { color: var(--accent); }
+.note .dismiss { color: var(--text-faint); margin-left: 2px; padding: 2px; border-radius: 4px; }
+.note .dismiss:hover { color: var(--text); background: var(--panel-2); }
+
+/* Buttons + menus */
+.btn { height: 30px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); font-size: 12.5px; font-weight: 550; border: 1px solid var(--border); background: var(--panel); color: var(--text); transition: background .1s, filter .1s; white-space: nowrap; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--accent); border-color: transparent; color: var(--accent-ink); font-weight: 600; }
+.btn.primary:hover { filter: brightness(1.07); background: var(--accent); }
+.btn.icon { width: 30px; padding: 0; justify-content: center; color: var(--text-dim); }
+.btn.icon:hover { color: var(--text); }
+.btn.danger { color: var(--danger); }
+.btn:disabled { opacity: .55; cursor: default; }
+.menu-wrap { position: relative; }
+.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; min-width: 196px; padding: 5px; background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); }
+.menu-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 9px; border-radius: var(--r-sm); font-size: 12.5px; text-align: left; color: var(--text); }
+.menu-item svg { color: var(--text-dim); flex: none; }
+.menu-item:hover { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.menu-item.danger, .menu-item.danger svg { color: var(--danger); }
+.menu-item.danger:hover { background: color-mix(in oklab, var(--danger) 12%, transparent); }
+.menu-item:disabled { opacity: .45; }
+.menu-sep { height: 1px; background: var(--border); margin: 5px 4px; }
+.menu-note { font-size: 11px; color: var(--text-faint); padding: 5px 9px 4px; }
+
+/* Speaker strip */
+.spk-strip { margin: 16px 28px 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); }
+.spk-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 0; padding: 10px 10px 10px 12px; }
+.spk-chip { display: flex; align-items: center; gap: 9px; padding: 4px 14px 4px 6px; border-radius: var(--r-md); flex: none; }
+.spk-chip + .spk-chip { border-left: 1px solid var(--border); padding-left: 16px; margin-left: 4px; }
+.spk-avatar { width: 26px; height: 26px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: var(--avatar-ink); }
+.spk-info { min-width: 0; }
+.spk-name { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.spk-name button { color: var(--text-faint); opacity: 0; transition: opacity .1s; display: grid; place-items: center; }
+.spk-chip:hover .spk-name button { opacity: 1; }
+.spk-name button:hover { color: var(--text); }
+.spk-name input { width: 90px; height: 20px; font-size: 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--panel-2); outline: none; padding: 0 5px; }
+.spk-sub { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 7px; margin-top: 1px; }
+.spk-bar { width: 64px; height: 3px; border-radius: 2px; background: color-mix(in oklab, var(--text) 10%, transparent); overflow: hidden; flex: none; }
+.spk-bar i { display: block; height: 100%; border-radius: 2px; }
+.spk-tools { margin-left: auto; display: flex; align-items: center; gap: 14px; padding-left: 18px; flex: none; }
+.spk-count { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-dim); }
+.spk-count select { height: 24px; padding: 0 4px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel-2); font-size: 11.5px; outline: none; }
+.spk-flash { color: var(--ok); font-size: 11px; font-weight: 550; }
+.spk-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; color: var(--text-dim); padding: 4px 8px; border-radius: var(--r-sm); }
+.spk-toggle:hover { color: var(--text); background: var(--panel-2); }
+.spk-toggle svg { transition: transform .15s; }
+.spk-toggle.open svg { transform: rotate(180deg); }
+.spk-stats { border-top: 1px solid var(--border); padding: 4px 16px 12px; overflow-x: auto; }
+.spk-stats table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.spk-stats th { text-align: left; font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); padding: 9px 18px 4px 0; }
+.spk-stats td { padding: 3px 18px 3px 0; color: var(--text-dim); white-space: nowrap; }
+.spk-stats td.who { color: var(--text); font-weight: 600; }
+.spk-stats td .num { color: var(--text); }
+
+/* Transcript */
+.tr-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 14px; }
+.tr-toolbar { display: flex; align-items: center; gap: 10px; padding: 0 28px 10px; }
+.tr-label { font-size: 10.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--text-faint); }
+.tr-search { position: relative; margin-left: auto; }
+.tr-search input { width: 200px; height: 26px; padding: 0 8px 0 26px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel); outline: none; font-size: 12px; transition: width .15s; }
+.tr-search input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); width: 250px; }
+.tr-search svg { position: absolute; left: 7px; top: 6px; color: var(--text-faint); }
+.tr-count { font-size: 11px; color: var(--text-faint); }
+.tr-scroll { flex: 1; overflow-y: auto; padding: 2px 28px 28px; }
+.tr-inner { max-width: 780px; }
+.tr-group { display: grid; grid-template-columns: 56px 1fr; gap: 0 16px; padding: 9px 0; }
+.tr-group + .tr-group { border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
+.tr-time { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); padding-top: 3px; text-align: right; border-radius: 4px; }
+.tr-time:hover { color: var(--accent); }
+.tr-body { min-width: 0; }
+.tr-spk { font-size: 11.5px; font-weight: 700; letter-spacing: .01em; margin-bottom: 2px; }
+.tr-text { font-size: 13.5px; line-height: 1.6; color: var(--text); }
+.tr-text p { margin: 0 0 6px; }
+.tr-text p:last-child { margin-bottom: 0; }
+.tr-text mark { background: var(--mark-bg); color: inherit; border-radius: 3px; padding: 0 1px; }
+.tr-empty { padding: 40px 0; color: var(--text-faint); font-size: 13px; text-align: center; }
+
+/* Transport bar */
+.transport { flex: none; display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 20px; border-top: 1px solid var(--border); background: var(--panel); }
+.tp-play { width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); }
+.tp-play:hover { filter: brightness(1.07); }
+.tp-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); flex: none; min-width: 86px; }
+.tp-time b { color: var(--text); font-weight: 600; }
+.tp-wave { flex: 1; height: 36px; position: relative; cursor: pointer; display: flex; align-items: center; }
+.tp-wave canvas { width: 100%; height: 100%; display: block; }
+.tp-track { display: flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; flex: none; }
+.tp-track button { padding: 5px 11px; font-size: 11.5px; font-weight: 550; color: var(--text-dim); background: var(--panel); }
+.tp-track button + button { border-left: 1px solid var(--border); }
+.tp-track button.on { background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--text); }
+
+/* Recorder */
+.rec-stage { flex: 1; display: grid; place-items: center; padding: 32px; overflow-y: auto; }
+.rec-card { width: 460px; max-width: 100%; }
+.rec-kicker { font-size: 10.5px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
+.rec-h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 22px; }
+.field { margin-bottom: 18px; }
+.field label { display: block; font-size: 12px; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+.field input[type="text"] { width: 100%; height: 34px; padding: 0 11px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--panel); outline: none; font-size: 13px; }
+.field input[type="text"]:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.field input::placeholder { color: var(--text-faint); }
+.field .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; line-height: 1.5; }
+.cal-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cal-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); font-size: 11.5px; color: var(--text-dim); }
+.cal-chip:hover { border-color: color-mix(in oklab, var(--accent) 55%, transparent); color: var(--text); }
+.cal-chip .when { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.seg { display: flex; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+.seg button { flex: 1; padding: 7px 0; font-size: 12.5px; font-weight: 550; color: var(--text-dim); display: flex; align-items: center; justify-content: center; gap: 7px; background: var(--panel); }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--text); }
+.rec-devices { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); padding: 4px 0; }
+.rec-dev { display: flex; align-items: center; gap: 10px; padding: 9px 13px; }
+.rec-dev + .rec-dev { border-top: 1px solid var(--border); }
+.rec-dev .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.rec-dev .dot.warn { background: var(--warn); } .rec-dev .dot.err { background: var(--danger); }
+.rec-dev .name { font-size: 12.5px; font-weight: 550; }
+.rec-dev .role { font-size: 11px; color: var(--text-faint); margin-left: auto; text-align: right; }
+.rec-start { width: 100%; height: 40px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
+.rec-start:hover { filter: brightness(1.07); }
+.rec-start:disabled { opacity: .6; }
+.rec-live { text-align: center; }
+.rec-timer { font-family: var(--font-mono); font-size: 44px; font-weight: 300; letter-spacing: .02em; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.rec-live-title { font-size: 13px; color: var(--text-dim); }
+.rec-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; color: var(--danger); margin-bottom: 4px; }
+.rec-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); animation: ms-blink 1.4s ease-in-out infinite; }
+@keyframes ms-blink { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+.meters { display: flex; flex-direction: column; gap: 12px; margin: 26px 0 28px; text-align: left; }
+.meter .m-label { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-bottom: 5px; }
+.meter .m-track { height: 6px; border-radius: 3px; background: color-mix(in oklab, var(--text) 10%, transparent); overflow: hidden; }
+.meter .m-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .12s linear; }
+.rec-stop { width: 100%; height: 40px; border-radius: var(--r-md); background: var(--danger); color: #fff; font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.rec-stop:hover { filter: brightness(1.08); }
+.proc-steps { display: flex; flex-direction: column; gap: 2px; margin-top: 18px; }
+.proc-step { display: flex; align-items: center; gap: 11px; padding: 9px 4px; font-size: 13px; color: var(--text-faint); }
+.proc-step.active { color: var(--text); }
+.proc-step.done { color: var(--text-dim); }
+.proc-ic { width: 18px; height: 18px; flex: none; display: grid; place-items: center; }
+.proc-step.done .proc-ic { color: var(--ok); }
+.proc-detail { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spinner { width: 13px; height: 13px; border-radius: 50%; border: 2px solid color-mix(in oklab, var(--accent) 30%, transparent); border-top-color: var(--accent); animation: ms-spin .7s linear infinite; }
+@keyframes ms-spin { to { transform: rotate(360deg) } }
+
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); color: var(--text); padding: 9px 16px; border-radius: var(--r-md); box-shadow: var(--shadow-pop); display: none; z-index: 90; font-size: 12.5px; max-width: 70vw; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--text) 16%, transparent); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--text) 28%, transparent); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main" id="main"></main>
+</div>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+/* ---------------------------------------------------------------- icons -- */
+const ICONS = {
+  mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>',
+  plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+  search: '<circle cx="11" cy="11" r="7"/><line x1="16.6" y1="16.6" x2="21" y2="21"/>',
+  sparkle: '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9L12 3z"/>',
+  chevronDown: '<path d="M6 9l6 6 6-6"/>',
+  dots: '<g fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></g>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  x: '<path d="M18 6L6 18"/><path d="M6 6l12 12"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+  textT: '<path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/>',
+  refresh: '<path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10"/><path d="M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/>',
+  play: '<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
+  pause: '<g fill="currentColor" stroke="none"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></g>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none"/>',
+  pencil: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>',
+  undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  warn: '<path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="16.6" r=".4" fill="currentColor"/>',
+  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+  person: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  wave: '<path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/>',
+};
+function icon(name, size = 14, sw = 1.7) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
+}
+
+/* ---------------------------------------------------------------- utils -- */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtTs(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const ss = String(s).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+function toast(msg, ms = 3500) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(t._h);
+  t._h = setTimeout(() => (t.style.display = "none"), ms);
+}
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* non-JSON */ }
+  if (!res.ok) throw new Error((body && body.error) || res.statusText);
+  return body;
+}
+function postJSON(path, data) {
+  return api(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+}
+function speakerColor(meta, key) {
+  if (key === "you") return "var(--accent)";
+  const others = Object.keys(meta.speakers || {}).filter(k => k !== "you");
+  return `var(--spk-${["a","b","c"][Math.max(0, others.indexOf(key)) % 3]})`;
+}
+function dateGroup(iso) {
+  if (!iso) return "Earlier";
+  const d = new Date(iso), now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(now) - day(d)) / 86400000);
+  if (diff <= 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  if (diff < 7) return "This week";
+  return "Earlier";
+}
+function dateLabel(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+  const g = dateGroup(iso);
+  if (g === "Today") return "Today · " + time;
+  if (g === "Yesterday") return "Yesterday · " + time;
+  return d.toLocaleDateString([], {month: "short", day: "numeric"}) + " · " + time;
+}
+
+/* ---------------------------------------------------------------- state -- */
+const S = {
+  theme: localStorage.getItem("msTheme") || "dark",
+  meetings: [],
+  activeId: null,
+  view: "meeting",          // meeting | new
+  detail: null,             // full meta of the open meeting
+  q: "",                    // sidebar search
+  tq: "",                   // transcript search
+  devices: null,
+  calendar: [],
+  rec: {recording: false},
+  jobs: {},
+  lastJobs: {},
+  dismissed: new Set(),     // per-session dismissed notes
+  insightsOpen: false,
+  menu: null,               // 'export' | 'more'
+  reclusterFlash: null,
+  recType: "online",
+  pendingTitle: "",
+  busyTidy: false,
+};
+document.documentElement.setAttribute("data-theme", S.theme);
+
+/* ------------------------------------------------------------- transport -- */
+const AU = {mic: null, sys: null, offs: {mic: 0, system: 0}, dur: 0, track: "mix", peaks: null, playing: false, raf: 0};
+
+function transportTeardown() {
+  for (const a of [AU.mic, AU.sys]) if (a) { a.pause(); a.onended = null; a.src = ""; }
+  cancelAnimationFrame(AU.raf);
+  Object.assign(AU, {mic: null, sys: null, dur: 0, peaks: null, playing: false});
+}
+function transportSetup(meta) {
+  transportTeardown();
+  const tracks = meta.tracks || {};
+  AU.dur = meta.duration || 0;
+  AU.offs.mic = (tracks.mic && tracks.mic.start_offset) || 0;
+  AU.offs.system = (tracks.system && tracks.system.start_offset) || 0;
+  if (tracks.mic) { AU.mic = new Audio(`/api/meetings/${meta.id}/audio/mic`); AU.mic.preload = "metadata"; }
+  if (tracks.system && tracks.system.seconds) { AU.sys = new Audio(`/api/meetings/${meta.id}/audio/system`); AU.sys.preload = "metadata"; }
+  if (!AU.sys && AU.track === "sys") AU.track = "mix";
+  if (!AU.mic && AU.track === "mic") AU.track = "mix";
+  applyTrackMode();
+  const onEnd = () => { if (!anyAudioActive()) { AU.playing = false; updateTransportUI(); } };
+  for (const a of [AU.mic, AU.sys]) if (a) a.onended = onEnd;
+  fetch(`/api/meetings/${meta.id}/waveform`).then(r => r.json()).then(w => {
+    AU.peaks = w.tracks || {};
+    drawWave();
+  }).catch(() => {});
+}
+function anyAudioActive() {
+  return [AU.mic, AU.sys].some(a => a && !a.paused && !a.ended);
+}
+function primaryAudio() {
+  if (AU.track === "mic") return AU.mic || AU.sys;
+  return AU.sys || AU.mic;
+}
+function transportTime() {
+  const a = primaryAudio();
+  if (!a) return 0;
+  const off = a === AU.mic ? AU.offs.mic : AU.offs.system;
+  return Math.min(AU.dur || a.duration || 0, a.currentTime + off);
+}
+function applyTrackMode() {
+  if (AU.mic) AU.mic.muted = AU.track === "sys";
+  if (AU.sys) AU.sys.muted = AU.track === "mic";
+}
+function setTrack(t) {
+  AU.track = t;
+  applyTrackMode();
+  updateTransportUI();
+}
+function transportSeek(t) {
+  t = Math.max(0, Math.min(AU.dur || 0, t));
+  if (AU.mic) AU.mic.currentTime = Math.max(0, t - AU.offs.mic);
+  if (AU.sys) AU.sys.currentTime = Math.max(0, t - AU.offs.system);
+  drawWave();
+  updateTransportUI();
+}
+function transportPlayPause(forcePlay) {
+  if (AU.playing && !forcePlay) {
+    for (const a of [AU.mic, AU.sys]) if (a) a.pause();
+    AU.playing = false;
+  } else {
+    for (const a of [AU.mic, AU.sys]) if (a) a.play().catch(() => {});
+    AU.playing = true;
+    tickWave();
+  }
+  updateTransportUI();
+}
+function seekAndPlay(t) {
+  transportSeek(t);
+  if (!AU.playing) transportPlayPause(true);
+}
+function tickWave() {
+  cancelAnimationFrame(AU.raf);
+  const loop = () => {
+    if (!AU.playing) return;
+    drawWave();
+    const el = $("tpClock");
+    if (el) el.innerHTML = `<b>${fmtTs(transportTime())}</b> / ${fmtTs(AU.dur)}`;
+    AU.raf = requestAnimationFrame(loop);
+  };
+  AU.raf = requestAnimationFrame(loop);
+}
+function drawWave() {
+  const cv = $("tpCanvas");
+  if (!cv) return;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w) return;
+  cv.width = w * dpr; cv.height = h * dpr;
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const cs = getComputedStyle(document.documentElement);
+  const accent = cs.getPropertyValue("--accent").trim();
+  const faint = cs.getPropertyValue("--text").trim();
+  const key = AU.track === "mic" ? "mic" : AU.track === "sys" ? "system" : "mix";
+  const peaks = (AU.peaks && (AU.peaks[key] || AU.peaks.mix || AU.peaks.mic)) || null;
+  const barW = 2, gap = 1.5, n = Math.floor(w / (barW + gap));
+  const playedX = AU.dur ? (transportTime() / AU.dur) * w : 0;
+  for (let i = 0; i < n; i++) {
+    const amp = peaks ? (peaks[Math.floor(i / n * peaks.length)] || 0.04) : 0.08;
+    const bh = Math.max(2, amp * (h - 8));
+    const x = i * (barW + gap);
+    ctx.fillStyle = x <= playedX ? accent : faint;
+    ctx.globalAlpha = x <= playedX ? 0.95 : 0.22;
+    ctx.beginPath();
+    ctx.roundRect(x, (h - bh) / 2, barW, bh, 1);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+function waveClick(e) {
+  const r = e.currentTarget.getBoundingClientRect();
+  transportSeek(((e.clientX - r.left) / r.width) * AU.dur);
+}
+function updateTransportUI() {
+  const btn = $("tpPlay");
+  if (btn) btn.innerHTML = icon(AU.playing ? "pause" : "play", 15);
+  const clock = $("tpClock");
+  if (clock) clock.innerHTML = `<b>${fmtTs(transportTime())}</b> / ${fmtTs(AU.dur)}`;
+  document.querySelectorAll(".tp-track button").forEach(b => b.classList.toggle("on", b.dataset.t === AU.track));
+  drawWave();
+}
+
+/* -------------------------------------------------------------- sidebar -- */
+function renderSidebar() {
+  const ql = S.q.trim().toLowerCase();
+  const filtered = S.meetings.filter(m => (m.title || "").toLowerCase().includes(ql));
+  const groups = [];
+  for (const m of filtered) {
+    const label = dateGroup(m.created);
+    let g = groups.find(x => x.label === label);
+    if (!g) { g = {label, items: []}; groups.push(g); }
+    g.items.push(m);
+  }
+  const ORDER = {"Today": 0, "Yesterday": 1, "This week": 2, "Earlier": 3};
+  groups.sort((a, b) => (ORDER[a.label] ?? 9) - (ORDER[b.label] ?? 9));
+
+  const dev = S.devices || {};
+  const mic = dev.mic, sys = dev.system;
+  const sysDot = !sys ? "err" : (sys.routing === "not_routed" && !sys.auto_route ? "warn" : "");
+  let html = `
+    <div class="sb-head">
+      <div class="sb-logo">${icon("mic", 14, 2)}</div>
+      <div class="sb-title">MeetingScribe</div>
+      <div class="sb-badge" title="All processing happens on this Mac. Nothing is uploaded."><span class="dot"></span>local</div>
+    </div>
+    <button class="sb-new${S.view === "new" ? " is-active" : ""}" onclick="goNew()">${icon("plus", 13, 2.2)} New recording</button>
+    <div class="sb-search">
+      ${icon("search", 13)}
+      <input type="text" id="sbSearch" placeholder="Search meetings" value="${esc(S.q)}" oninput="sbSearch(this.value)">
+    </div>
+    <nav class="sb-list">`;
+  for (const g of groups) {
+    html += `<div><div class="sb-group">${esc(g.label)}</div>`;
+    for (const m of g.items) {
+      const active = m.id === S.activeId && S.view === "meeting" && !S.rec.recording;
+      const status = m.status === "processing" ? `<span class="st processing"><span class="dot"></span>processing</span>`
+        : m.status === "error" ? `<span class="st error"><span class="dot"></span>failed</span>`
+        : m.status === "recording" ? `<span class="st recording"><span class="dot"></span>recording</span>` : "";
+      html += `<button class="sb-item${active ? " is-active" : ""}" onclick="openMeeting('${m.id}')">
+        <div class="sb-item-title">${esc(m.title || m.id)}</div>
+        <div class="sb-item-meta">
+          ${m.duration ? `<span class="mono">${fmtTs(m.duration)}</span><span class="sep">·</span>` : ""}
+          <span>${m.mode === "inperson" ? "In person" : "Online call"}</span>
+          ${m.speakers ? `<span class="sep">·</span><span>${m.speakers} speaker${m.speakers === 1 ? "" : "s"}</span>` : ""}
+          ${status ? `<span class="sep">·</span>${status}` : ""}
+        </div>
+      </button>`;
+    }
+    html += `</div>`;
+  }
+  if (!filtered.length) html += `<div class="tr-empty">${S.meetings.length ? `No meetings match “${esc(S.q)}”.` : "No meetings yet."}</div>`;
+  html += `</nav>
+    <div class="sb-foot">
+      <div class="sb-dev" title="Records as “You”">
+        <span class="dot ${mic ? "" : "err"}"></span><span class="lbl">Mic</span>
+        <span class="val">${esc(mic ? mic.name : "Not found")}</span>
+      </div>
+      <div class="sb-dev" title="Captures the other participants. Routes automatically while you record.">
+        <span class="dot ${sysDot}"></span><span class="lbl">System</span>
+        <span class="val">${esc(sys ? sys.name : "BlackHole not installed")}</span>
+      </div>
+      <div class="sb-foot-row">
+        <button class="theme-btn" onclick="toggleTheme()" title="Toggle light / dark">${icon(S.theme === "dark" ? "sun" : "moon", 14)}</button>
+        <button class="sb-quit" onclick="quitApp()">Quit MeetingScribe</button>
+      </div>
+    </div>`;
+  $("sidebar").innerHTML = html;
+}
+function sbSearch(v) {
+  S.q = v;
+  const el = $("sbSearch");
+  renderSidebar();
+  const n = $("sbSearch");
+  n.focus();
+  n.setSelectionRange(v.length, v.length);
+}
+function toggleTheme() {
+  S.theme = S.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("msTheme", S.theme);
+  document.documentElement.setAttribute("data-theme", S.theme);
+  renderSidebar();
+  drawWave();
+}
+function goNew() {
+  S.view = "new";
+  S.menu = null;
+  renderSidebar();
+  renderMain();
+  pollCalendar();
+}
+
+/* --------------------------------------------------------------- review -- */
+function noteRows(meta) {
+  const rows = [];
+  S._noteKeys = []; // dismiss buttons reference notes by index — titles and
+                    // warning text can contain quotes, so never inline them
+  for (const w of meta.warnings || []) {
+    const key = meta.id + "|" + w;
+    if (S.dismissed.has(key)) continue;
+    const idx = S._noteKeys.push(key) - 1;
+    const echo = w.match(/^Removed (\d+) mic segment/);
+    const body = echo
+      ? `Removed <b class="mono">${echo[1]}</b> mic segments that were echo of the meeting audio — headphones avoid this entirely.`
+      : esc(w);
+    rows.push(`<div class="note warn"><span class="ic">${icon("warn", 13)}</span><span>${body}</span>
+      <button class="dismiss" onclick="dismissNote(${idx})" title="Dismiss">${icon("x", 11)}</button></div>`);
+  }
+  if (meta.tidied) {
+    const td = meta.tidied;
+    rows.push(`<div class="note tidy"><span class="ic">${icon("sparkle", 13)}</span>
+      <span>Tidied with Claude — ${td.dropped_turns || 0} echo turns removed, ${td.trimmed_turns || 0} trimmed, ${Object.keys(td.merged_speakers || {}).length} speaker labels merged. Validated locally; no words invented.</span></div>`);
+  }
+  return rows.length ? `<div class="rv-notes">${rows.join("")}</div>` : "";
+}
+function dismissNote(idx) {
+  const key = (S._noteKeys || [])[idx];
+  if (key) S.dismissed.add(key);
+  renderMain();
+}
+
+function speakerStrip(meta) {
+  const stats = (meta.stats || {}).per_speaker || {};
+  const others = Object.keys(meta.speakers || {}).filter(k => k !== "you").length;
+  let chips = "";
+  for (const [key, name] of Object.entries(meta.speakers || {})) {
+    const st = stats[key] || {};
+    const c = speakerColor(meta, key);
+    const pct = Math.round((st.share || 0) * 100);
+    chips += `<div class="spk-chip">
+      <div class="spk-avatar" style="background:${c}">${esc(name.slice(0, 2).toUpperCase())}</div>
+      <div class="spk-info">
+        <div class="spk-name" id="spkName-${esc(key)}">
+          <span style="color:${c}">${esc(name)}</span>
+          <button title="Rename speaker" onclick="editSpeaker('${esc(key)}')">${icon("pencil", 11)}</button>
+        </div>
+        <div class="spk-sub">
+          <span class="mono">${fmtTs(st.seconds || 0)}</span>
+          <span class="spk-bar"><i style="width:${pct}%;background:${c}"></i></span>
+          <span class="mono">${pct}%</span>
+        </div>
+      </div>
+    </div>`;
+  }
+  const sel = meta.expected_speakers || "";
+  const flash = S.reclusterFlash ? `<span class="spk-flash">re-clustered in ${S.reclusterFlash} s</span>` : "";
+  let stat = "";
+  if (S.insightsOpen) {
+    let rows = "";
+    for (const [key, name] of Object.entries(meta.speakers || {})) {
+      const st = stats[key] || {};
+      const fillers = Object.entries(st.fillers || {}).slice(0, 3).map(([w, c]) => `${esc(w)} ×${c}`).join(" · ") || "—";
+      rows += `<tr>
+        <td class="who" style="color:${speakerColor(meta, key)}">${esc(name)}</td>
+        <td><span class="num mono">${fmtTs(st.seconds || 0)}</span> (${Math.round((st.share || 0) * 100)}%)</td>
+        <td><span class="num mono">${(st.words || 0).toLocaleString()}</span> · <span class="num mono">${st.wpm || 0}</span> wpm</td>
+        <td class="num mono">${st.questions || 0}</td>
+        <td class="num mono">${fmtTs(st.longest_turn_seconds || 0)}</td>
+        <td>${fillers}</td>
+      </tr>`;
+    }
+    stat = `<div class="spk-stats"><table>
+      <thead><tr><th></th><th>Talk time</th><th>Words · pace</th><th>Questions</th><th>Longest turn</th><th>Fillers</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+  }
+  return `<div class="spk-strip">
+    <div class="spk-row">${chips}
+      <div class="spk-tools">
+        <div class="spk-count" title="Wrong split? Set the real number — saved voice fingerprints re-cluster the whole meeting instantly.">
+          <span>Speakers besides you</span>
+          <select id="spkSelect" onchange="reclusterMeeting('${meta.id}', this.value)">
+            <option value="" ${sel === "" ? "selected" : ""}>Auto</option>
+            ${[1,2,3,4,5,6,7,8].map(n => `<option value="${n}" ${sel === n ? "selected" : ""}>${n}</option>`).join("")}
+          </select>
+          ${flash}
+        </div>
+        <button class="spk-toggle${S.insightsOpen ? " open" : ""}" onclick="toggleInsights()">Insights ${icon("chevronDown", 12)}</button>
+      </div>
+    </div>${stat}</div>`;
+}
+function toggleInsights() {
+  S.insightsOpen = !S.insightsOpen;
+  renderMain();
+}
+function editSpeaker(key) {
+  const meta = S.detail;
+  const holder = $("spkName-" + key);
+  if (!holder || !meta) return;
+  const meetingId = meta.id; // pin the id — S.detail may change before commit
+  const current = meta.speakers[key] || key;
+  holder.innerHTML = `<input value="${esc(current)}">`;
+  const input = holder.querySelector("input");
+  input.focus();
+  input.select();
+  const commit = async () => {
+    const name = input.value.trim();
+    if (!name || name === current) { renderMain(); return; }
+    try {
+      await postJSON(`/api/meetings/${meetingId}/speakers`, {key, name});
+      await openMeeting(meetingId);
+    } catch (e) { toast("⚠ " + e.message); renderMain(); }
+  };
+  input.onblur = commit;
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") input.blur();
+    if (e.key === "Escape") { input.onblur = null; renderMain(); }
+  };
+}
+async function reclusterMeeting(id, value) {
+  try {
+    toast("Re-clustering speakers…", 2000);
+    const t0 = performance.now();
+    const meta = await postJSON(`/api/meetings/${id}/recluster`, {speakers: value ? parseInt(value, 10) : null});
+    S.detail = meta;
+    S.reclusterFlash = ((performance.now() - t0) / 1000).toFixed(2);
+    setTimeout(() => { S.reclusterFlash = null; renderMain(); }, 2600);
+    renderMain();
+    refreshList();
+  } catch (e) {
+    const sel = $("spkSelect");
+    if (sel) sel.value = (S.detail && S.detail.expected_speakers) || "";
+    toast("⚠ " + e.message, 6000);
+  }
+}
+
+function transcriptGroups(meta) {
+  const groups = [];
+  for (const turn of meta.turns || []) {
+    const last = groups[groups.length - 1];
+    if (last && last.spk === turn.speaker) last.parts.push(turn);
+    else groups.push({spk: turn.speaker, t: turn.start, parts: [turn]});
+  }
+  return groups;
+}
+function highlight(text, ql) {
+  if (!ql) return esc(text);
+  const low = text.toLowerCase();
+  let out = "", pos = 0, i;
+  while ((i = low.indexOf(ql, pos)) !== -1) {
+    out += esc(text.slice(pos, i)) + "<mark>" + esc(text.slice(i, i + ql.length)) + "</mark>";
+    pos = i + ql.length;
+  }
+  return out + esc(text.slice(pos));
+}
+function transcriptHTML(meta) {
+  const ql = S.tq.trim().toLowerCase();
+  const groups = transcriptGroups(meta);
+  const visible = ql ? groups.filter(g => g.parts.some(p => p.text.toLowerCase().includes(ql))) : groups;
+  let html = "";
+  for (const g of visible) {
+    const c = speakerColor(meta, g.spk);
+    const name = meta.speakers[g.spk] || g.spk;
+    html += `<div class="tr-group">
+      <button class="tr-time mono" title="Jump audio here" onclick="seekAndPlay(${g.t})">${fmtTs(g.t)}</button>
+      <div class="tr-body">
+        <div class="tr-spk" style="color:${c}">${esc(name)}</div>
+        <div class="tr-text">${g.parts.map(p => `<p>${highlight(p.text, ql)}</p>`).join("")}</div>
+      </div>
+    </div>`;
+  }
+  if (!visible.length) html = `<div class="tr-empty">${(meta.turns || []).length ? `Nothing in this transcript matches “${esc(S.tq)}”.` : "No speech was detected in this recording."}</div>`;
+  return html;
+}
+function trSearch(v) {
+  S.tq = v;
+  const meta = S.detail;
+  if (!meta) return;
+  $("trInner").innerHTML = transcriptHTML(meta);
+  const ql = v.trim().toLowerCase();
+  const count = ql ? (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length : 0;
+  $("trCount").textContent = ql ? `${count} match${count === 1 ? "" : "es"}` : "";
+}
+
+function renderReview(meta) {
+  const engine = {apple: "Apple Speech", mlx: "Whisper · GPU", faster: "Whisper · CPU"}[(meta.processing || {}).backend] || null;
+  const lang = (meta.languages || {}).mic || (meta.languages || {}).system || null;
+  const hasTurns = (meta.turns || []).length > 0;
+  const exportOpen = S.menu === "export", moreOpen = S.menu === "more";
+  let html = `
+  <header class="rv-head">
+    <div class="rv-title-row">
+      <h1 class="rv-title" contenteditable spellcheck="false" id="rvTitle">${esc(meta.title)}</h1>
+      <div class="rv-actions">
+        ${hasTurns ? `<button class="btn primary" id="tidyBtn" onclick="tidyMeeting('${meta.id}')" ${S.busyTidy ? "disabled" : ""}
+          title="Merge echo duplicates and fix speaker labels using your Claude subscription. Sends transcript text, never audio.">
+          ${S.busyTidy ? `<span class="spinner"></span>Tidying…` : `${icon("sparkle", 13)}Tidy with Claude`}</button>` : ""}
+        <div class="menu-wrap">
+          <button class="btn" onclick="toggleMenu('export', event)">Export ${icon("chevronDown", 12)}</button>
+          ${exportOpen ? `<div class="menu">
+            <button class="menu-item" onclick="copyTranscript('${meta.id}')">${icon("copy")}Copy transcript</button>
+            <button class="menu-item" onclick="closeMenus(); location.href='/api/meetings/${meta.id}/export?fmt=md'">${icon("doc")}Save as Markdown</button>
+            <button class="menu-item" onclick="closeMenus(); location.href='/api/meetings/${meta.id}/export?fmt=txt'">${icon("textT")}Save as plain text</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item" onclick="revealMd('${meta.id}')">${icon("folder")}Reveal folder in Finder</button>
+            <div class="menu-note">Two WAVs, a JSON and a Markdown file — plain files, yours.</div>
+          </div>` : ""}
+        </div>
+        <div class="menu-wrap">
+          <button class="btn icon" onclick="toggleMenu('more', event)" title="More">${icon("dots", 15)}</button>
+          ${moreOpen ? `<div class="menu">
+            <button class="menu-item" ${meta.tidied ? "" : "disabled style='opacity:.45'"} onclick="undoTidy('${meta.id}')">${icon("undo")}Undo tidy</button>
+            <button class="menu-item" onclick="reprocess('${meta.id}')">${icon("refresh")}Reprocess audio</button>
+            <div class="menu-sep"></div>
+            <button class="menu-item danger" onclick="delMeeting('${meta.id}')">${icon("trash")}Delete recording…</button>
+          </div>` : ""}
+        </div>
+      </div>
+    </div>
+    <div class="rv-meta">
+      <span>${esc(dateLabel(meta.created))}</span>
+      ${meta.duration ? `<span class="sep">·</span><span class="mono">${fmtTs(meta.duration)}</span>` : ""}
+      <span class="chip">${icon(meta.mode === "inperson" ? "person" : "monitor", 11)}${meta.mode === "inperson" ? "In person" : "Online call"}</span>
+      ${engine ? `<span class="chip">${icon("wave", 11)}${engine}</span>` : ""}
+      ${lang ? `<span class="chip">${esc(lang)}</span>` : ""}
+    </div>
+    ${meta.status === "error" ? `<div class="rv-notes"><div class="note err"><span class="ic">${icon("warn", 13)}</span><span>${esc(meta.error || "Processing failed.")}</span></div></div>` : noteRows(meta)}
+  </header>`;
+
+  if (meta.status === "error") {
+    html += `<div class="rec-stage"><div class="rec-card">
+      <div class="rec-kicker">This recording needs attention</div>
+      <h1 class="rec-h1" style="margin-bottom:10px">The audio is saved — processing failed</h1>
+      <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:18px">Reprocess to try again with the current settings.</div>
+      <button class="rec-start" onclick="reprocess('${meta.id}')">${icon("refresh", 14)}Reprocess audio</button>
+    </div></div>`;
+    $("main").innerHTML = html;
+    bindTitle(meta);
+    return;
+  }
+
+  html += speakerStrip(meta);
+  const ql = S.tq.trim().toLowerCase();
+  const count = ql ? (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length : 0;
+  html += `
+  <div class="tr-wrap">
+    <div class="tr-toolbar">
+      <span class="tr-label">Transcript</span>
+      <span class="tr-count" id="trCount">${ql ? `${count} match${count === 1 ? "" : "es"}` : ""}</span>
+      <div class="tr-search">
+        ${icon("search", 13)}
+        <input type="text" id="trSearch" placeholder="Find in transcript" value="${esc(S.tq)}" oninput="trSearch(this.value)">
+      </div>
+    </div>
+    <div class="tr-scroll"><div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
+  </div>`;
+
+  if (hasTurns && (AU.mic || AU.sys)) {
+    html += `
+    <div class="transport">
+      <button class="tp-play" id="tpPlay" onclick="transportPlayPause()" title="Play / pause">${icon(AU.playing ? "pause" : "play", 15)}</button>
+      <div class="tp-time" id="tpClock"><b>${fmtTs(transportTime())}</b> / ${fmtTs(AU.dur)}</div>
+      <div class="tp-wave" onclick="waveClick(event)" title="Seek"><canvas id="tpCanvas"></canvas></div>
+      <div class="tp-track">
+        ${AU.sys ? `<button data-t="mix" class="${AU.track === "mix" ? "on" : ""}" onclick="setTrack('mix')">Mix</button>` : ""}
+        ${AU.mic ? `<button data-t="mic" class="${AU.track === "mic" ? "on" : ""}" onclick="setTrack('mic')">Your mic</button>` : ""}
+        ${AU.sys ? `<button data-t="sys" class="${AU.track === "sys" ? "on" : ""}" onclick="setTrack('sys')">Meeting</button>` : ""}
+      </div>
+    </div>`;
+  }
+  $("main").innerHTML = html;
+  bindTitle(meta);
+  drawWave();
+}
+function bindTitle(meta) {
+  const h = $("rvTitle");
+  if (!h) return;
+  h.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); h.blur(); } };
+  h.onblur = async () => {
+    const title = h.textContent.trim();
+    if (!title || title === meta.title) { h.textContent = meta.title; return; }
+    try {
+      await postJSON(`/api/meetings/${meta.id}/title`, {title});
+      meta.title = title;
+      refreshList();
+    } catch (e) { toast("⚠ " + e.message); h.textContent = meta.title; }
+  };
+}
+function toggleMenu(which, e) {
+  e.stopPropagation();
+  S.menu = S.menu === which ? null : which;
+  renderMain();
+}
+function closeMenus() {
+  if (S.menu) { S.menu = null; renderMain(); }
+}
+document.addEventListener("mousedown", (e) => {
+  if (S.menu && !e.target.closest(".menu-wrap")) closeMenus();
+});
+
+/* -------------------------------------------------------------- actions -- */
+async function copyTranscript(id) {
+  closeMenus();
+  const meta = S.detail;
+  if (!meta) return;
+  const text = (meta.turns || []).map(t => `[${fmtTs(t.start)}] ${meta.speakers[t.speaker] || t.speaker}: ${t.text}`).join("\n");
+  try { await navigator.clipboard.writeText(text); toast("Transcript copied to clipboard"); }
+  catch (e) { toast("⚠ Could not copy"); }
+}
+async function revealMd(id) {
+  closeMenus();
+  try { await postJSON(`/api/meetings/${id}/reveal`, {}); toast("📂 Opened in Finder"); }
+  catch (e) { toast("⚠ " + e.message); }
+}
+async function tidyMeeting(id) {
+  if (S.busyTidy) return;
+  if (!confirm("Tidy this transcript with Claude?\n\nThe transcript TEXT (never audio) goes through your local Claude Code subscription — no API key — to remove echo duplicates and fix speaker labels. A backup is kept so you can undo.")) return;
+  S.busyTidy = true;
+  renderMain();
+  try {
+    await postJSON(`/api/meetings/${id}/tidy`, {});
+    await openMeeting(id);
+  } catch (e) { toast("⚠ " + e.message, 6000); }
+  S.busyTidy = false;
+  renderMain();
+}
+async function undoTidy(id) {
+  closeMenus();
+  try {
+    await postJSON(`/api/meetings/${id}/tidy/undo`, {});
+    toast("Original transcript restored");
+    await openMeeting(id);
+  } catch (e) { toast("⚠ " + e.message); }
+}
+async function reprocess(id) {
+  closeMenus();
+  if (!confirm("Re-run transcription for this meeting? Custom speaker names are kept where possible.")) return;
+  try { await postJSON(`/api/meetings/${id}/process`, {}); await openMeeting(id); }
+  catch (e) { toast("⚠ " + e.message); }
+}
+async function delMeeting(id) {
+  closeMenus();
+  if (!confirm("Delete this meeting and its audio permanently?")) return;
+  try {
+    await api(`/api/meetings/${id}`, {method: "DELETE"});
+    if (S.activeId === id) { S.activeId = null; S.detail = null; transportTeardown(); }
+    await refreshList();
+    if (!S.activeId && S.meetings.length) openMeeting(S.meetings[0].id);
+    else renderMain();
+  } catch (e) { toast("⚠ " + e.message); }
+}
+async function quitApp() {
+  if (!confirm("Quit MeetingScribe? The app stops running until you open it again.")) return;
+  try {
+    await postJSON("/api/shutdown", {});
+    document.body.innerHTML = '<div style="display:grid;place-items:center;height:100vh;color:var(--text-dim)">' +
+      '<div style="text-align:center"><p style="font-size:15px"><b style="color:var(--text)">MeetingScribe has quit.</b><br>' +
+      'You can close this tab — open the app again any time.</p></div></div>';
+  } catch (e) { toast("⚠ " + e.message, 6000); }
+}
+
+/* ------------------------------------------------------------- recorder -- */
+const PROC_STEPS = [
+  {label: "Transcribing", match: /loading model|transcrib/i, detail: "Apple Speech · on-device"},
+  {label: "Separating speakers", match: /identifying|analyzing|remote/i, detail: "voice fingerprints · GPU"},
+  {label: "Building transcript", match: /building|tidying|applying/i, detail: "echo removal · stats"},
+];
+function procStepIndex(msg) {
+  for (let i = PROC_STEPS.length - 1; i >= 0; i--) if (PROC_STEPS[i].match.test(msg || "")) return i;
+  return 0;
+}
+function renderRecorder() {
+  const rec = S.rec || {};
+  if (rec.recording) {
+    const meta = S.meetings.find(m => m.id === rec.meeting_id);
+    const title = (meta && meta.title) || S.pendingTitle || "Title will come from your calendar";
+    $("main").innerHTML = `
+    <div class="rec-stage"><div class="rec-card rec-live">
+      <div class="rec-pill"><span class="dot"></span>Recording</div>
+      <div class="rec-timer" id="recTimer">${fmtTs(rec.elapsed || 0)}</div>
+      <div class="rec-live-title">${esc(title)}</div>
+      <div class="meters">
+        <div class="meter">
+          <div class="m-label"><span>Your microphone</span><span class="mono">${esc((S.devices && S.devices.mic && S.devices.mic.name) || "")}</span></div>
+          <div class="m-track"><div class="m-fill" id="lvlMic" style="width:0%"></div></div>
+        </div>
+        <div class="meter">
+          <div class="m-label"><span>Meeting audio</span><span class="mono">${esc((S.devices && S.devices.system && S.devices.system.name) || "")}</span></div>
+          <div class="m-track"><div class="m-fill" id="lvlSys" style="width:0%"></div></div>
+        </div>
+      </div>
+      <button class="rec-stop" id="stopBtn" onclick="stopRecording()">${icon("stop", 14)}Stop &amp; transcribe</button>
+      <div class="hint" style="font-size:11.5px;color:var(--text-faint);margin-top:12px">
+        Both tracks stay on this Mac. Remember to tell people you're recording.
+      </div>
+    </div></div>`;
+    return;
+  }
+
+  // Setup phase
+  const dev = S.devices || {};
+  const sys = dev.system;
+  const sysDot = !sys ? "err" : (sys.routing === "not_routed" && !sys.auto_route ? "warn" : "");
+  const sysRole = !sys ? "install BlackHole to capture the other side"
+    : sys.auto_route ? "other participants · routes automatically"
+    : "other participants";
+  const now = Date.now() / 1000;
+  const chips = (S.calendar || []).filter(ev => ev.end > now - 300).slice(0, 3).map(ev => {
+    const when = ev.start <= now && ev.end >= now ? "now"
+      : new Date(ev.start * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
+    return `<button class="cal-chip" onclick="useEvent(this)" data-title="${esc(ev.title)}">
+      ${icon("calendar", 11)}<span>${esc(ev.title)}</span><span class="when">${esc(when)}</span></button>`;
+  }).join("");
+  $("main").innerHTML = `
+  <div class="rec-stage"><div class="rec-card">
+    <div class="rec-kicker">New recording</div>
+    <h1 class="rec-h1">Set up your meeting</h1>
+    <div class="field">
+      <label>Meeting title</label>
+      <input type="text" id="recTitle" placeholder="Auto-detected from your calendar" value="${esc(S.pendingTitle)}"
+        oninput="S.pendingTitle = this.value">
+      ${chips ? `<div class="cal-chips">${chips}</div>` : ""}
+      <div class="hint">${icon("calendar", 11)} Left blank, the name comes from your calendar — read locally, never from a cloud API.</div>
+    </div>
+    <div class="field">
+      <label>Meeting type</label>
+      <div class="seg">
+        <button class="${S.recType === "online" ? "on" : ""}" onclick="setRecType('online')">${icon("monitor", 13)}Online call</button>
+        <button class="${S.recType === "inperson" ? "on" : ""}" onclick="setRecType('inperson')">${icon("person", 13)}In person</button>
+      </div>
+      <div class="hint">${S.recType === "online"
+        ? "Your mic is recorded as “You”; the meeting audio (Zoom / Meet / Teams — anything that makes sound) becomes the other speakers. Headphones recommended."
+        : "Everyone shares this Mac's microphone and voices are told apart automatically. Place the laptop near the centre of the table."}</div>
+    </div>
+    <div class="field">
+      <label>Audio devices</label>
+      <div class="rec-devices">
+        <div class="rec-dev">
+          <span class="dot ${dev.mic ? "" : "err"}"></span>
+          <span class="name">${esc(dev.mic ? dev.mic.name : "No microphone found")}</span>
+          <span class="role">you</span>
+        </div>
+        <div class="rec-dev">
+          <span class="dot ${sysDot}"></span>
+          <span class="name">${esc(sys ? sys.name : "BlackHole 2ch")}</span>
+          <span class="role">${esc(sysRole)}</span>
+        </div>
+      </div>
+    </div>
+    <button class="rec-start" id="startBtn" onclick="startRecording()">${icon("mic", 14, 2)}Start recording</button>
+  </div></div>`;
+}
+function setRecType(t) {
+  S.recType = t;
+  S.pendingTitle = ($("recTitle") || {}).value || S.pendingTitle;
+  renderRecorder();
+}
+function useEvent(el) {
+  S.pendingTitle = el.dataset.title;
+  const input = $("recTitle");
+  if (input) input.value = S.pendingTitle;
+}
+async function startRecording() {
+  const btn = $("startBtn");
+  btn.disabled = true;
+  S.pendingTitle = ($("recTitle") || {}).value || "";
+  try {
+    const meta = await postJSON("/api/record/start", {title: S.pendingTitle, mode: S.recType});
+    (meta.warnings || []).forEach(w => toast("⚠ " + w, 6000));
+    S.activeId = meta.id;
+    await refreshList();
+    await pollStatus();
+    renderMain();
+  } catch (e) {
+    toast("⚠ " + e.message, 6000);
+    btn.disabled = false;
+  }
+}
+async function stopRecording() {
+  const btn = $("stopBtn");
+  if (btn) btn.disabled = true;
+  try {
+    const meta = await postJSON("/api/record/stop", {});
+    S.view = "meeting";
+    S.pendingTitle = "";
+    await refreshList();
+    openMeeting(meta.id);
+  } catch (e) {
+    toast("⚠ " + e.message, 6000);
+    if (btn) btn.disabled = false;
+  }
+}
+function renderProcessing(meta) {
+  const job = S.jobs[meta.id] || {};
+  const idx = procStepIndex(job.message);
+  const steps = PROC_STEPS.map((s, i) => `
+    <div class="proc-step${i < idx ? " done" : i === idx ? " active" : ""}">
+      <span class="proc-ic">${i < idx ? icon("check", 14, 2.2) : i === idx ? '<span class="spinner"></span>' : '<span style="width:5px;height:5px;border-radius:50%;background:var(--text-faint);display:block"></span>'}</span>
+      <span>${s.label}</span>
+      <span class="proc-detail" id="${i === idx ? "procMsg" : ""}">${i === idx ? esc(job.message || "Working…") : s.detail}</span>
+    </div>`).join("");
+  $("main").innerHTML = `
+  <div class="rec-stage"><div class="rec-card">
+    <div class="rec-kicker">Processing on-device</div>
+    <h1 class="rec-h1" style="margin-bottom:4px">${esc(meta.title)}</h1>
+    <div class="mono" style="font-size:12px;color:var(--text-dim)">${meta.duration ? fmtTs(meta.duration) + " recorded · " : ""}~90 s for a 45-min call</div>
+    <div class="proc-steps">${steps}</div>
+  </div></div>`;
+}
+
+/* ----------------------------------------------------------- main router -- */
+function renderMain() {
+  if (S.rec.recording) { renderRecorder(); return; }
+  if (S.view === "new" || (!S.activeId && !S.meetings.length)) { renderRecorder(); return; }
+  const meta = S.detail;
+  if (!meta) { $("main").innerHTML = ""; return; }
+  if (meta.status === "processing") { renderProcessing(meta); return; }
+  renderReview(meta);
+}
+
+/* ------------------------------------------------------------ data flow -- */
+async function refreshList() {
+  try {
+    S.meetings = await api("/api/meetings");
+    if (!S.activeId && S.meetings.length) S.activeId = S.meetings[0].id;
+    renderSidebar();
+  } catch (e) { /* transient */ }
+}
+async function openMeeting(id) {
+  S.activeId = id;
+  S.view = "meeting";
+  S.menu = null;
+  S.tq = "";
+  try {
+    const meta = await api("/api/meetings/" + id);
+    const switched = !S.detail || S.detail.id !== id;
+    S.detail = meta;
+    if (switched) { S.insightsOpen = false; transportTeardown(); }
+    if (meta.status === "done" && (switched || !(AU.mic || AU.sys))) transportSetup(meta);
+    renderSidebar();
+    renderMain();
+  } catch (e) { toast("⚠ " + e.message); }
+}
+
+/* polling: drives recording state, job transitions, live progress */
+let wasRecording = false;
+async function pollStatus() {
+  try {
+    const st = await api("/api/status");
+    const rec = st.recorder || {};
+    S.jobs = st.jobs || {};
+    const startedRec = rec.recording && !S.rec.recording;
+    const stoppedRec = !rec.recording && S.rec.recording;
+    S.rec = rec;
+
+    if (startedRec || stoppedRec) { renderMain(); refreshList(); }
+    if (rec.recording) {
+      const t = $("recTimer");
+      if (t) t.textContent = fmtTs(rec.elapsed || 0);
+      else renderMain();
+      const lv = rec.levels || {};
+      const m = $("lvlMic"), s = $("lvlSys");
+      if (m) m.style.width = Math.round((lv.mic || 0) * 100) + "%";
+      if (s) s.style.width = Math.round((lv.system || 0) * 100) + "%";
+      for (const [k, tr] of Object.entries(rec.tracks || {})) {
+        if (tr.error) toast(`⚠ ${k} track failed: ${tr.error}`, 8000);
+      }
+    }
+    // Never replace the main view under the user's cursor: if they are
+    // typing in the title, a rename field or a search box, defer the
+    // re-render to a later poll tick.
+    const editing = document.activeElement
+      && $("main").contains(document.activeElement)
+      && (document.activeElement.isContentEditable || document.activeElement.tagName === "INPUT");
+    // live processing updates for the open meeting
+    if (S.detail && S.jobs[S.detail.id] && S.jobs[S.detail.id].state === "processing") {
+      if (S.detail.status !== "processing" && !editing) { S.detail.status = "processing"; renderMain(); }
+      const el = $("procMsg");
+      const msg = S.jobs[S.detail.id].message || "Working…";
+      if (el && el.textContent !== msg) {
+        const idx = procStepIndex(msg);
+        if (document.querySelectorAll(".proc-step.done").length !== idx) renderProcessing(S.detail);
+        else el.textContent = msg;
+      }
+    }
+    // finished jobs -> refresh (deferred while editing; re-runs next tick)
+    if (!editing) {
+      for (const [id, job] of Object.entries(S.jobs)) {
+        const prev = S.lastJobs[id];
+        if (prev && prev.state === "processing" && job.state !== "processing") {
+          refreshList();
+          if (id === S.activeId) openMeeting(id);
+          toast(job.state === "done" ? "✅ Transcript ready" : "⚠ Processing failed", 5000);
+        }
+      }
+      S.lastJobs = JSON.parse(JSON.stringify(S.jobs));
+    }
+  } catch (e) { /* server briefly unavailable */ }
+  setTimeout(pollStatus, S.rec.recording ? 700 : 1200);
+}
+async function pollDevices() {
+  try {
+    const d = await api("/api/devices");
+    if (!d.recording) {
+      const before = JSON.stringify(S.devices);
+      S.devices = d;
+      if (JSON.stringify(d) !== before) {
+        renderSidebar();
+        if (S.view === "new" && !S.rec.recording) renderRecorder();
+      }
+    }
+  } catch (e) { /* keep last known */ }
+  setTimeout(pollDevices, S.rec.recording ? 10000 : 5000);
+}
+async function pollCalendar() {
+  try {
+    const c = await api("/api/calendar/today");
+    S.calendar = (c && c.events) || [];
+    if (S.view === "new" && !S.rec.recording) renderRecorder();
+  } catch (e) { /* not available */ }
+}
+
+/* ----------------------------------------------------------------- boot -- */
+(async function boot() {
+  await refreshList();
+  if (S.meetings.length) await openMeeting(S.meetings[0].id);
+  else { S.view = "new"; renderMain(); }
+  pollStatus();
+  pollDevices();
+  pollCalendar();
+  setInterval(pollCalendar, 300000);
+})();
+</script>
+</body>
+</html>

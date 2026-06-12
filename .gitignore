@@ -1,0 +1,11 @@
+venv/
+recordings/
+models/
+__pycache__/
+*.pyc
+.DS_Store
+config.json
+nohup.out
+*.log
+.claude/
+templates/index-previous.html
