@@ -216,7 +216,8 @@ input, select { font: inherit; color: inherit; }
 .brief::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); }
 .brief-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .brief-depth { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; }
-.brief h2 { margin: 14px 0 8px; font-size: clamp(23px, 2.6vw, 32px); font-weight: 720; line-height: 1.12; letter-spacing: -0.03em; color: var(--text); max-width: 640px; }
+.brief h2 { margin: 14px 0 9px; font-size: clamp(23px, 2.5vw, 30px); font-weight: 720; line-height: 1.14; letter-spacing: -0.03em; color: var(--text); max-width: 660px; }
+.brief h2.brief-lead { font-size: clamp(18px, 1.7vw, 21px); font-weight: 640; line-height: 1.4; letter-spacing: -0.015em; max-width: 700px; }
 .brief > p { margin: 0; max-width: 660px; font-size: 13px; line-height: 1.65; color: var(--text-dim); }
 .brief-signals { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; margin-top: 20px; overflow: hidden; background: var(--border); border: 1px solid var(--border); border-radius: 10px; }
 .brief-signals article { padding: 12px 14px; background: var(--panel-2); }
@@ -954,9 +955,8 @@ function overviewHTML(meta, busy) {
   if (s && (s.action_items || []).length) {
     const rows = s.action_items.map(a => {
       const you = (a.owner || "").toLowerCase() === "you";
-      const initial = esc((a.owner || "—").slice(0, 1).toUpperCase());
       return `<div class="action-row">
-        <span class="person-badge${you ? " me" : ""}">${initial}</span>
+        <span class="person-badge${you ? " me" : ""}">${esc(initials(a.owner || "—"))}</span>
         <span class="action-task"><b>${esc(a.task)}</b><small>${esc(a.owner || "—")}</small></span>
         ${a.due ? `<span class="due-chip">${icon("calendar", 12)} ${esc(a.due)}</span>` : ""}
       </div>`;
@@ -1005,10 +1005,19 @@ function overviewHTML(meta, busy) {
 function briefHero(meta, busy) {
   const s = meta.summary;
   const tldr = (s.tldr || "").trim();
-  // First sentence becomes the headline; the rest is the narrative.
-  const m = tldr.match(/^(.*?[.!?])(\s+)(.*)$/s);
-  const headline = m ? m[1] : tldr;
-  const narrative = m ? m[3] : "";
+  let headline, narrative, sizeClass;
+  if (s.headline && s.headline.trim()) {
+    // A real punchy headline: show it big, full tldr as the narrative.
+    headline = s.headline.trim().replace(/[.]$/, "");
+    narrative = tldr;
+    sizeClass = "";
+  } else {
+    // Older summaries have no headline: present the whole TL;DR as one clean
+    // lead paragraph rather than blowing up a long first sentence.
+    headline = tldr;
+    narrative = "";
+    sizeClass = " brief-lead";
+  }
   const speakers = Object.keys(meta.speakers || {}).length;
   const signals = [
     ["Length", meta.duration ? fmtTs(meta.duration) : "—"],
@@ -1019,11 +1028,21 @@ function briefHero(meta, busy) {
   return `<section class="brief">
     <div class="brief-top"><span class="section-kicker">${icon("sparkle", 14)} Meeting brief</span>
       <span class="brief-depth mono">${(s.engine === "claude" ? "Claude" : "On-device")}${busy ? " · updating…" : ""}</span></div>
-    <h2>${esc(headline || "Summary ready")}</h2>
+    <h2 class="brief-headline${sizeClass}">${esc(headline || "Summary ready")}</h2>
     ${narrative ? `<p>${esc(narrative)}</p>` : ""}
     <div class="brief-signals">${signals.map(([k, v]) =>
       `<article><span>${k}</span><strong>${esc(v)}</strong></article>`).join("")}</div>
   </section>`;
+}
+
+/* Badge initials: "Speaker 3" -> "3", "You" -> "Y", "Priya Sharma" -> "PS". */
+function initials(name) {
+  name = String(name || "").trim();
+  const m = name.match(/(\d+)\s*$/);
+  if (m) return m[1];
+  const words = name.split(/\s+/).filter(Boolean);
+  if (words.length >= 2) return (words[0][0] + words[1][0]).toUpperCase();
+  return (name.slice(0, 1) || "?").toUpperCase();
 }
 
 /* Right-rail follow-up draft card. */
@@ -1119,7 +1138,7 @@ function conversationAside(meta) {
     const st = stats[key] || {};
     const c = speakerColor(meta, key);
     return `<div class="cv-row">
-      <span class="person-badge" style="background:${c}">${esc(name.slice(0, 1).toUpperCase())}</span>
+      <span class="person-badge" style="background:${c}">${esc(initials(name))}</span>
       <span class="cv-name"><b style="color:${c}">${esc(name)}</b><small>${fmtTs(st.seconds || 0)} · ${st.wpm || 0} wpm</small></span>
       <span class="cv-pct mono">${Math.round((st.share || 0) * 100)}%</span>
     </div>`;

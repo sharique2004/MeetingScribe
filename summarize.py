@@ -57,6 +57,8 @@ CHUNK_SCHEMA = {
 
 SUMMARY_SCHEMA = {
     "type": "object", "name": "MeetingSummary", "properties": [
+        {"name": "headline", "type": "string",
+         "description": "a punchy 6-10 word headline stating the single most important outcome, like a news headline (e.g. 'Friday launch locked; QA owner still open')"},
         {"name": "tldr", "type": "string",
          "description": "2-4 sentence plain-English summary of what the meeting was about and what came of it"},
         {"name": "key_points", "type": "array", "items": {"type": "string"}, "max": 10,
@@ -149,6 +151,7 @@ def _coerce(raw):
     }
 
     out = {
+        "headline": _strip(raw.get("headline"), 90),
         "tldr": _strip(raw.get("tldr"), 1500),
         "key_points": _str_list(raw.get("key_points")),
         "decisions": _str_list(raw.get("decisions")),
@@ -352,6 +355,7 @@ WHO IS WHO — get this right before writing anything:
 
 Return ONLY a JSON object, no markdown fences, with exactly these fields:
 {
+ "headline": "a punchy 6-10 word headline capturing the single most important outcome, like a news headline. No trailing period. Example: 'Friday launch locked; QA owner still open'.",
  "tldr": "2-4 sentences: who met with whom and why, what actually came of it. Name the participants and their context (company, role) when the conversation reveals it.",
  "key_points": ["the substantive things discussed, most important first — each one specific enough that a colleague who missed the meeting would actually learn something"],
  "decisions": ["only real decisions/agreements that were made in this conversation"],
