@@ -76,6 +76,32 @@ input, select { font: inherit; color: inherit; }
   border-radius: var(--r-md); font-size: 12px; color: var(--text-dim);
   border: 1px dashed var(--border); transition: background .1s; }
 .sb-more:hover { background: var(--bg-hover); color: var(--text); }
+.sb-account { display: flex; align-items: center; gap: 7px; width: 100%; padding: 6px 8px;
+  border-radius: var(--r-md); font-size: 11.5px; color: var(--text-dim); }
+.sb-account .val { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-account.as-btn:hover { background: var(--bg-hover); color: var(--text); }
+.sb-signout { font-size: 11px; color: var(--text-faint); }
+.sb-signout:hover { color: var(--danger); }
+.btn.sync-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.am-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid;
+  place-items: center; z-index: 90; }
+.am-card { width: 340px; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 18px 50px rgba(0,0,0,.35); }
+.am-head { display: flex; align-items: center; justify-content: space-between; }
+.am-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 700; }
+.am-x { color: var(--text-faint); padding: 2px 6px; border-radius: 6px; }
+.am-x:hover { background: var(--bg-hover); color: var(--text); }
+.am-sub { font-size: 12px; color: var(--text-dim); line-height: 1.5; margin: 0; }
+.am-card input { height: 34px; padding: 0 10px; border-radius: var(--r-md);
+  border: 1px solid var(--border); background: var(--panel-2); font-size: 13px; outline: none; }
+.am-card input:focus { border-color: var(--accent); }
+.am-card .btn { justify-content: center; height: 34px; }
+.am-google { font-weight: 650; }
+.am-sep { display: flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 11px; }
+.am-sep::before, .am-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.am-note { font-size: 12px; color: var(--text-dim); text-align: center; margin: 0; }
+.am-note a { color: var(--accent); text-decoration: none; }
 .sb-group { font-size: 10.5px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); padding: 12px 8px 5px; }
 .sb-item { display: block; width: 100%; text-align: left; padding: 7px 8px; border-radius: var(--r-md); transition: background .1s; }
 .sb-item:hover { background: color-mix(in oklab, var(--text) 6%, transparent); }
@@ -103,8 +129,8 @@ input, select { font: inherit; color: inherit; }
 
 /* Review header */
 .rv-head { padding: 22px 28px 0; }
-.rv-title-row { display: flex; align-items: flex-start; gap: 16px; }
-.rv-title { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0; min-width: 0; flex: 1; border-radius: var(--r-sm); outline: none; }
+.rv-title-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.rv-title { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0; min-width: 240px; flex: 1; border-radius: var(--r-sm); outline: none; }
 .rv-title[contenteditable]:focus { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 45%, transparent); }
 .rv-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 1px; }
 .rv-meta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
@@ -305,6 +331,7 @@ input, select { font: inherit; color: inherit; }
   <main class="main" id="main"></main>
 </div>
 <div id="toast"></div>
+<div id="modal"></div>
 
 <script>
 "use strict";
@@ -313,6 +340,8 @@ const $ = (id) => document.getElementById(id);
 /* ---------------------------------------------------------------- icons -- */
 const ICONS = {
   mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>',
+  phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><line x1="10.5" y1="18.4" x2="13.5" y2="18.4"/>',
+  cloud: '<path d="M7 18a4.5 4.5 0 0 1-.4-8.98A6 6 0 0 1 18.3 8.6 4.2 4.2 0 0 1 17.5 18H7z"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><line x1="16.6" y1="16.6" x2="21" y2="21"/>',
   sparkle: '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9L12 3z"/>',
@@ -420,6 +449,10 @@ const S = {
   recType: "online",
   recLang: "auto",          // per-meeting language for speech recognition
   live: {enabled: false, turns: [], partials: {}, seq: 0},
+  auth: {signed_in: false, email: null, providers: []},
+  authModal: null,          // null | 'signin' | 'signup' | 'verify' | 'waiting'
+  authEmail: "",            // carried between signup -> verify steps
+  busySync: false,
   pendingTitle: "",
   busyTidy: false,
   busySummary: false,
@@ -613,6 +646,12 @@ function renderSidebar() {
         <span class="dot ${sysDot}"></span><span class="lbl">System</span>
         <span class="val">${esc(sys ? sys.name : "BlackHole not installed")}</span>
       </div>
+      ${S.auth.signed_in
+        ? `<div class="sb-account" title="Synced meetings are readable on your phone">
+             ${icon("phone", 12)}<span class="val">${esc(S.auth.email || "Signed in")}</span>
+             <button class="sb-signout" onclick="authSignOut()">Sign out</button></div>`
+        : `<button class="sb-account as-btn" onclick="openAuth('signin')" title="Sign in to read transcripts and summaries on your phone">
+             ${icon("phone", 12)}<span class="val">Sign in for phone sync</span></button>`}
       <div class="sb-foot-row">
         <button class="theme-btn" onclick="toggleTheme()" title="Toggle light / dark">${icon(S.theme === "dark" ? "sun" : "moon", 14)}</button>
         <button class="sb-quit" onclick="quitApp()">Quit MeetingScribe</button>
@@ -644,6 +683,142 @@ function sbSearch(v) {
   S.q = v;
   clearTimeout(_sbSearchTimer);
   _sbSearchTimer = setTimeout(() => refreshList(), 250);
+}
+
+/* --------------------------------------------------- account & phone sync -- */
+async function refreshAuth() {
+  try {
+    S.auth = await api("/api/auth/state");
+    renderSidebar();
+    if (S.detail && S.view === "meeting" && !S.rec.recording) renderMain();
+  } catch (e) { /* transient */ }
+}
+function syncButton(meta) {
+  const sync = meta.sync || {};
+  const on = !!sync.enabled;
+  const err = on && sync.error;
+  const label = S.busySync ? `<span class="spinner"></span>Syncing…`
+    : err ? `${icon("phone", 13)}Sync failed — retry`
+    : on ? `${icon("phone", 13)}On phone ✓`
+    : `${icon("phone", 13)}View on phone`;
+  const title = on
+    ? "This meeting's transcript + summary are readable on your phone. Click to remove the synced copy."
+    : "Upload this meeting's transcript + summary (text only, never audio) to your private, "
+      + "sign-in-protected space so you can read it on your phone.";
+  return `<button class="btn${on && !err ? " sync-on" : ""}" id="syncBtn" ${S.busySync ? "disabled" : ""}
+    onclick="toggleSync('${meta.id}', ${on && !err ? "false" : "true"})" title="${esc(title)}">${label}</button>`;
+}
+async function toggleSync(id, enable) {
+  if (enable && !S.auth.signed_in) { openAuth("signin"); return; }
+  if (!enable && !confirm("Remove this meeting from your phone?\n\nThe synced copy is deleted; the meeting stays on this Mac.")) return;
+  S.busySync = true;
+  renderMain();
+  try {
+    const meta = await postJSON(`/api/meetings/${id}/sync`, {enabled: enable});
+    if (S.detail && S.detail.id === id) S.detail = meta;
+    const err = meta.sync && meta.sync.error;
+    if (enable && err) toast("⚠ " + err, 6000);
+    else toast(enable ? "✅ On your phone — open the web app to read it" : "Removed from your phone", 4000);
+    refreshList();
+  } catch (e) {
+    if (e.message && e.message.toLowerCase().includes("sign in")) openAuth("signin");
+    else toast("⚠ " + e.message, 6000);
+  } finally {
+    S.busySync = false;
+    renderMain();
+  }
+}
+function openAuth(mode) { S.authModal = mode || "signin"; renderAuthModal(); }
+function closeAuth() { S.authModal = null; renderAuthModal(); }
+function renderAuthModal() {
+  const m = S.authModal;
+  if (!m) { $("modal").innerHTML = ""; return; }
+  const google = (S.auth.providers || []).includes("google");
+  let body = "";
+  if (m === "waiting") {
+    body = `<p class="am-note"><span class="spinner"></span> Finish signing in with Google in your browser…</p>
+      <button class="btn" onclick="closeAuth()">Cancel</button>`;
+  } else if (m === "verify") {
+    body = `
+      <p class="am-note">We emailed a 6-digit code to <b>${esc(S.authEmail)}</b>.</p>
+      <input type="text" id="amCode" placeholder="123456" maxlength="6" inputmode="numeric" autocomplete="one-time-code">
+      <button class="btn primary" onclick="authVerify()">Verify & sign in</button>`;
+  } else {
+    const signup = m === "signup";
+    body = `
+      ${google ? `<button class="btn am-google" onclick="authGoogle()">Continue with Google</button>
+      <div class="am-sep"><span>or</span></div>` : ""}
+      <input type="email" id="amEmail" placeholder="Email" value="${esc(S.authEmail)}" autocomplete="username">
+      <input type="password" id="amPass" placeholder="Password${signup ? " (6+ characters)" : ""}" autocomplete="${signup ? "new-password" : "current-password"}">
+      <button class="btn primary" onclick="authSubmit(${signup})">${signup ? "Create account" : "Sign in"}</button>
+      <div class="am-note">${signup
+        ? `Already have an account? <a href="#" onclick="openAuth('signin');return false">Sign in</a>`
+        : `New here? <a href="#" onclick="openAuth('signup');return false">Create an account</a>`}</div>`;
+  }
+  $("modal").innerHTML = `
+    <div class="am-overlay" onclick="if(event.target===this)closeAuth()">
+      <div class="am-card">
+        <div class="am-head">
+          <div class="am-title">${icon("phone", 15)} Read meetings on your phone</div>
+          <button class="am-x" onclick="closeAuth()">✕</button>
+        </div>
+        <p class="am-sub">Meetings stay on this Mac unless you choose “View on phone” — then the
+        transcript and summary (text only, never audio) sync to your private space.</p>
+        ${body}
+      </div>
+    </div>`;
+  const first = $("amEmail") || $("amCode");
+  if (first) first.focus();
+}
+async function authSubmit(signup) {
+  const email = ($("amEmail") || {}).value || "";
+  const password = ($("amPass") || {}).value || "";
+  if (!email || !password) { toast("⚠ Enter an email and password"); return; }
+  S.authEmail = email;
+  try {
+    const r = await postJSON(signup ? "/api/auth/signup" : "/api/auth/signin", {email, password});
+    if (r.needs_verification) { S.authModal = "verify"; renderAuthModal(); return; }
+    S.auth = r;
+    closeAuth();
+    toast("✅ Signed in as " + (r.email || email));
+    renderSidebar(); renderMain();
+  } catch (e) { toast("⚠ " + e.message, 6000); }
+}
+async function authVerify() {
+  const code = ($("amCode") || {}).value || "";
+  try {
+    const r = await postJSON("/api/auth/verify", {email: S.authEmail, code});
+    S.auth = r;
+    closeAuth();
+    toast("✅ Signed in as " + (r.email || S.authEmail));
+    renderSidebar(); renderMain();
+  } catch (e) { toast("⚠ " + e.message, 6000); }
+}
+async function authGoogle() {
+  try {
+    await postJSON("/api/auth/oauth/google/start", {});
+    S.authModal = "waiting"; renderAuthModal();
+    const until = Date.now() + 180000;
+    while (S.authModal === "waiting" && Date.now() < until) {
+      await new Promise(r => setTimeout(r, 1500));
+      const st = await api("/api/auth/state");
+      if (st.signed_in) {
+        S.auth = st;
+        closeAuth();
+        toast("✅ Signed in as " + (st.email || ""));
+        renderSidebar(); renderMain();
+        return;
+      }
+    }
+    if (S.authModal === "waiting") { closeAuth(); toast("Sign-in timed out — try again."); }
+  } catch (e) { toast("⚠ " + e.message, 6000); }
+}
+async function authSignOut() {
+  if (!confirm("Sign out?\n\nMeetings already synced stay readable on your phone; new syncs need a sign-in.")) return;
+  try {
+    S.auth = await postJSON("/api/auth/signout", {});
+    renderSidebar(); renderMain();
+  } catch (e) { toast("⚠ " + e.message); }
 }
 function toggleTheme() {
   S.theme = S.theme === "dark" ? "light" : "dark";
@@ -899,6 +1074,7 @@ function renderReview(meta) {
         ${hasTurns ? `<button class="btn" id="tidyBtn" onclick="tidyMeeting('${meta.id}')" ${S.busyTidy ? "disabled" : ""}
           title="Merge echo duplicates and fix speaker labels — fully on-device with Apple Intelligence. Nothing leaves this Mac.">
           ${S.busyTidy ? `<span class="spinner"></span>Tidying…` : `${icon("wave", 13)}Tidy`}</button>` : ""}
+        ${hasTurns ? syncButton(meta) : ""}
         <div class="menu-wrap">
           <button class="btn" onclick="toggleMenu('export', event)">Export ${icon("chevronDown", 12)}</button>
           ${exportOpen ? `<div class="menu">
@@ -1454,6 +1630,7 @@ async function pollCalendar() {
   pollDevices();
   pollCalendar();
   pollLive();
+  refreshAuth();
   setInterval(pollCalendar, 300000);
 })();
 </script>

@@ -17,10 +17,12 @@ from datetime import datetime
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
+import insforge_client
 import live_captions
 import local_llm
 import pipeline
 import summarize
+import sync
 import tidy
 from audio_recorder import MeetingRecorder
 from config import BASE_DIR, RECORDINGS_DIR, load_config
@@ -62,7 +64,7 @@ MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 # id before a title exists. The id suffix keeps names unique and the API keyed
 # by id alone.
 FOLDER_ID_RE = re.compile(r"^(?:.* — )?(\d{8}-\d{6})$")
-LIST_FIELDS = ("id", "title", "created", "duration", "status", "mode")
+LIST_FIELDS = ("id", "title", "created", "duration", "status", "mode", "sync")
 
 
 # ---------------------------------------------------------------- storage ----
@@ -126,6 +128,23 @@ def _read_meeting(meeting_id):
 def _write_meeting(meta):
     path = _dir_for(meta["id"]) / "meeting.json"
     path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def _read_meeting_safe(meeting_id):
+    """Like _read_meeting but returns None instead of aborting (for
+    background threads, where a Flask abort would be meaningless)."""
+    try:
+        path = _dir_for(meeting_id) / "meeting.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def _push_synced(meeting_id):
+    """Re-upload a synced meeting after an edit. No-op when not synced."""
+    sync.push_if_synced(_read_meeting_safe, _write_meeting, meeting_id)
 
 
 def _write_transcript_md(meta):
@@ -200,6 +219,7 @@ def _start_processing(meeting_id):
             _write_transcript_md(meta)
             JOBS[meeting_id] = {"state": "done", "message": "Complete"}
             _sync_folder_name(meta)  # catch up on renames deferred mid-job
+            _push_synced(meeting_id)
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
             JOBS[meeting_id] = {"state": "error", "message": err}
@@ -376,6 +396,113 @@ def record_stop():
     return jsonify(meta)
 
 
+# -------------------------------------------------------- account & sync ----
+# Optional: everything works signed-out. Signing in only enables the
+# per-meeting "View on phone" sync (transcript + summary text, never audio).
+
+@app.get("/api/auth/state")
+def auth_state():
+    state = insforge_client.state()
+    state["providers"] = ["google"]  # rendered from the backend's enabled set
+    return jsonify(state)
+
+
+@app.post("/api/auth/signup")
+def auth_signup():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        return jsonify(insforge_client.sign_up(
+            (data.get("email") or "").strip(), data.get("password") or ""))
+    except insforge_client.AuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/auth/verify")
+def auth_verify():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        return jsonify(insforge_client.verify_email(
+            (data.get("email") or "").strip(), data.get("code") or ""))
+    except insforge_client.AuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/auth/signin")
+def auth_signin():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        return jsonify(insforge_client.sign_in(
+            (data.get("email") or "").strip(), data.get("password") or ""))
+    except insforge_client.AuthError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/auth/signout")
+def auth_signout():
+    return jsonify(insforge_client.sign_out())
+
+
+@app.post("/api/auth/oauth/<provider>/start")
+def auth_oauth_start(provider):
+    """Open the provider sign-in in the user's default browser."""
+    if provider not in ("google",):
+        return jsonify({"error": "unsupported provider"}), 400
+    url = insforge_client.oauth_start(provider, load_config().get("port", 5005))
+    threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/auth/callback")
+def auth_callback():
+    """OAuth redirect target (opens in the system browser)."""
+    code = request.args.get("insforge_code") or request.args.get("code")
+    if not code:
+        return "<h3>Sign-in failed — missing code. Close this tab and try again.</h3>", 400
+    try:
+        insforge_client.oauth_finish(code, request.args.get("state"))
+    except insforge_client.AuthError as exc:
+        return f"<h3>Sign-in failed</h3><p>{exc}</p>", 400
+    threading.Thread(
+        target=sync.drain, args=(_read_meeting_safe,), daemon=True).start()
+    return """<!doctype html><meta charset="utf-8">
+    <body style="font-family:-apple-system;display:grid;place-items:center;height:90vh">
+    <div style="text-align:center"><h2>✓ Signed in to MeetingScribe</h2>
+    <p>You can close this tab and return to the app.</p></div>"""
+
+
+@app.post("/api/meetings/<meeting_id>/sync")
+def meeting_sync(meeting_id):
+    """Toggle "View on phone" for one meeting."""
+    data = request.get_json(force=True, silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    meta = _read_meeting(meeting_id)
+    if enabled:
+        if meta.get("status") != "done" or not meta.get("turns"):
+            return jsonify({"error": "Wait for the transcript to finish first"}), 409
+        if not insforge_client.state()["signed_in"]:
+            return jsonify({"error": "Sign in first to view meetings on your phone",
+                            "needs_signin": True}), 401
+        meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
+        _write_meeting(meta)
+        try:
+            sync.push_meeting(meta)
+            meta["sync"]["pushed_at"] = datetime.now().isoformat(timespec="seconds")
+        except (sync.SyncError, insforge_client.AuthError) as exc:
+            meta["sync"]["error"] = str(exc)
+            sync.enqueue(meeting_id)
+        _write_meeting(meta)
+    else:
+        had_sync = bool(meta.pop("sync", None))
+        _write_meeting(meta)
+        if had_sync:
+            try:
+                sync.delete_remote(meeting_id)
+            except (sync.SyncError, insforge_client.AuthError) as exc:
+                app.logger.warning("could not delete synced copy of %s: %s",
+                                   meeting_id, exc)
+    return jsonify(meta)
+
+
 @app.get("/api/nudges")
 def nudges():
     """The current meeting nudge (calendar / call detection), if any."""
@@ -456,10 +583,21 @@ def meeting_delete(meeting_id):
     target = _meeting_dir(meeting_id)
     if not target.exists():
         abort(404)
+    was_synced = bool((_read_meeting_safe(meeting_id) or {}).get("sync", {}).get("enabled"))
     shutil.rmtree(target, ignore_errors=True)
     JOBS.pop(meeting_id, None)
     SUMMARY_JOBS.pop(meeting_id, None)
+    if was_synced:  # remove the phone copy too (best effort, background)
+        threading.Thread(target=lambda: _try_delete_remote(meeting_id),
+                         daemon=True).start()
     return jsonify({"ok": True})
+
+
+def _try_delete_remote(meeting_id):
+    try:
+        sync.delete_remote(meeting_id)
+    except Exception as exc:
+        app.logger.warning("could not delete synced copy of %s: %s", meeting_id, exc)
 
 
 @app.post("/api/meetings/<meeting_id>/title")
@@ -473,6 +611,7 @@ def rename_meeting(meeting_id):
     _write_meeting(meta)
     _sync_folder_name(meta)
     _write_transcript_md(meta)
+    _push_synced(meeting_id)
     return jsonify({"title": title})
 
 
@@ -486,6 +625,7 @@ def rename_speaker(meeting_id):
     meta["speakers"][key] = name
     _write_meeting(meta)
     _write_transcript_md(meta)
+    _push_synced(meeting_id)
     return jsonify({"speakers": meta["speakers"]})
 
 
@@ -530,6 +670,7 @@ def recluster(meeting_id):
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 409
     _write_transcript_md(meta)
+    _push_synced(meeting_id)
     return jsonify(meta)
 
 
@@ -558,6 +699,7 @@ def tidy_meeting(meeting_id):
             )
             _write_transcript_md(_read_meeting(meeting_id))
             JOBS[meeting_id] = {"state": "done", "message": "Tidied"}
+            _push_synced(meeting_id)
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
             JOBS[meeting_id] = {"state": "error", "message": err}
@@ -583,6 +725,7 @@ def tidy_undo(meeting_id):
     _write_meeting(meta)
     _write_transcript_md(meta)
     backup.unlink()
+    _push_synced(meeting_id)
     return jsonify(meta)
 
 
@@ -610,6 +753,7 @@ def summarize_meeting(meeting_id):
             )
             _write_transcript_md(_read_meeting(meeting_id))
             SUMMARY_JOBS[meeting_id] = {"state": "done", "message": "Summary ready"}
+            _push_synced(meeting_id)
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
             SUMMARY_JOBS[meeting_id] = {"state": "error", "message": err}
@@ -838,5 +982,7 @@ if __name__ == "__main__":
         atexit.register(lambda: macos_audio.restore_routing())
     if cfg.get("open_browser", True) and not os.environ.get("MEETINGSCRIBE_NO_BROWSER"):
         threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    # Retry any phone-sync pushes that failed while offline.
+    threading.Timer(5.0, lambda: sync.drain(_read_meeting_safe)).start()
     print(f"\n  MeetingScribe running at http://127.0.0.1:{port}\n")
     app.run(host="127.0.0.1", port=port, threaded=True, debug=False, use_reloader=False)
