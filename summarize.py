@@ -1,19 +1,29 @@
-"""Meeting summary + action items — fully on-device via Apple Intelligence.
+"""Meeting summary + action items — written by the user's own Claude.
 
-The transcript TEXT (never audio) is fed to the ~3B on-device model on the
-Neural Engine through local_llm.py. Long meetings are summarized map-reduce
-style: each portion becomes structured notes, the notes are condensed if
-needed, and a final pass writes the summary (TL;DR, key points, decisions,
-action items with owners, follow-ups, open questions, and a ready-to-send
-follow-up email). Guided generation guarantees the JSON shape; _coerce()
-still validates before anything is stored. Nothing leaves this Mac.
+Preferred engine: the `claude` CLI already on this machine (the user's
+Claude account — no API key). A frontier model reads the WHOLE transcript
+in one pass, so it genuinely understands who's who and what happened.
+Only the transcript TEXT is sent, never audio. When the CLI isn't
+installed or signed in, the UI walks the user through logging in.
+
+Fallback engine (config "summary_engine": "apple"): the on-device Apple
+Intelligence model — fully offline but noticeably shallower.
+
+Either way _coerce() validates + de-duplicates before anything is stored.
 """
 
+import difflib
 import json
 import logging
+import os
+import pwd
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import local_llm
+from config import load_config
 
 log = logging.getLogger("meetingscribe.summarize")
 
@@ -88,7 +98,12 @@ CONDENSE_INSTRUCTIONS = (
 REDUCE_INSTRUCTIONS = (
     "You are writing the final summary of a meeting for the local user, who is the "
     "speaker called \"You\". Write for that user: their action items matter most, and "
-    "the follow-up email should be written as if they are sending it. " + _FAITHFUL
+    "the follow-up email should be written as if they are sending it — a warm, "
+    "specific, human email, never a list of bullet points. "
+    "Never repeat the same fact in more than one section: a committed task belongs "
+    "only in action_items, a decision only in decisions. Omit vacuous items like "
+    "'X learned a lot' or 'they discussed plans'. If no deadline was said, use an "
+    "empty string — never write 'TBD'. " + _FAITHFUL
 )
 
 
@@ -106,15 +121,21 @@ def _coerce(raw):
                 out.append(s[:600])
         return out[:25]
 
+    _NO_DUE = {"tbd", "n/a", "na", "none", "unknown", "unspecified", "-", "—", "not specified"}
+
     actions = []
     for item in (raw.get("action_items") if isinstance(raw.get("action_items"), list) else []):
         if isinstance(item, dict):
             task = _strip(item.get("task"), 400)
+            due = _strip(item.get("due"), 80)
+            if (due.lower() in _NO_DUE or len(due) > 40
+                    or re.search(r"stated timing|empty string|omit|never invent", due, re.I)):
+                due = ""  # "TBD" noise or the model echoing the schema text
             if task:
                 actions.append({
                     "owner": _strip(item.get("owner"), 60) or "—",
                     "task": task,
-                    "due": _strip(item.get("due"), 80),
+                    "due": due,
                 })
         elif str(item).strip():
             actions.append({"owner": "—", "task": str(item).strip()[:400], "due": ""})
@@ -127,7 +148,7 @@ def _coerce(raw):
         "body": _strip(email.get("body"), 4000),
     }
 
-    return {
+    out = {
         "tldr": _strip(raw.get("tldr"), 1500),
         "key_points": _str_list(raw.get("key_points")),
         "decisions": _str_list(raw.get("decisions")),
@@ -136,6 +157,54 @@ def _coerce(raw):
         "open_questions": _str_list(raw.get("open_questions")),
         "follow_up_email": email,
     }
+    return _dedupe(out)
+
+
+def _norm_key(text):
+    return re.sub(r"[^a-z0-9 ]+", "", str(text).lower()).strip()
+
+
+def _similar(a, b):
+    if a == b:
+        return True
+    if len(a) > 20 and (a in b or b in a):
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.87
+
+
+def _dedupe(summary):
+    """Small models love repeating one thought across every section — drop
+    exact and near-duplicate items within and across sections."""
+    def clean(items, seen):
+        kept = []
+        for item in items:
+            key = _norm_key(item)
+            if not key or any(_similar(key, s) for s in seen):
+                continue
+            seen.add(key)
+            kept.append(item)
+        return kept
+
+    seen = set()
+    # Action items win first claim on their phrasing (owner + task).
+    task_keys = set()
+    kept_actions = []
+    for a in summary["action_items"]:
+        key = _norm_key(f"{a['owner']} {a['task']}")
+        if any(_similar(key, s) for s in task_keys):
+            continue
+        task_keys.add(key)
+        kept_actions.append(a)
+        seen.add(_norm_key(a["task"]))
+    summary["action_items"] = kept_actions
+
+    summary["decisions"] = clean(summary["decisions"], seen)
+    summary["key_points"] = clean(summary["key_points"], seen)
+    # Questions form their own pool: follow-ups repeating open questions
+    # (or either repeating a decision) get dropped.
+    summary["open_questions"] = clean(summary["open_questions"], seen)
+    summary["follow_ups"] = clean(summary["follow_ups"], seen)
+    return summary
 
 
 # ------------------------------------------------------------ transcript in --
@@ -272,6 +341,154 @@ def _map_chunk(i, total, chunk, title, speaker_note, depth=0):
         raise
 
 
+# ------------------------------------------------- the big local model path --
+
+FULL_INSTRUCTIONS = """You are writing meeting notes for the local user. You have the FULL transcript — read it as someone who attended: understand who each person is, what they want, and what actually happened between them.
+
+WHO IS WHO — get this right before writing anything:
+- The speaker labelled "You" is the LOCAL USER: the person these notes are for and the person the follow-up email is FROM. A name in the meeting title usually belongs to the local user (their calendar), NOT to the other side.
+- Work out the other participants' identities from the conversation itself — introductions, how people address each other, whose company/role is being described. Use their real names once known.
+- If other people address the local user by name in the transcript, that is the local user's name; use it for the email signature. If it never appears, end the email with just "Best," and no name. NEVER write the literal word "You" as a signature.
+
+Return ONLY a JSON object, no markdown fences, with exactly these fields:
+{
+ "tldr": "2-4 sentences: who met with whom and why, what actually came of it. Name the participants and their context (company, role) when the conversation reveals it.",
+ "key_points": ["the substantive things discussed, most important first — each one specific enough that a colleague who missed the meeting would actually learn something"],
+ "decisions": ["only real decisions/agreements that were made in this conversation"],
+ "action_items": [{"owner": "who (a participant's name, or 'You')", "task": "the concrete thing they committed to", "due": "the stated timing, or empty string — never invent one"}],
+ "follow_ups": ["things explicitly deferred to a future conversation"],
+ "open_questions": ["genuinely unresolved questions that matter"],
+ "follow_up_email": {"subject": "...", "body": "an email You could actually send to the other participant(s): warm, specific to what was discussed, references the real next steps, signs off with You's name if it was spoken. Written like a person, not a bullet dump."}
+}
+
+Quality rules — these matter:
+- Every item must be SPECIFIC: names, numbers, technologies, timelines that were actually said. Generic filler ("they discussed plans", "X learned a lot") is worthless — omit it.
+- NEVER repeat the same fact across sections. A committed task goes in action_items only; a decision goes in decisions only; key_points carry the substance that isn't already a decision or task.
+- If a section has nothing real, return an empty array — do not pad.
+- Use the participants' real names as they appear or are spoken in the transcript. If a speaker's real name is stated in conversation, prefer it over labels like "Speaker 1".
+- The transcript is auto-generated: expect misrecognized words and names; infer the intended meaning from context rather than quoting errors verbatim."""
+
+
+def _local_user_name():
+    """The Mac account's full name — tells the model who "You" actually is,
+    so a Calendly-style meeting title carrying the user's own name can't be
+    mistaken for the other participant."""
+    try:
+        name = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+        return name or None
+    except Exception:
+        return None
+
+
+class NeedsClaudeError(RuntimeError):
+    """The `claude` CLI is missing or signed out — the UI walks the user
+    through logging in."""
+
+
+def _full_source(meta, lines):
+    title = meta.get("title") or "Untitled meeting"
+    notes = [f'Transcript of the meeting "{title}".', _speaker_note(meta)]
+    me = _local_user_name()
+    if me:
+        notes.append(f'IMPORTANT: the local user — the speaker labelled "You" — '
+                     f'is {me}. Anyone else in the conversation is a different '
+                     f'person; find their names in the dialogue.')
+    cal = meta.get("calendar_event") or {}
+    if cal.get("names"):
+        notes.append("Calendar attendees besides the local user: "
+                     + ", ".join(cal["names"]) + ".")
+    return " ".join(n for n in notes if n) + "\n\n" + "\n".join(lines)
+
+
+def find_claude():
+    """The user's Claude Code CLI, if installed."""
+    exe = shutil.which("claude")
+    if exe:
+        return exe
+    for cand in (
+        Path.home() / ".local" / "bin" / "claude",
+        Path("/usr/local/bin/claude"),
+        Path("/opt/homebrew/bin/claude"),
+    ):
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+_CLAUDE_SETUP_HELP = (
+    "MeetingScribe writes summaries with YOUR Claude account (no API key). "
+    "One-time setup: install Claude Code — `npm install -g "
+    "@anthropic-ai/claude-code` — then run `claude` in Terminal once and "
+    "sign in. After that, just press Summary again."
+)
+
+
+def _extract_json(text):
+    """First balanced {...} in the reply — string-aware so braces inside
+    values can't fool the depth counter; tolerates ``` fences and prose."""
+    text = str(text).strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if fenced:
+        text = fenced.group(1)
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no JSON object in the reply")
+    depth, in_str, escaped = 0, False, False
+    for i in range(start, len(text)):
+        c = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif c == "\\":
+                escaped = True
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return json.loads(text[start:i + 1])
+    raise ValueError("unbalanced JSON in the reply")
+
+
+def _summarize_claude(meta, lines, progress_cb):
+    """One full-transcript pass through the user's own Claude."""
+    exe = find_claude()
+    if exe is None:
+        raise NeedsClaudeError(_CLAUDE_SETUP_HELP)
+    source = _full_source(meta, lines)
+    progress_cb("Summarizing with your Claude account…")
+    try:
+        proc = subprocess.run(
+            [exe, "-p", "--output-format", "json"],
+            input=FULL_INSTRUCTIONS + "\n\n" + source,
+            capture_output=True, text=True, timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Claude took too long to summarize — please try again.")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()
+        if re.search(r"log ?in|logged out|authent|credential|api key|/login", detail, re.I):
+            raise NeedsClaudeError(
+                "Your Claude account is signed out. Open Terminal, run "
+                "`claude`, and sign in — then press Summary again.")
+        last = detail.splitlines()[-1] if detail else "unknown error"
+        raise RuntimeError(f"Claude could not summarize: {last}")
+    try:
+        envelope = json.loads(proc.stdout)
+        return _extract_json(envelope.get("result") or "")
+    except (ValueError, AttributeError) as exc:
+        raise RuntimeError(f"Could not parse Claude's reply: {exc}") from exc
+
+
+def _pick_engine():
+    setting = str(load_config().get("summary_engine") or "claude").lower()
+    return "apple" if setting == "apple" else "claude"
+
+
 def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
     """Summarize one meeting; stores meta['summary'] and rewrites meeting.json."""
     meeting_dir = Path(meeting_dir)
@@ -279,13 +496,21 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     if not (meta.get("turns") or []):
         raise RuntimeError("No transcript to summarize yet.")
+
+    lines = _transcript_lines(meta)
+
+    if _pick_engine() == "claude":
+        raw = _summarize_claude(meta, lines, progress_cb)
+        summary = _coerce(raw if isinstance(raw, dict) else {})
+        summary["engine"] = "claude"
+        return _store_summary(meta, meta_path, meeting_dir, summary)
+
     ok, reason = local_llm.available()
     if not ok:
         raise RuntimeError(local_llm.reason_message(reason))
 
     title = meta.get("title") or "Untitled meeting"
     speaker_note = _speaker_note(meta)
-    lines = _transcript_lines(meta)
     chunks = _chunk_lines(lines)
 
     if len(chunks) == 1:
@@ -327,12 +552,18 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         raise RuntimeError(str(exc)) from exc
 
     summary = _coerce(raw if isinstance(raw, dict) else {})
+    summary["engine"] = "apple-intelligence"
+    return _store_summary(meta, meta_path, meeting_dir, summary)
+
+
+def _store_summary(meta, meta_path, meeting_dir, summary):
     meta["summary"] = summary
     try:
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     except OSError as exc:  # e.g. the meeting was deleted while summarizing
         raise RuntimeError(f"Could not save the summary: {exc}") from exc
-    log.info("summarized %s: %d action item(s)", meeting_dir.name, len(summary["action_items"]))
+    log.info("summarized %s [%s]: %d action item(s)",
+             meeting_dir.name, summary.get("engine"), len(summary["action_items"]))
     return summary
 
 

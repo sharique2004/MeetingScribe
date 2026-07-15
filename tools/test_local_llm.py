@@ -21,6 +21,19 @@ import local_llm  # noqa: E402
 import summarize  # noqa: E402
 import tidy  # noqa: E402
 
+from contextlib import contextmanager  # noqa: E402
+
+
+@contextmanager
+def _force_engine(engine):
+    """Pin summarize's engine choice for one test."""
+    original = summarize.load_config
+    summarize.load_config = lambda: dict(original(), summary_engine=engine)
+    try:
+        yield
+    finally:
+        summarize.load_config = original
+
 
 def make_meeting(tmp, turns, speakers=None):
     d = Path(tmp) / "20260101-120000"
@@ -58,7 +71,7 @@ def test_summarize_short():
         t("s1", "system", 23, 28, "Yes, I will update the release notes by Wednesday."),
         t("you", "mic", 29, 34, "Great. I still do not know who owns QA — let us figure that out next week."),
     ]
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _force_engine("apple"):
         d = make_meeting(tmp, turns)
         summary = summarize.summarize_meeting(d, progress_cb=lambda m: None)
         meta = json.loads((d / "meeting.json").read_text())
@@ -70,6 +83,28 @@ def test_summarize_short():
     text = json.dumps(summary).lower()
     assert "friday" in text, f"expected the launch decision to appear, got: {summary['tldr']!r}"
     print("PASS summarize_short —", summary["tldr"][:80], "…")
+
+
+def test_summarize_claude_engine():
+    """The default engine: the user's own Claude via the CLI."""
+    if summarize.find_claude() is None:
+        print("SKIP summarize_claude_engine (claude CLI not installed)")
+        return
+    turns = [
+        t("you", "mic", 0, 6, "Hey Priya, thanks for making time. I want to close on the launch date."),
+        t("s1", "system", 7, 15, "Of course. I think we should move the launch to Friday the twelfth — the build is stable."),
+        t("you", "mic", 16, 22, "Agreed, Friday the twelfth it is. Can you update the release notes by Wednesday?"),
+        t("s1", "system", 23, 28, "Yes, I'll have the release notes done by Wednesday."),
+    ]
+    with tempfile.TemporaryDirectory() as tmp, _force_engine("claude"):
+        d = make_meeting(tmp, turns)
+        summary = summarize.summarize_meeting(d, progress_cb=lambda m: None)
+    assert summary.get("engine") == "claude", summary.get("engine")
+    assert summary["tldr"], "empty tldr"
+    text = json.dumps(summary).lower()
+    assert "friday" in text and "priya" in text, f"expected specifics, got {summary['tldr']!r}"
+    assert "best regards, you" not in text, "email signed as the literal 'You'"
+    print("PASS summarize_claude_engine —", summary["tldr"][:80], "…")
 
 
 def test_summarize_chunked():
@@ -95,7 +130,7 @@ def test_summarize_chunked():
                        f"back in the Thursday standup with numbers, assuming nothing else blows "
                        f"up before then and we get the staging environment back."))
         clock += 25
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, _force_engine("apple"):
         d = make_meeting(tmp, turns)
         total = sum(len(x["text"]) for x in turns)
         assert total > summarize.MAX_CHUNK_CHARS, "test transcript too short to exercise chunking"
@@ -161,6 +196,7 @@ def main():
     test_summarize_short()
     test_tidy_echo()
     test_summarize_chunked()
+    test_summarize_claude_engine()
     print(f"ALL PASS in {time.time() - started:.1f}s")
 
 

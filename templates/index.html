@@ -395,7 +395,11 @@ async function api(path, opts) {
   const res = await fetch(path, opts);
   let body = null;
   try { body = await res.json(); } catch (e) { /* non-JSON */ }
-  if (!res.ok) throw new Error((body && body.error) || res.statusText);
+  if (!res.ok) {
+    const err = new Error((body && body.error) || res.statusText);
+    err.data = body || {};
+    throw err;
+  }
   return body;
 }
 function postJSON(path, data) {
@@ -1072,7 +1076,7 @@ function renderReview(meta) {
       <h1 class="rv-title" contenteditable spellcheck="false" id="rvTitle">${esc(meta.title)}</h1>
       <div class="rv-actions">
         ${hasTurns ? `<button class="btn primary" id="sumBtn" onclick="summarizeMeeting('${meta.id}')" ${sumBusy ? "disabled" : ""}
-          title="Summarize the meeting and pull out action items, decisions and a follow-up email — fully on-device with Apple Intelligence. Nothing leaves this Mac.">
+          title="Summarize the meeting with your own Claude account — action items, decisions and a ready-to-send follow-up email. Transcript text only, never audio.">
           ${sumBusy ? `<span class="spinner"></span>Summarizing…` : `${icon("sparkle", 13)}${meta.summary ? "Re-summarize" : "Summary"}`}</button>` : ""}
         ${hasTurns ? `<button class="btn" id="tidyBtn" onclick="tidyMeeting('${meta.id}')" ${S.busyTidy ? "disabled" : ""}
           title="Merge echo duplicates and fix speaker labels — fully on-device with Apple Intelligence. Nothing leaves this Mac.">
@@ -1195,6 +1199,17 @@ async function revealMd(id) {
   try { await postJSON(`/api/meetings/${id}/reveal`, {}); toast("📂 Opened in Finder"); }
   catch (e) { toast("⚠ " + e.message); }
 }
+function claudeSetupPrompt(message) {
+  alert("Sign in to Claude to get summaries\n\n"
+    + "MeetingScribe writes summaries with YOUR Claude account — the same "
+    + "quality as claude.ai, no API key.\n\n"
+    + "One-time setup:\n"
+    + "1. Open Terminal\n"
+    + "2. If needed, install:  npm install -g @anthropic-ai/claude-code\n"
+    + "3. Run:  claude   — and sign in with your Claude account\n\n"
+    + "Then press Summary again. Only the transcript text is sent, never audio.\n\n"
+    + (message || ""));
+}
 async function summarizeMeeting(id) {
   const sumJob = S.summaryJobs[id];
   if (S.busySummary || (sumJob && sumJob.state === "processing")) return;
@@ -1204,7 +1219,8 @@ async function summarizeMeeting(id) {
     await postJSON(`/api/meetings/${id}/summarize`, {});
     // The job runs in the background; polling will load the summary when ready.
   } catch (e) {
-    toast("⚠ " + e.message, 6000);
+    if (e.data && e.data.needs_claude) claudeSetupPrompt();
+    else toast("⚠ " + e.message, 6000);
     S.busySummary = false;
     renderMain();
   }
@@ -1626,7 +1642,9 @@ async function pollStatus() {
         if (prev && prev.state === "processing" && job.state !== "processing") {
           S.busySummary = false;
           if (id === S.activeId) openMeeting(id);
-          toast(job.state === "done" ? "✅ Summary ready" : "⚠ Summary failed: " + (job.message || ""), 6000);
+          if (job.state === "done") toast("✅ Summary ready", 6000);
+          else if (job.needs_claude) claudeSetupPrompt(job.message);
+          else toast("⚠ Summary failed: " + (job.message || ""), 6000);
         }
       }
       // keep the button spinner live while the open meeting's summary runs

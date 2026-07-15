@@ -2,11 +2,12 @@
 
 Record any meeting, watch **live captions** as people speak, get a full
 transcript of **who said what**, and one click writes an **AI summary with
-action items** — all of it **on your machine**. Transcription runs on
-Apple's Neural Engine, the AI runs through Apple Intelligence, and nothing
-is uploaded: no cloud, no API keys, no subscription. Optionally, sync a
-meeting's transcript + summary (text only, never audio) to read it on your
-phone.
+action items**. Recording, transcription and speaker separation run
+entirely **on your machine** (Apple's Neural Engine — no cloud, no API
+keys). Summaries are written by **your own Claude account** via the
+`claude` CLI (transcript text only, never audio; an offline Apple
+Intelligence mode is available in settings). Optionally, sync a meeting's
+transcript + summary to read it on your phone.
 
 ## How to start
 
@@ -107,8 +108,12 @@ where your meetings actually happen.
    be invented), and a backup is kept so you can **↩ Undo tidy**.
 8. **Summary**: one click writes a TL;DR, key points, decisions, action
    items with owners, open questions and a ready-to-send follow-up email —
-   also fully on-device with Apple Intelligence. Long meetings are
-   summarized in passes, so any length works.
+   using **your own Claude account** through the `claude` CLI (no API key;
+   the first click walks you through signing in). Claude reads the whole
+   transcript in one pass, so it genuinely understands who said what. Only
+   the transcript *text* is sent, never audio. Prefer 100% offline? Set
+   `"summary_engine": "apple"` in `config.json` to use Apple Intelligence
+   instead (shallower, but nothing leaves the Mac).
 
 ## Practice interview
 

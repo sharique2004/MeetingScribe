@@ -832,15 +832,20 @@ def tidy_undo(meeting_id):
 
 @app.post("/api/meetings/<meeting_id>/summarize")
 def summarize_meeting(meeting_id):
-    """Generate a summary + action items with the on-device model (Apple
-    Intelligence). Runs in the background; the transcript stays visible."""
+    """Generate a summary + action items with the user's own Claude (or the
+    on-device model if configured). Runs in the background."""
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to summarize yet"}), 400
-    llm_ok, llm_reason = local_llm.available()
-    if not llm_ok:
-        return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
-    denied = _claim_job(SUMMARY_JOBS, meeting_id, "Summarizing on this Mac…",
+    if summarize._pick_engine() == "claude":
+        if summarize.find_claude() is None:
+            return jsonify({"error": summarize._CLAUDE_SETUP_HELP,
+                            "needs_claude": True}), 400
+    else:
+        llm_ok, llm_reason = local_llm.available()
+        if not llm_ok:
+            return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
+    denied = _claim_job(SUMMARY_JOBS, meeting_id, "Summarizing…",
                         blockers=[(JOBS, "Meeting is being processed")])
     if denied:
         return jsonify(denied[0]), denied[1]
@@ -854,6 +859,9 @@ def summarize_meeting(meeting_id):
             _write_transcript_md(_read_meeting(meeting_id))
             SUMMARY_JOBS[meeting_id] = {"state": "done", "message": "Summary ready"}
             _push_synced(meeting_id)
+        except summarize.NeedsClaudeError as exc:
+            SUMMARY_JOBS[meeting_id] = {"state": "error", "message": str(exc),
+                                        "needs_claude": True}
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
             SUMMARY_JOBS[meeting_id] = {"state": "error", "message": err}
