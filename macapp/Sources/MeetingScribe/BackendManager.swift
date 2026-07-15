@@ -138,20 +138,28 @@ final class BackendManager {
     func shutdown(then completion: @escaping (_ didQuit: Bool) -> Void) {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/shutdown"))
         request.httpMethod = "POST"
-        request.timeoutInterval = 2
+        request.timeoutInterval = 1.5
+        var replied = false
+        let reply: (Bool) -> Void = { didQuit in
+            DispatchQueue.main.async {
+                guard !replied else { return }
+                replied = true
+                completion(didQuit)
+            }
+        }
         URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
             let status = (response as? HTTPURLResponse)?.statusCode
-            DispatchQueue.main.async {
-                if status == 409 {
-                    completion(false)  // busy — leave the backend running
-                    return
-                }
-                self?.quitting = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                    if let p = self?.process, p.isRunning { p.terminate() }
-                    completion(true)
-                }
+            if status == 409 {
+                reply(false)  // busy — leave the backend running, ask the user
+                return
             }
+            // Any other outcome (200, or the backend is already gone/unreachable)
+            // means it's safe to quit. Terminate our child and confirm.
+            DispatchQueue.main.async {
+                self?.quitting = true
+                if let p = self?.process, p.isRunning { p.terminate() }
+            }
+            reply(true)
         }.resume()
     }
 

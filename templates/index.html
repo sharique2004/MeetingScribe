@@ -318,6 +318,8 @@ input, select { font: inherit; color: inherit; }
 @keyframes ms-spin { to { transform: rotate(360deg) } }
 
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel); color: var(--text); padding: 9px 16px; border-radius: var(--r-md); box-shadow: var(--shadow-pop); display: none; z-index: 90; font-size: 12.5px; max-width: 70vw; }
+#connBanner { position: fixed; top: 0; left: 0; right: 0; z-index: 200; display: flex; align-items: center; justify-content: center; gap: 9px; padding: 8px; background: var(--warn, #d9a44a); color: #1a1205; font-size: 12.5px; font-weight: 600; }
+#connBanner .spinner { border-color: rgba(0,0,0,.3); border-top-color: #1a1205; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--text) 16%, transparent); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
@@ -427,6 +429,7 @@ function dateLabel(iso) {
 /* ---------------------------------------------------------------- state -- */
 const S = {
   theme: localStorage.getItem("msTheme") || "dark",
+  connected: true,          // backend reachable? drives the reconnect banner
   meetings: [],
   total: 0,                 // total meetings on disk matching the search
   listLoading: false,       // a page fetch is in flight
@@ -1547,9 +1550,27 @@ async function openMeeting(id) {
 
 /* polling: drives recording state, job transitions, live progress */
 let wasRecording = false;
+function setConnected(ok) {
+  if (S.connected === ok) return;
+  S.connected = ok;
+  let banner = $("connBanner");
+  if (!ok) {
+    if (!banner) {
+      banner = document.createElement("div");
+      banner.id = "connBanner";
+      banner.innerHTML = `<span class="spinner"></span> Reconnecting to MeetingScribe…`;
+      document.body.appendChild(banner);
+    }
+  } else if (banner) {
+    banner.remove();
+    // The backend just came back (e.g. it was restarted) — resync everything.
+    refreshList(); if (S.activeId) openMeeting(S.activeId);
+  }
+}
 async function pollStatus() {
   try {
     const st = await api("/api/status");
+    setConnected(true);
     const rec = st.recorder || {};
     S.jobs = st.jobs || {};
     S.summaryJobs = st.summary_jobs || {};
@@ -1613,7 +1634,7 @@ async function pollStatus() {
       if (mine && mine.state === "processing" && !S.busySummary && !$("sumBtn")?.disabled) renderMain();
       S.lastSummaryJobs = JSON.parse(JSON.stringify(S.summaryJobs));
     }
-  } catch (e) { /* server briefly unavailable */ }
+  } catch (e) { setConnected(false); }  // backend restarting — banner + auto-resync
   setTimeout(pollStatus, S.rec.recording ? 700 : 1200);
 }
 async function pollDevices() {

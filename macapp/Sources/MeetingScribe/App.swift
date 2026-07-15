@@ -70,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    private var terminationReplied = false
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if lastRecorder.recording {
             let alert = NSAlert()
@@ -82,11 +84,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateCancel
             }
         }
-        backend.shutdown { [weak self] didQuit in
-            if didQuit {
-                NSApp.reply(toApplicationShouldTerminate: true)
-                return
+        // Reply exactly once, whichever path gets there first.
+        terminationReplied = false
+        func replyQuit() {
+            guard !terminationReplied else { return }
+            terminationReplied = true
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        // Hard guarantee: the app ALWAYS quits within a couple of seconds, no
+        // matter what the backend does. Quitting must never be able to hang.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            if !(self?.terminationReplied ?? true) {
+                self?.backend.forceShutdown { replyQuit() }
             }
+        }
+        backend.shutdown { [weak self] didQuit in
+            if didQuit { return replyQuit() }
             // The backend refused: a transcript or summary is still being
             // built. Ask instead of killing the job mid-flight.
             let alert = NSAlert()
@@ -96,11 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: "Cancel")
             alert.addButton(withTitle: "Quit Anyway")
             if alert.runModal() == .alertFirstButtonReturn {
+                self?.terminationReplied = true
                 NSApp.reply(toApplicationShouldTerminate: false)
             } else {
-                self?.backend.forceShutdown {
-                    NSApp.reply(toApplicationShouldTerminate: true)
-                }
+                self?.backend.forceShutdown { replyQuit() }
             }
         }
         return .terminateLater
