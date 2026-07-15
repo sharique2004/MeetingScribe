@@ -193,39 +193,83 @@ input, select { font: inherit; color: inherit; }
 .spk-stats td .num { color: var(--text); }
 
 /* Summary panel */
-.sum { margin: 2px 0 18px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); padding: 14px 16px 16px; }
-.sum-cta { display: flex; align-items: center; gap: 15px; padding: 16px 18px;
-  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, var(--panel)), var(--panel));
-  border-color: color-mix(in oklab, var(--accent) 30%, var(--border)); }
-.sum-cta-ic { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
-  background: color-mix(in oklab, var(--accent) 16%, transparent); }
-.sum-cta-ic svg { color: var(--accent); }
-.sum-cta-text { flex: 1; min-width: 0; }
-.sum-cta-title { font-size: 14px; font-weight: 650; margin-bottom: 3px; }
-.sum-cta-sub { font-size: 12.5px; line-height: 1.5; color: var(--text-dim); max-width: 640px; }
-.sum-cta-btn { flex: none; }
-.sum-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
-.sum-title { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); }
-.sum-title svg { color: var(--accent); }
-.sum-loading { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
-.sum-tldr { margin: 2px 0 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); max-width: 820px; }
-.sum-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; }
-@media (max-width: 900px) { .sum-cols { grid-template-columns: 1fr; } }
-.sum-block { margin-bottom: 12px; }
-.sum-label { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
-.sum-list { margin: 0; padding-left: 17px; }
-.sum-list li { font-size: 12.5px; line-height: 1.5; color: var(--text-dim); margin-bottom: 4px; }
-.sum-actions { list-style: none; margin: 0; padding: 0; }
-.sum-actions li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; line-height: 1.5; color: var(--text); margin-bottom: 7px; }
-.sum-owner { flex: none; font-size: 11px; font-weight: 600; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; padding: 1px 9px; }
-.sum-owner.me { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
-.sum-due { font-size: 11px; color: var(--text-faint); }
-.sum-email { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
-.sum-email-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
-.sum-copy { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px 9px; }
-.sum-copy:hover { background: var(--panel-2); color: var(--text); }
-.sum-subject { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
-.sum-body { font-size: 12.5px; line-height: 1.6; color: var(--text-dim); white-space: pre-wrap; max-width: 760px; }
+/* Meeting view: tabs + Overview (brief hero, actions, decisions, aside) */
+.rv-tabs { display: flex; gap: 4px; padding: 14px 28px 0; margin-top: 2px; border-bottom: 1px solid var(--border); }
+.rv-tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px 11px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.rv-tab svg { opacity: .8; }
+.rv-tab:hover { color: var(--text); }
+.rv-tab.on { color: var(--text); border-bottom-color: var(--accent); }
+.rv-tab.on svg { color: var(--accent); opacity: 1; }
+
+.ov-scroll { flex: 1; overflow-y: auto; }
+.ov-grid { display: grid; grid-template-columns: minmax(0,1fr) 316px; gap: 22px; width: min(1160px, 100%); margin: 0 auto; padding: 22px 28px 40px; }
+@media (max-width: 1040px) { .ov-grid { grid-template-columns: 1fr; } }
+.ov-main { min-width: 0; }
+.ov-pad { padding: 22px 28px 40px; max-width: 1000px; }
+.section-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+
+.privacy-strip { display: flex; align-items: center; gap: 9px; padding: 8px 12px; margin-bottom: 16px; font-size: 11.5px; color: color-mix(in oklab, var(--ok) 80%, var(--text)); background: color-mix(in oklab, var(--ok) 11%, transparent); border: 1px solid color-mix(in oklab, var(--ok) 26%, transparent); border-radius: var(--r-md); }
+.privacy-strip svg { flex: none; color: var(--ok); }
+.privacy-strip b { color: color-mix(in oklab, var(--ok) 92%, var(--text)); font-weight: 650; }
+
+.brief { position: relative; overflow: hidden; padding: 24px 26px 22px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.brief::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); }
+.brief-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brief-depth { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; }
+.brief h2 { margin: 14px 0 8px; font-size: clamp(23px, 2.6vw, 32px); font-weight: 720; line-height: 1.12; letter-spacing: -0.03em; color: var(--text); max-width: 640px; }
+.brief > p { margin: 0; max-width: 660px; font-size: 13px; line-height: 1.65; color: var(--text-dim); }
+.brief-signals { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; margin-top: 20px; overflow: hidden; background: var(--border); border: 1px solid var(--border); border-radius: 10px; }
+.brief-signals article { padding: 12px 14px; background: var(--panel-2); }
+.brief-signals span { display: block; margin-bottom: 5px; font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); }
+.brief-signals strong { font-size: 15px; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.brief-load { display: flex; align-items: center; gap: 9px; margin-top: 14px; font-size: 13px; color: var(--text-dim); }
+.brief-cta { display: flex; align-items: center; gap: 16px; }
+.brief-cta::before { background: var(--accent); }
+.brief-cta-ic { flex: none; width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.brief-cta-ic svg { color: var(--accent); }
+.brief-cta-text { flex: 1; min-width: 0; }
+.brief-cta-text h2 { margin: 0 0 4px; font-size: 16px; font-weight: 680; letter-spacing: -0.01em; }
+.brief-cta-text p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+
+.ov-section { margin-top: 18px; }
+.section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+.section-heading h3 { margin: 4px 0 0; font-size: 16px; font-weight: 680; letter-spacing: -0.01em; }
+.section-heading.compact h3 { font-size: 14px; }
+.action-list { display: flex; flex-direction: column; gap: 7px; }
+.action-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-md); }
+.person-badge { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--avatar-ink); background: var(--spk-a); }
+.person-badge.me { background: var(--accent); color: var(--accent-ink); }
+.action-task { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.action-task b { font-size: 13px; font-weight: 550; color: var(--text); }
+.action-task small { font-size: 11px; color: var(--text-faint); }
+.due-chip { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 11px; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; }
+
+.ov-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+@media (max-width: 720px) { .ov-two { grid-template-columns: 1fr; } }
+.ov-card { padding: 16px 17px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.count-badge { font-size: 11px; font-weight: 650; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; padding: 1px 9px; }
+.decision-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.decision-list li { display: flex; gap: 9px; font-size: 12.5px; line-height: 1.5; color: var(--text); }
+.decision-mark { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 6px; display: grid; place-items: center; color: var(--ok); background: color-mix(in oklab, var(--ok) 15%, transparent); }
+.q-list { margin: 0; padding-left: 17px; display: flex; flex-direction: column; gap: 6px; }
+.q-list li { font-size: 12.5px; line-height: 1.55; color: var(--text-dim); }
+
+.ov-aside { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.aside-card { padding: 15px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); }
+.aside-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); }
+.ready-label { color: var(--ok); background: color-mix(in oklab, var(--ok) 14%, transparent); border-radius: 99px; padding: 1px 8px; letter-spacing: .04em; }
+.balance-bar { display: flex; height: 7px; border-radius: 99px; overflow: hidden; margin-bottom: 12px; background: var(--panel-2); }
+.balance-bar span { display: block; }
+.cv-row { display: flex; align-items: center; gap: 10px; padding: 7px 0; }
+.cv-name { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.cv-name b { font-size: 12.5px; font-weight: 600; }
+.cv-name small { font-size: 11px; color: var(--text-faint); }
+.cv-pct { font-size: 12px; color: var(--text-dim); }
+.email-preview { padding: 11px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); margin-bottom: 11px; }
+.email-preview b { display: block; font-size: 12.5px; margin-bottom: 5px; }
+.email-preview p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
+.quiet-btn { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; height: 34px; font-size: 12.5px; font-weight: 600; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); }
+.quiet-btn:hover { background: var(--panel-3); }
 
 /* Transcript */
 .tr-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 14px; }
@@ -351,6 +395,7 @@ const ICONS = {
   mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/>',
   phone: '<rect x="7" y="2.5" width="10" height="19" rx="2.5"/><line x1="10.5" y1="18.4" x2="13.5" y2="18.4"/>',
   cloud: '<path d="M7 18a4.5 4.5 0 0 1-.4-8.98A6 6 0 0 1 18.3 8.6 4.2 4.2 0 0 1 17.5 18H7z"/>',
+  shield: '<path d="M12 3l7 2.5v5c0 4.4-3 8-7 10-4-2-7-5.6-7-10v-5L12 3z"/><path d="M9 12l2 2 4-4"/>',
   plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><line x1="16.6" y1="16.6" x2="21" y2="21"/>',
   sparkle: '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9L12 3z"/>',
@@ -449,6 +494,7 @@ const S = {
   detail: null,             // full meta of the open meeting
   q: "",                    // sidebar search
   tq: "",                   // transcript search
+  tab: "overview",          // meeting view tab: overview | transcript | insights
   devices: null,
   calendar: [],
   rec: {recording: false},
@@ -877,61 +923,129 @@ function dismissNote(idx) {
   renderMain();
 }
 
-function summaryPanel(meta, busy) {
+/* Overview tab: privacy strip + Meeting Brief hero (or Summarize CTA), action
+   items, decisions/open-questions, and the right conversation + follow-up rail.
+   Maps entirely onto the real summary data. */
+function overviewHTML(meta, busy) {
   const s = meta.summary;
-  if (busy && !s) {
-    return `<div class="sum"><div class="sum-head"><span class="sum-title">${icon("sparkle", 12)} Summary</span></div>
-      <div class="sum-loading"><span class="spinner"></span> Reading the transcript and pulling out the highlights…</div></div>`;
-  }
-  if (!s) {
-    // No summary yet — surface the app's main payoff instead of hiding it
-    // behind the header button.
-    if (!(meta.turns || []).length) return "";
-    return `<div class="sum sum-cta">
-      <div class="sum-cta-ic">${icon("sparkle", 20)}</div>
-      <div class="sum-cta-text">
-        <div class="sum-cta-title">Summarize this meeting</div>
-        <div class="sum-cta-sub">Get a TL;DR, the decisions, action items with owners, and a ready-to-send follow-up email — written by your own Claude. Transcript text only, never audio.</div>
+  const hasTurns = (meta.turns || []).length > 0;
+
+  let lead;
+  if (s) {
+    lead = briefHero(meta, busy);
+  } else if (busy) {
+    lead = `<section class="brief brief-loading"><div class="section-kicker">${icon("sparkle", 14)} Meeting brief</div>
+      <div class="brief-load"><span class="spinner"></span> Reading the transcript and pulling out the outcome, decisions and next steps…</div></section>`;
+  } else if (hasTurns) {
+    lead = `<section class="brief brief-cta">
+      <div class="brief-cta-ic">${icon("sparkle", 22)}</div>
+      <div class="brief-cta-text">
+        <h2>Turn this into a decision brief</h2>
+        <p>The outcome, decisions, action items with owners, and a ready-to-send follow-up email — written by your own Claude. Transcript text only, never audio.</p>
       </div>
-      <button class="btn primary sum-cta-btn" onclick="summarizeMeeting('${meta.id}')">${icon("sparkle", 13)} Summarize</button>
-    </div>`;
+      <button class="btn primary" onclick="summarizeMeeting('${meta.id}')">${icon("sparkle", 13)} Summarize</button>
+    </section>`;
+  } else {
+    lead = `<div class="tr-empty">No speech was detected in this recording.</div>`;
   }
-  const ul = (arr) => arr && arr.length ? `<ul class="sum-list">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
-  const block = (label, arr) => arr && arr.length ? `<div class="sum-block"><div class="sum-label">${label}</div>${ul(arr)}</div>` : "";
 
+  // Action items as owner-badged rows.
   let actions = "";
-  if ((s.action_items || []).length) {
-    actions = `<div class="sum-block"><div class="sum-label">Action items</div><ul class="sum-actions">` +
-      s.action_items.map(a => {
-        const you = (a.owner || "").toLowerCase() === "you";
-        return `<li><span class="sum-owner${you ? " me" : ""}">${esc(a.owner || "—")}</span>${esc(a.task)}${a.due ? `<span class="sum-due">${esc(a.due)}</span>` : ""}</li>`;
-      }).join("") + `</ul></div>`;
+  if (s && (s.action_items || []).length) {
+    const rows = s.action_items.map(a => {
+      const you = (a.owner || "").toLowerCase() === "you";
+      const initial = esc((a.owner || "—").slice(0, 1).toUpperCase());
+      return `<div class="action-row">
+        <span class="person-badge${you ? " me" : ""}">${initial}</span>
+        <span class="action-task"><b>${esc(a.task)}</b><small>${esc(a.owner || "—")}</small></span>
+        ${a.due ? `<span class="due-chip">${icon("calendar", 12)} ${esc(a.due)}</span>` : ""}
+      </div>`;
+    }).join("");
+    actions = `<section class="ov-section">
+      <div class="section-heading"><div><span class="section-kicker">What happens next</span><h3>Action items</h3></div></div>
+      <div class="action-list">${rows}</div>
+    </section>`;
   }
 
-  const email = s.follow_up_email || {};
-  let emailBlock = "";
-  if (email.body) {
-    emailBlock = `<div class="sum-email">
-      <div class="sum-email-head"><span class="sum-label">Draft follow-up email</span>
-        <button class="sum-copy" onclick="copySummaryEmail('${meta.id}')">${icon("copy", 12)} Copy</button></div>
-      ${email.subject ? `<div class="sum-subject">${esc(email.subject)}</div>` : ""}
-      <div class="sum-body">${esc(email.body)}</div></div>`;
+  // Decisions + open questions, side by side.
+  let two = "";
+  if (s && ((s.decisions || []).length || (s.open_questions || []).length)) {
+    const dec = (s.decisions || []).length ? `<article class="ov-card">
+      <div class="section-heading compact"><div><span class="section-kicker">Locked in</span><h3>Decisions</h3></div><span class="count-badge">${s.decisions.length}</span></div>
+      <ul class="decision-list">${s.decisions.map(d => `<li><span class="decision-mark">${icon("check", 12)}</span><span>${esc(d)}</span></li>`).join("")}</ul>
+    </article>` : "";
+    const oq = (s.open_questions || []).length ? `<article class="ov-card">
+      <div class="section-heading compact"><div><span class="section-kicker">Needs an answer</span><h3>Open questions</h3></div></div>
+      <ul class="q-list">${s.open_questions.map(q => `<li>${esc(q)}</li>`).join("")}</ul>
+    </article>` : "";
+    two = `<section class="ov-two">${dec}${oq}</section>`;
   }
 
-  return `<div class="sum">
-    <div class="sum-head"><span class="sum-title">${icon("sparkle", 12)} Summary</span>${busy ? `<span class="sum-loading"><span class="spinner"></span> updating…</span>` : ""}</div>
-    ${s.tldr ? `<p class="sum-tldr">${esc(s.tldr)}</p>` : ""}
-    <div class="sum-cols">
-      <div>${actions}${block("Open questions", s.open_questions)}</div>
-      <div>${block("Decisions", s.decisions)}${block("Follow-ups", s.follow_ups)}${block("Key points", s.key_points)}</div>
-    </div>
-    ${emailBlock}
+  // Key points + follow-ups, if present.
+  let more = "";
+  const kp = (s && (s.key_points || []).length) ? `<article class="ov-card">
+    <div class="section-heading compact"><div><span class="section-kicker">Discussed</span><h3>Key points</h3></div></div>
+    <ul class="q-list">${s.key_points.map(x => `<li>${esc(x)}</li>`).join("")}</ul></article>` : "";
+  const fu = (s && (s.follow_ups || []).length) ? `<article class="ov-card">
+    <div class="section-heading compact"><div><span class="section-kicker">Later</span><h3>Follow-ups</h3></div></div>
+    <ul class="q-list">${s.follow_ups.map(x => `<li>${esc(x)}</li>`).join("")}</ul></article>` : "";
+  if (kp || fu) more = `<section class="ov-two">${kp}${fu}</section>`;
+
+  const mainCol = `<div class="ov-main">
+    <div class="privacy-strip">${icon("shield", 14)}<span><b>Audio stayed on this Mac.</b> Summaries use your own Claude account — transcript text only, never audio.</span></div>
+    ${lead}${actions}${two}${more}
   </div>`;
+
+  const aside = `<aside class="ov-aside">${conversationAside(meta)}${followupCard(meta)}</aside>`;
+  return `<div class="ov-grid">${mainCol}${aside}</div>`;
 }
 
+/* The editorial "Meeting brief" hero: TL;DR as a bold headline + a signal grid
+   built from real meeting facts. */
+function briefHero(meta, busy) {
+  const s = meta.summary;
+  const tldr = (s.tldr || "").trim();
+  // First sentence becomes the headline; the rest is the narrative.
+  const m = tldr.match(/^(.*?[.!?])(\s+)(.*)$/s);
+  const headline = m ? m[1] : tldr;
+  const narrative = m ? m[3] : "";
+  const speakers = Object.keys(meta.speakers || {}).length;
+  const signals = [
+    ["Length", meta.duration ? fmtTs(meta.duration) : "—"],
+    ["Speakers", String(speakers || "—")],
+    ["Decisions", String((s.decisions || []).length)],
+    ["Action items", String((s.action_items || []).length)],
+  ];
+  return `<section class="brief">
+    <div class="brief-top"><span class="section-kicker">${icon("sparkle", 14)} Meeting brief</span>
+      <span class="brief-depth mono">${(s.engine === "claude" ? "Claude" : "On-device")}${busy ? " · updating…" : ""}</span></div>
+    <h2>${esc(headline || "Summary ready")}</h2>
+    ${narrative ? `<p>${esc(narrative)}</p>` : ""}
+    <div class="brief-signals">${signals.map(([k, v]) =>
+      `<article><span>${k}</span><strong>${esc(v)}</strong></article>`).join("")}</div>
+  </section>`;
+}
+
+/* Right-rail follow-up draft card. */
+function followupCard(meta) {
+  const email = (meta.summary || {}).follow_up_email || {};
+  if (!email.body) return "";
+  return `<section class="aside-card followup-card">
+    <div class="aside-head"><span>Follow-up draft</span><span class="ready-label">Ready</span></div>
+    <div class="email-preview">${email.subject ? `<b>${esc(email.subject)}</b>` : ""}<p>${esc(email.body)}</p></div>
+    <button class="quiet-btn" onclick="copySummaryEmail('${meta.id}')">${icon("copy", 13)} Copy email</button>
+  </section>`;
+}
+function setTab(tab) {
+  if (S.tab === tab) return;
+  S.tab = tab;
+  renderMain();
+  if (tab === "transcript") drawWave();
+}
+
+/* Compact speaker chips + the re-cluster control (Transcript tab). */
 function speakerStrip(meta) {
   const stats = (meta.stats || {}).per_speaker || {};
-  const others = Object.keys(meta.speakers || {}).filter(k => k !== "you").length;
   let chips = "";
   for (const [key, name] of Object.entries(meta.speakers || {})) {
     const st = stats[key] || {};
@@ -954,25 +1068,6 @@ function speakerStrip(meta) {
   }
   const sel = meta.expected_speakers || "";
   const flash = S.reclusterFlash ? `<span class="spk-flash">re-clustered in ${S.reclusterFlash} s</span>` : "";
-  let stat = "";
-  if (S.insightsOpen) {
-    let rows = "";
-    for (const [key, name] of Object.entries(meta.speakers || {})) {
-      const st = stats[key] || {};
-      const fillers = Object.entries(st.fillers || {}).slice(0, 3).map(([w, c]) => `${esc(w)} ×${c}`).join(" · ") || "—";
-      rows += `<tr>
-        <td class="who" style="color:${speakerColor(meta, key)}">${esc(name)}</td>
-        <td><span class="num mono">${fmtTs(st.seconds || 0)}</span> (${Math.round((st.share || 0) * 100)}%)</td>
-        <td><span class="num mono">${(st.words || 0).toLocaleString()}</span> · <span class="num mono">${st.wpm || 0}</span> wpm</td>
-        <td class="num mono">${st.questions || 0}</td>
-        <td class="num mono">${fmtTs(st.longest_turn_seconds || 0)}</td>
-        <td>${fillers}</td>
-      </tr>`;
-    }
-    stat = `<div class="spk-stats"><table>
-      <thead><tr><th></th><th>Talk time</th><th>Words · pace</th><th>Questions</th><th>Longest turn</th><th>Fillers</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-  }
   return `<div class="spk-strip">
     <div class="spk-row">${chips}
       <div class="spk-tools">
@@ -984,13 +1079,56 @@ function speakerStrip(meta) {
           </select>
           ${flash}
         </div>
-        <button class="spk-toggle${S.insightsOpen ? " open" : ""}" onclick="toggleInsights()">Insights ${icon("chevronDown", 12)}</button>
       </div>
-    </div>${stat}</div>`;
+    </div></div>`;
 }
-function toggleInsights() {
-  S.insightsOpen = !S.insightsOpen;
-  renderMain();
+
+/* Full conversation stats table (Insights tab). */
+function insightsTable(meta) {
+  const stats = (meta.stats || {}).per_speaker || {};
+  if (!Object.keys(stats).length) return `<div class="tr-empty">No conversation stats for this meeting.</div>`;
+  let rows = "";
+  for (const [key, name] of Object.entries(meta.speakers || {})) {
+    const st = stats[key] || {};
+    const fillers = Object.entries(st.fillers || {}).slice(0, 3).map(([w, c]) => `${esc(w)} ×${c}`).join(" · ") || "—";
+    rows += `<tr>
+      <td class="who" style="color:${speakerColor(meta, key)}">${esc(name)}</td>
+      <td><span class="num mono">${fmtTs(st.seconds || 0)}</span> (${Math.round((st.share || 0) * 100)}%)</td>
+      <td><span class="num mono">${(st.words || 0).toLocaleString()}</span> · <span class="num mono">${st.wpm || 0}</span> wpm</td>
+      <td class="num mono">${st.questions || 0}</td>
+      <td class="num mono">${fmtTs(st.longest_turn_seconds || 0)}</td>
+      <td>${fillers}</td>
+    </tr>`;
+  }
+  return `<div class="ov-pad"><div class="section-kicker">${icon("wave", 13)} Conversation insights</div>
+    <div class="spk-stats"><table>
+      <thead><tr><th></th><th>Talk time</th><th>Words · pace</th><th>Questions</th><th>Longest turn</th><th>Fillers</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+}
+
+/* Right-rail conversation card (Overview): talk balance + per-speaker pace. */
+function conversationAside(meta) {
+  const stats = (meta.stats || {}).per_speaker || {};
+  const entries = Object.entries(meta.speakers || {});
+  if (!entries.length) return "";
+  const bar = entries.map(([key]) => {
+    const pct = Math.round(((stats[key] || {}).share || 0) * 100);
+    return `<span style="width:${pct}%;background:${speakerColor(meta, key)}"></span>`;
+  }).join("");
+  const rows = entries.map(([key, name]) => {
+    const st = stats[key] || {};
+    const c = speakerColor(meta, key);
+    return `<div class="cv-row">
+      <span class="person-badge" style="background:${c}">${esc(name.slice(0, 1).toUpperCase())}</span>
+      <span class="cv-name"><b style="color:${c}">${esc(name)}</b><small>${fmtTs(st.seconds || 0)} · ${st.wpm || 0} wpm</small></span>
+      <span class="cv-pct mono">${Math.round((st.share || 0) * 100)}%</span>
+    </div>`;
+  }).join("");
+  return `<section class="aside-card">
+    <div class="aside-head"><span>Conversation</span></div>
+    <div class="balance-bar">${bar}</div>
+    ${rows}
+  </section>`;
 }
 function editSpeaker(key) {
   const meta = S.detail;
@@ -1144,21 +1282,35 @@ function renderReview(meta) {
     return;
   }
 
-  html += speakerStrip(meta);
+  // Tabs: Overview (brief) · Transcript · Insights.
+  const tab = S.tab || "overview";
+  html += `<div class="rv-tabs">
+    <button class="rv-tab${tab === "overview" ? " on" : ""}" onclick="setTab('overview')">${icon("sparkle", 13)} Overview</button>
+    <button class="rv-tab${tab === "transcript" ? " on" : ""}" onclick="setTab('transcript')">${icon("doc", 13)} Transcript</button>
+    <button class="rv-tab${tab === "insights" ? " on" : ""}" onclick="setTab('insights')">${icon("wave", 13)} Insights</button>
+  </div>`;
+
   const ql = S.tq.trim().toLowerCase();
   const count = ql ? (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length : 0;
-  html += `
-  <div class="tr-wrap">
-    <div class="tr-toolbar">
-      <span class="tr-label">Transcript</span>
-      <span class="tr-count" id="trCount">${ql ? `${count} match${count === 1 ? "" : "es"}` : ""}</span>
-      <div class="tr-search">
-        ${icon("search", 13)}
-        <input type="text" id="trSearch" placeholder="Find in transcript" value="${esc(S.tq)}" oninput="trSearch(this.value)">
+  if (tab === "transcript") {
+    html += `
+    <div class="tr-wrap">
+      ${speakerStrip(meta)}
+      <div class="tr-toolbar">
+        <span class="tr-label">Transcript</span>
+        <span class="tr-count" id="trCount">${ql ? `${count} match${count === 1 ? "" : "es"}` : ""}</span>
+        <div class="tr-search">
+          ${icon("search", 13)}
+          <input type="text" id="trSearch" placeholder="Find in transcript" value="${esc(S.tq)}" oninput="trSearch(this.value)">
+        </div>
       </div>
-    </div>
-    <div class="tr-scroll">${summaryPanel(meta, sumBusy)}<div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
-  </div>`;
+      <div class="tr-scroll"><div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
+    </div>`;
+  } else if (tab === "insights") {
+    html += `<div class="ov-scroll">${insightsTable(meta)}</div>`;
+  } else {
+    html += `<div class="ov-scroll">${overviewHTML(meta, sumBusy)}</div>`;
+  }
 
   if (hasTurns && (AU.mic || AU.sys)) {
     html += `
@@ -1575,7 +1727,7 @@ async function openMeeting(id) {
     const meta = await api("/api/meetings/" + id);
     const switched = !S.detail || S.detail.id !== id;
     S.detail = meta;
-    if (switched) { S.insightsOpen = false; transportTeardown(); }
+    if (switched) { S.tab = "overview"; transportTeardown(); }
     if (meta.status === "done" && (switched || !(AU.mic || AU.sys))) transportSetup(meta);
     renderSidebar();
     renderMain();
