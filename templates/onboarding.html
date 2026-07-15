@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to MeetingScribe</title>
+<style>
+  :root {
+    --bg: #101014; --panel: #17171c; --panel-2: #1e1e24; --border: #2a2a32;
+    --text: #ececf1; --text-dim: #9a9aa5; --text-faint: #6b6b76;
+    --accent: #5fb8c9; --ok: #63c78a; --warn: #d9a44a; --danger: #e0604f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); min-height: 100vh;
+    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; display: grid; place-items: center; padding: 32px 16px;
+  }
+  button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+  input { font: inherit; color: inherit; outline: none; }
+  a { color: var(--accent); }
+  .wrap { width: 100%; max-width: 640px; }
+  h1 { font-size: 24px; letter-spacing: -0.02em; }
+  .lede { color: var(--text-dim); margin: 8px 0 26px; font-size: 14.5px; }
+  .lede b { color: var(--text); }
+  .step {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+    padding: 15px 16px; margin-bottom: 10px; display: flex; gap: 13px; align-items: flex-start;
+  }
+  .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 5px;
+    background: var(--text-faint); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--danger); }
+  .step h3 { font-size: 14.5px; }
+  .step .body { flex: 1; min-width: 0; }
+  .step p { color: var(--text-dim); font-size: 13px; margin-top: 3px; }
+  .step .status { font-size: 12.5px; margin-top: 6px; color: var(--text-dim); }
+  .step .status.ok { color: var(--ok); } .step .status.warn { color: var(--warn); }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 13px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2);
+    font-size: 13px; font-weight: 600;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #08222a; }
+  .btn:disabled { opacity: .5; }
+  .fields { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .fields input {
+    flex: 1; min-width: 150px; height: 32px; padding: 0 10px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--panel-2); font-size: 13px;
+  }
+  .code { font-family: ui-monospace, monospace; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; font-size: 12px; }
+  .finish { margin-top: 22px; display: flex; align-items: center; gap: 14px; }
+  .finish .btn { height: 40px; padding: 0 22px; font-size: 14.5px; }
+  .finish span { color: var(--text-faint); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Welcome to MeetingScribe</h1>
+  <p class="lede">Record any meeting, get a speaker-labelled transcript with live captions,
+  and an AI summary — <b>everything runs on this Mac</b>. Audio and transcripts never leave
+  it unless you choose to sync a meeting to your phone. A minute of setup makes it all work.</p>
+
+  <div class="step" id="st-account">
+    <div class="dot" id="d-account"></div>
+    <div class="body">
+      <h3>Read meetings on your phone <span style="color:var(--text-faint);font-weight:450">— optional</span></h3>
+      <p>Sign in once and any meeting you toggle “View on phone” becomes readable at
+      <a href="https://5uh76ypz.insforge.site" target="_blank">5uh76ypz.insforge.site</a>
+      — transcript and summary text only, never audio. Skip this and MeetingScribe is 100% offline.</p>
+      <div id="account-ui"></div>
+    </div>
+  </div>
+
+  <div class="step" id="st-cal">
+    <div class="dot" id="d-cal"></div>
+    <div class="body">
+      <h3>Connect your calendar</h3>
+      <p>Recordings name themselves after the meeting happening right now, and you get a
+      “Join &amp; record?” reminder when an event starts. Works with every calendar your Mac
+      knows — for <b>Google Calendar</b>, add your Google account under
+      System Settings → Internet Accounts and tick Calendars.</p>
+      <div class="status" id="s-cal"></div>
+      <div class="row">
+        <button class="btn primary" onclick="connectCalendar()">Connect calendar</button>
+        <button class="btn" onclick="openSettings('internet-accounts')">Add Google account…</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" id="st-audio">
+    <div class="dot" id="d-audio"></div>
+    <div class="body">
+      <h3>Audio devices</h3>
+      <p>Your mic records “You”. To also capture the <b>other side</b> of online calls,
+      the free BlackHole driver is needed once: <span class="code">brew install blackhole-2ch</span>
+      (or re-run <span class="code">bash setup.sh</span>).</p>
+      <div class="status" id="s-audio">Checking…</div>
+    </div>
+  </div>
+
+  <div class="step" id="st-llm">
+    <div class="dot" id="d-llm"></div>
+    <div class="body">
+      <h3>On-device AI</h3>
+      <p>Summaries, transcript tidy-up and the practice interviewer run on the Neural Engine
+      through Apple Intelligence — nothing goes to the cloud.</p>
+      <div class="status" id="s-llm">Checking…</div>
+      <div class="row" id="llm-fix" style="display:none">
+        <button class="btn" onclick="openSettings('apple-intelligence')">Open Apple Intelligence settings…</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="step" id="st-notif">
+    <div class="dot warn" id="d-notif"></div>
+    <div class="body">
+      <h3>Notifications</h3>
+      <p>MeetingScribe nudges you to record when a calendar event starts or when it notices
+      you're in a call, and tells you when a transcript is ready. macOS asks for permission
+      the first time the app runs — choose <b>Allow</b>. Change it any time in
+      System Settings → Notifications.</p>
+      <div class="row">
+        <button class="btn" onclick="openSettings('notifications')">Open Notification settings…</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="finish">
+    <button class="btn primary" onclick="finish()">Start using MeetingScribe</button>
+    <span>Every step above can be finished later — nothing here is required.</span>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+const post = (path, body) => api(path, {method: "POST",
+  headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+
+/* ---- account ---- */
+let AUTH = {signed_in: false};
+let authMode = "signin";
+let authEmail = "";
+async function refreshAccount() {
+  try { AUTH = await api("/api/auth/state"); } catch (e) {}
+  $("d-account").className = "dot" + (AUTH.signed_in ? " ok" : "");
+  const ui = $("account-ui");
+  if (AUTH.signed_in) {
+    ui.innerHTML = `<div class="status ok">✓ Signed in as ${AUTH.email || "your account"}</div>`;
+    return;
+  }
+  if (authMode === "verify") {
+    ui.innerHTML = `
+      <div class="status">We emailed a 6-digit code to <b>${authEmail}</b>.</div>
+      <div class="fields"><input id="af-code" placeholder="123456" maxlength="6" inputmode="numeric">
+      <button class="btn primary" onclick="verifyCode()">Verify</button></div>`;
+    return;
+  }
+  ui.innerHTML = `
+    <div class="row">
+      <button class="btn primary" onclick="google()">Continue with Google</button>
+      <span style="color:var(--text-faint);font-size:12px">or use email:</span>
+    </div>
+    <div class="fields">
+      <input id="af-email" type="email" placeholder="Email" autocomplete="username">
+      <input id="af-pass" type="password" placeholder="Password" autocomplete="new-password">
+      <button class="btn" onclick="emailAuth(false)">Sign in</button>
+      <button class="btn" onclick="emailAuth(true)">Create account</button>
+    </div>
+    <div class="status" id="af-msg"></div>`;
+}
+async function emailAuth(signup) {
+  authEmail = $("af-email").value.trim();
+  const password = $("af-pass").value;
+  if (!authEmail || !password) { $("af-msg").textContent = "Enter an email and password."; return; }
+  try {
+    const r = await post(signup ? "/api/auth/signup" : "/api/auth/signin",
+                         {email: authEmail, password});
+    if (r.needs_verification) { authMode = "verify"; }
+    refreshAccount();
+  } catch (e) { $("af-msg").textContent = e.message; }
+}
+async function verifyCode() {
+  try {
+    await post("/api/auth/verify", {email: authEmail, code: $("af-code").value});
+    authMode = "signin";
+    refreshAccount();
+  } catch (e) { alert(e.message); }
+}
+async function google() {
+  await post("/api/auth/oauth/google/start", {});
+  const until = Date.now() + 180000;
+  const timer = setInterval(async () => {
+    const st = await api("/api/auth/state");
+    if (st.signed_in || Date.now() > until) { clearInterval(timer); refreshAccount(); }
+  }, 1500);
+}
+
+/* ---- calendar ---- */
+async function checkCalendar(interactive) {
+  const s = $("s-cal");
+  try {
+    const r = await api("/api/calendar/today");
+    if (r.available === false || r.error) {
+      $("d-cal").className = "dot warn";
+      s.className = "status warn";
+      s.textContent = interactive
+        ? "Calendar access was declined — allow it in System Settings → Privacy & Security → Calendars."
+        : "Not connected yet.";
+    } else {
+      $("d-cal").className = "dot ok";
+      s.className = "status ok";
+      const n = (r.events || []).length;
+      s.textContent = `✓ Connected — ${n} event${n === 1 ? "" : "s"} on today's calendar.`;
+    }
+  } catch (e) {
+    s.textContent = "Could not check the calendar.";
+  }
+}
+function connectCalendar() {
+  $("s-cal").textContent = "Asking macOS for calendar access…";
+  checkCalendar(true);
+}
+
+/* ---- audio ---- */
+async function checkAudio() {
+  const s = $("s-audio");
+  try {
+    const d = await api("/api/devices");
+    const mic = d.mic, sys = d.system;
+    if (mic && sys) {
+      $("d-audio").className = "dot ok";
+      s.className = "status ok";
+      s.textContent = `✓ Mic: ${mic.name} · Meeting audio: ${sys.name}`;
+    } else if (mic) {
+      $("d-audio").className = "dot warn";
+      s.className = "status warn";
+      s.textContent = `Mic ready (${mic.name}) — install BlackHole to also capture the other side of calls.`;
+    } else {
+      $("d-audio").className = "dot err";
+      s.className = "status warn";
+      s.textContent = "No microphone found.";
+    }
+  } catch (e) { s.textContent = "Could not check audio devices."; }
+}
+
+/* ---- on-device AI ---- */
+async function checkLLM() {
+  const s = $("s-llm");
+  try {
+    const d = await api("/api/llm/status");
+    if (d.available) {
+      $("d-llm").className = "dot ok";
+      s.className = "status ok";
+      s.textContent = "✓ Apple Intelligence is ready.";
+    } else {
+      $("d-llm").className = "dot warn";
+      s.className = "status warn";
+      s.textContent = d.message || "Apple Intelligence is not available.";
+      if (d.reason === "apple_intelligence_disabled") $("llm-fix").style.display = "flex";
+    }
+  } catch (e) { s.textContent = "Could not check."; }
+}
+
+function openSettings(target) { post("/api/onboarding/open-settings", {target}).catch(() => {}); }
+async function finish() {
+  await post("/api/onboarding/done");
+  location.href = "/";
+}
+
+refreshAccount();
+checkCalendar(false);
+checkAudio();
+checkLLM();
+</script>
+</body>
+</html>

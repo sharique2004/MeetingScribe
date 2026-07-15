@@ -15,7 +15,7 @@ import traceback
 import webbrowser
 from datetime import datetime
 
-from flask import Flask, abort, jsonify, request, send_from_directory
+from flask import Flask, abort, jsonify, redirect, request, send_from_directory
 
 import insforge_client
 import live_captions
@@ -236,9 +236,51 @@ def _start_processing(meeting_id):
 
 # ------------------------------------------------------------------ routes ----
 
+ONBOARDING_VERSION = 1
+
+
 @app.get("/")
 def index():
+    if int(load_config().get("onboarded") or 0) < ONBOARDING_VERSION:
+        return redirect("/onboarding")
     return send_from_directory(str(BASE_DIR / "templates"), "index.html")
+
+
+@app.get("/onboarding")
+def onboarding():
+    return send_from_directory(str(BASE_DIR / "templates"), "onboarding.html")
+
+
+@app.post("/api/onboarding/done")
+def onboarding_done():
+    from config import CONFIG_PATH
+    try:
+        current = json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
+    except (ValueError, OSError):
+        current = {}
+    current["onboarded"] = ONBOARDING_VERSION
+    CONFIG_PATH.write_text(json.dumps(current, indent=1), encoding="utf-8")
+    return jsonify({"ok": True})
+
+
+# Deep links the onboarding page can open (WKWebView can't open custom
+# URL schemes itself, so the server does it).
+_SETTINGS_PANES = {
+    "internet-accounts": "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension",
+    "apple-intelligence": "x-apple.systempreferences:com.apple.Siri-Settings.extension",
+    "notifications": "x-apple.systempreferences:com.apple.Notifications-Settings.extension",
+    "microphone": "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+}
+
+
+@app.post("/api/onboarding/open-settings")
+def onboarding_open_settings():
+    target = (request.get_json(force=True, silent=True) or {}).get("target")
+    url = _SETTINGS_PANES.get(target)
+    if not url or sys.platform != "darwin":
+        return jsonify({"error": "unknown settings pane"}), 400
+    subprocess.Popen(["open", url])
+    return jsonify({"ok": True})
 
 
 @app.get("/api/status")

@@ -1,22 +1,27 @@
 # 🎙️ MeetingScribe
 
-Record any meeting on this PC, get a full transcript of **who said what**, and
-review your own speaking performance — talk time, pace, questions asked,
-filler words. Everything runs **locally on your machine**: no cloud, no API
-keys, no subscription, and your meeting audio never leaves your PC.
+Record any meeting, watch **live captions** as people speak, get a full
+transcript of **who said what**, and one click writes an **AI summary with
+action items** — all of it **on your machine**. Transcription runs on
+Apple's Neural Engine, the AI runs through Apple Intelligence, and nothing
+is uploaded: no cloud, no API keys, no subscription. Optionally, sync a
+meeting's transcript + summary (text only, never audio) to read it on your
+phone.
 
 ## How to start
 
 **Windows:** double-click **`setup.bat`** once, then **`run.bat`** from then on.
 **macOS:** open Terminal in this folder and run `bash setup.sh` once. That
-also installs **MeetingScribe.app** into Applications — from then on just
-launch it like any Mac app (Spotlight, Launchpad, or drag it to the Dock; no
-Terminal needed). Quit it with the **⏻ Quit** button in the web UI.
-(`run.command` still works if you prefer the Terminal.)
+builds and installs **MeetingScribe.app** — a real Mac app with a Dock icon,
+a menu-bar mic, native notifications, and a floating recording panel. Launch
+it like any app (Spotlight, Launchpad, Dock). The first launch walks you
+through a one-minute setup: optional sign-in for phone sync, calendar,
+audio, notifications, and Apple Intelligence.
 
-A browser tab opens at <http://127.0.0.1:5005>. Keep the console/Terminal
-window open while you use the app — closing it stops MeetingScribe (your
-recordings are always saved first).
+The app window is the interface; closing the window keeps MeetingScribe
+running in the menu bar (recordings continue). Quit from the menu-bar icon
+or with ⌘Q. (`run.command` still works if you prefer a Terminal + browser
+tab at <http://127.0.0.1:5005>.)
 
 ## Setting up on a Mac
 
@@ -74,13 +79,19 @@ where your meetings actually happen.
    - **🧑‍🤝‍🧑 In person**: everyone shares this PC's microphone and voices are
      told apart automatically.
 3. If you know how many people are talking, enter the number — it makes
-   speaker separation more accurate. Otherwise leave it on auto.
-4. When the meeting ends, press **■ Stop & transcribe**. On macOS 26+
+   speaker separation more accurate. Otherwise leave it on auto. You can
+   also lock the **language** for better accuracy on non-English calls.
+4. While you record, **live captions** appear in real time (macOS 26+) —
+   your words as "You", the meeting audio as "Them" — straight from the
+   Neural Engine, on-device. They're a draft: the full-quality pass with
+   speaker separation happens when you stop. Attendee names from the
+   calendar event are used to bias recognition, so names come out right.
+5. When the meeting ends, press **■ Stop & transcribe**. On macOS 26+
    transcription uses Apple's on-device Speech engine (Neural Engine) — a
    45-minute meeting finishes in **a minute or two**, with almost no CPU use
    or heat. Older Macs fall back to Whisper on the GPU, and other machines to
    Whisper on the CPU (about a third of the meeting's length).
-5. Open the meeting to read the transcript. Click the **meeting title** to
+6. Open the meeting to read the transcript. Click the **meeting title** to
    rename the meeting, a **speaker name** to rename them (e.g. "Speaker 1" →
    "Priya"), or a **timestamp** to replay that moment. Export as
    Markdown/Text, or copy to clipboard to paste into ChatGPT/Claude for
@@ -89,12 +100,12 @@ where your meetings actually happen.
    selector above the stats: set the real number and the transcript is
    re-clustered instantly (the voice analysis is saved, so nothing needs to
    be re-transcribed).
-6. **✨ Tidy** (optional): if the transcript has echo duplicates or split-up
+7. **✨ Tidy** (optional): if the transcript has echo duplicates or split-up
    speakers, this button cleans it **fully on-device** with Apple
    Intelligence (macOS 26+, the on-device model on the Neural Engine —
    nothing leaves your Mac). Every edit is validated locally (no words can
    be invented), and a backup is kept so you can **↩ Undo tidy**.
-7. **Summary**: one click writes a TL;DR, key points, decisions, action
+8. **Summary**: one click writes a TL;DR, key points, decisions, action
    items with owners, open questions and a ready-to-send follow-up email —
    also fully on-device with Apple Intelligence. Long meetings are
    summarized in passes, so any length works.
@@ -109,6 +120,29 @@ job description and your resume so it interviews you in context. It runs
 **entirely on this Mac** with Apple Intelligence — questions, answers,
 resume and scores never leave the machine. Past sessions are saved as
 Markdown. (Personal practice only — don't run it as a service for others.)
+
+## On your phone
+
+Meetings stay on this Mac unless you say otherwise. Sign in (Google or
+email — the onboarding offers it, or the sidebar footer) and every meeting
+gets a **📱 View on phone** button: it uploads that meeting's transcript
+and summary **text (never audio)** to your private, sign-in-protected space,
+readable at **<https://5uh76ypz.insforge.site>** on any phone. Edits sync
+automatically (renames, tidy, new summaries); toggling off or deleting the
+meeting removes the phone copy. Access is enforced per-account in the
+database (row-level security) — nobody else can read your rows.
+
+## Meeting nudges
+
+MeetingScribe notices meetings so you don't forget to record:
+
+- **Calendar**: when an event is starting, a notification asks
+  *"Join and start recording?"* — one tap starts a recording named after
+  the event, and the floating panel confirms it's running.
+- **Call detection**: if something has been using your microphone for a
+  while (Zoom, Teams, a Meet tab — anything) and you're not recording, you
+  get *"In a call? Record this meeting?"* — at most once an hour, decided
+  entirely on-device.
 
 ## Tips for best results
 
@@ -131,10 +165,17 @@ Create/edit `config.json` in this folder (defaults shown):
   "language": null,
   "diarization_threshold": 0.6,
   "auto_route_macos": true,
+  "live_captions": true,
+  "vocabulary": [],
   "port": 5005,
   "open_browser": true
 }
 ```
+
+- `live_captions`: show on-device captions while recording (macOS 26+).
+- `vocabulary`: extra words/names recognition should be biased toward,
+  e.g. `["Kubernetes", "Priya", "InsForge"]` — calendar attendee names are
+  added automatically per meeting.
 
 - `whisper_model`: `auto` / `tiny` / `base` / `small` / `medium` / `large-v3`
   / `large-v3-turbo`. Bigger = more accurate, slower. `auto` picks
