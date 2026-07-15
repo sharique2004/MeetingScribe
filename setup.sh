@@ -71,8 +71,8 @@ if [ "${MACOS_MAJOR:-0}" -ge 26 ] && command -v xcrun >/dev/null 2>&1; then
     fi
 fi
 
-# Build the double-clickable MeetingScribe.app (Dock/Spotlight launcher).
-bash tools/make_mac_app.sh || echo "(Could not build MeetingScribe.app — run.command still works.)"
+# Build the native MeetingScribe.app (menu bar, notifications, Dock).
+bash tools/build_mac_app.sh || echo "(Could not build MeetingScribe.app — run.command still works.)"
 
 # BlackHole gives MeetingScribe a copy of the system audio (the other
 # meeting participants). Routing is automatic once the driver exists.
