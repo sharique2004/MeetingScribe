@@ -65,7 +65,7 @@ if [ "${MACOS_MAJOR:-0}" -ge 26 ] && command -v xcrun >/dev/null 2>&1; then
     fi
     if xcrun swiftc -O -parse-as-library tools/apple_llm.swift \
             -o "$HOME/.meetingscribe/bin/apple_llm" 2>/dev/null; then
-        echo "On-device AI helper built (Apple Intelligence: summaries, tidy, practice)."
+        echo "On-device AI helper built (Apple Intelligence: summaries and tidy)."
     else
         echo "(On-device AI helper did not build — AI features need macOS 26+.)"
     fi

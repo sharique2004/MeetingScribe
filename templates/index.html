@@ -63,9 +63,6 @@ input, select { font: inherit; color: inherit; }
 .sb-new { margin: 6px 14px 10px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 12.5px; transition: filter .12s; }
 .sb-new:hover { filter: brightness(1.07); }
 .sb-new.is-active { outline: 2px solid color-mix(in oklab, var(--accent) 50%, transparent); outline-offset: 2px; }
-  .sb-practice { margin: 0 14px 10px; height: 30px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); font-weight: 550; font-size: 12px; transition: background .12s, color .12s; }
-  .sb-practice:hover { background: var(--panel-2); color: var(--text); }
-  .sb-practice svg { color: var(--accent); }
 .sb-search { position: relative; margin: 0 14px 10px; }
 .sb-search input { width: 100%; height: 28px; padding: 0 9px 0 28px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel); color: var(--text); outline: none; font-size: 12px; }
 .sb-search input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
@@ -197,6 +194,16 @@ input, select { font: inherit; color: inherit; }
 
 /* Summary panel */
 .sum { margin: 2px 0 18px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); padding: 14px 16px 16px; }
+.sum-cta { display: flex; align-items: center; gap: 15px; padding: 16px 18px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 8%, var(--panel)), var(--panel));
+  border-color: color-mix(in oklab, var(--accent) 30%, var(--border)); }
+.sum-cta-ic { flex: none; width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center;
+  background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.sum-cta-ic svg { color: var(--accent); }
+.sum-cta-text { flex: 1; min-width: 0; }
+.sum-cta-title { font-size: 14px; font-weight: 650; margin-bottom: 3px; }
+.sum-cta-sub { font-size: 12.5px; line-height: 1.5; color: var(--text-dim); max-width: 640px; }
+.sum-cta-btn { flex: none; }
 .sum-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .sum-title { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); }
 .sum-title svg { color: var(--accent); }
@@ -613,7 +620,6 @@ function renderSidebar() {
       <div class="sb-badge" title="All processing happens on this Mac. Nothing is uploaded."><span class="dot"></span>local</div>
     </div>
     <button class="sb-new${S.view === "new" ? " is-active" : ""}" onclick="goNew()">${icon("plus", 13, 2.2)} New recording</button>
-    <button class="sb-practice" onclick="location.href='/practice'" title="Practice a recruiter screen with an AI interviewer that judges your spoken answers">${icon("sparkle", 13)} Practice interview</button>
     <div class="sb-search">
       ${icon("search", 13)}
       <input type="text" id="sbSearch" placeholder="Search meetings" value="${esc(S.q)}" oninput="sbSearch(this.value)">
@@ -877,7 +883,19 @@ function summaryPanel(meta, busy) {
     return `<div class="sum"><div class="sum-head"><span class="sum-title">${icon("sparkle", 12)} Summary</span></div>
       <div class="sum-loading"><span class="spinner"></span> Reading the transcript and pulling out the highlights…</div></div>`;
   }
-  if (!s) return "";
+  if (!s) {
+    // No summary yet — surface the app's main payoff instead of hiding it
+    // behind the header button.
+    if (!(meta.turns || []).length) return "";
+    return `<div class="sum sum-cta">
+      <div class="sum-cta-ic">${icon("sparkle", 20)}</div>
+      <div class="sum-cta-text">
+        <div class="sum-cta-title">Summarize this meeting</div>
+        <div class="sum-cta-sub">Get a TL;DR, the decisions, action items with owners, and a ready-to-send follow-up email — written by your own Claude. Transcript text only, never audio.</div>
+      </div>
+      <button class="btn primary sum-cta-btn" onclick="summarizeMeeting('${meta.id}')">${icon("sparkle", 13)} Summarize</button>
+    </div>`;
+  }
   const ul = (arr) => arr && arr.length ? `<ul class="sum-list">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
   const block = (label, arr) => arr && arr.length ? `<div class="sum-block"><div class="sum-label">${label}</div>${ul(arr)}</div>` : "";
 

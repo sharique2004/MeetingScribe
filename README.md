@@ -115,17 +115,6 @@ where your meetings actually happen.
    `"summary_engine": "apple"` in `config.json` to use Apple Intelligence
    instead (shallower, but nothing leaves the Mac).
 
-## Practice interview
-
-The **✨ Practice interview** button in the sidebar opens a mock recruiter
-screen. It asks you questions, you answer out loud, and it judges each answer
-like a recruiter — strengths, concerns, follow-ups — then gives a final
-scorecard with a "would I advance you?" verdict and your top fixes. Paste a
-job description and your resume so it interviews you in context. It runs
-**entirely on this Mac** with Apple Intelligence — questions, answers,
-resume and scores never leave the machine. Past sessions are saved as
-Markdown. (Personal practice only — don't run it as a service for others.)
-
 ## On your phone
 
 Meetings stay on this Mac unless you say otherwise. Sign in (Google or

@@ -1,6 +1,6 @@
 """On-device language model via Apple Intelligence (Foundation Models).
 
-All of MeetingScribe's AI features (summary, tidy, practice interviewer) run
+MeetingScribe's on-device AI features (summary fallback, tidy) run
 through this module. The heavy lifting happens in a small Swift helper
 (tools/apple_llm.swift -> ~/.meetingscribe/bin/apple_llm) that talks to the
 ~3B on-device model on the Neural Engine with guided generation, so replies

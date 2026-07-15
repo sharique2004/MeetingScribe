@@ -40,12 +40,6 @@ except Exception:
 app = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="/static")
 app.json.sort_keys = False  # keep speaker/stats ordering ("You" first, then Speaker 1…)
 
-try:  # mock-interview coach, served at /practice (its own UI + /api/practice/*)
-    import practice
-    app.register_blueprint(practice.bp)
-except Exception as exc:  # missing claude/transcribe deps must not break recording
-    app.logger.warning("practice mode unavailable: %s", exc)
-
 REC = MeetingRecorder()
 JOBS = {}  # meeting_id -> {"state": queued|processing|done|error, "message": str}
 SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str}

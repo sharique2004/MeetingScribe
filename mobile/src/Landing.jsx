@@ -29,8 +29,8 @@ const FEATURES = [
     body: "One click turns a meeting into a TL;DR, decisions, action items with owners, and a ready-to-send follow-up email — written by your Claude account." },
   { icon: "◔", title: "Never forget to record",
     body: "A gentle nudge when a calendar event starts or when it notices you've joined a call — one tap to record." },
-  { icon: "▶", title: "Practice interviews",
-    body: "A mock recruiter that listens to your spoken answers and scores them like a real screen — fully on your Mac." },
+  { icon: "◑", title: "Tidy transcripts",
+    body: "One click cleans up echo duplicates and merges split-up speakers — validated on-device, so no words are ever invented." },
   { icon: "▢", title: "Read it on your phone",
     body: "Choose a meeting to sync and read its transcript and summary on your phone. Text only — audio never leaves the Mac." },
 ];

@@ -60,8 +60,8 @@ def _install_prebuilt(name):
 
 
 def install_all_prebuilt():
-    """Put every bundled helper in place at startup (so hard-coded paths like
-    screener's apple_transcribe work). No-op from a source checkout."""
+    """Put every bundled helper in place at startup (so every hard-coded
+    ~/.meetingscribe/bin path works). No-op from a source checkout."""
     if PREBUILT_DIR is None:
         return
     for prebuilt in PREBUILT_DIR.glob("*"):
