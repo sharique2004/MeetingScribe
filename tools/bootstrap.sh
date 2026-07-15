@@ -51,19 +51,9 @@ if ! "$VENV/bin/python" -m pip install -r "$APP_SRC/requirements.txt"; then
     exit 5
 fi
 
-# --- Swift helpers (macOS 26+: Speech + Apple Intelligence) -----------------
-MACOS_MAJOR="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
-if [ "${MACOS_MAJOR:-0}" -ge 26 ] && command -v xcrun >/dev/null 2>&1; then
-    echo "Building the on-device Speech and AI helpers…"
-    for src in apple_transcribe apple_llm; do
-        xcrun swiftc -O -parse-as-library "$APP_SRC/tools/$src.swift" -o "$BIN/$src" 2>/dev/null \
-            && echo "  built $src" || echo "  ($src skipped — Whisper/Apple-Intelligence fallback still works)"
-    done
-fi
-if command -v xcrun >/dev/null 2>&1; then
-    xcrun swiftc -O "$APP_SRC/tools/calendar_events.swift" -o "$BIN/calendar_events" 2>/dev/null \
-        && echo "  built calendar helper" || true
-fi
+# The on-device Speech/AI helpers ship pre-built inside the app bundle and are
+# installed by the backend at startup (swift_helpers.install_all_prebuilt) —
+# no compiling on the user's Mac. Nothing to do here.
 
 # --- one-time migration from an older source checkout -----------------------
 OLD="$HOME/MeetingScribe/recordings"

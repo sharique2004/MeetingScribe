@@ -1076,6 +1076,13 @@ def _backfill_folder_names():
 if __name__ == "__main__":
     cfg = load_config()
     port = int(cfg.get("port", 5005))
+    # Put the bundled, pre-built Speech/AI helpers in place before anything
+    # tries to use them (packaged app; no-op from a source checkout).
+    try:
+        import swift_helpers
+        swift_helpers.install_all_prebuilt()
+    except Exception as _exc:  # never block startup on this
+        app.logger.warning("installing pre-built helpers failed: %s", _exc)
     _recover_interrupted()
     _backfill_transcripts()
     _backfill_folder_names()

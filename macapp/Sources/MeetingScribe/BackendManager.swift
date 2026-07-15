@@ -102,7 +102,15 @@ final class BackendManager {
         p.currentDirectoryURL = projectDir
         var env = ProcessInfo.processInfo.environment
         env["MEETINGSCRIBE_NO_BROWSER"] = "1"
-        if bundled { env["MEETINGSCRIBE_DATA"] = dataDir.path }
+        if bundled {
+            env["MEETINGSCRIBE_DATA"] = dataDir.path
+            // Pre-built Speech/AI helpers ship in the bundle; the backend
+            // copies them into ~/.meetingscribe/bin at startup so no compiler
+            // or matching SDK is needed on the user's Mac.
+            if let bin = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
+                env["MEETINGSCRIBE_PREBUILT"] = bin
+            }
+        }
         p.environment = env
         p.standardOutput = FileHandle.nullDevice
         if let logHandle = try? FileHandle(forWritingTo: logURL()) {

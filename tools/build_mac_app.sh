@@ -49,6 +49,26 @@ APP_SRC="$DEST/Contents/Resources/app"
 cp "$PROJECT/tools/bootstrap.sh" "$DEST/Contents/Resources/bootstrap.sh"
 chmod +x "$DEST/Contents/Resources/bootstrap.sh"
 
+# Pre-compile the Swift helpers on THIS machine's up-to-date SDK and ship the
+# binaries. Compiling on the user's Mac is unreliable — the Speech and
+# FoundationModels frameworks need a recent Command Line Tools SDK that a
+# random Mac may lack (this is what broke transcription on a fresh install).
+# These are OS-linked binaries: built on macOS 26 here, they run on any
+# macOS 26 Mac. The backend copies them into ~/.meetingscribe/bin at startup.
+echo "Pre-building the on-device helpers…"
+PREBUILT="$DEST/Contents/Resources/bin"
+mkdir -p "$PREBUILT"
+if command -v xcrun >/dev/null 2>&1; then
+    xcrun swiftc -O -parse-as-library "$PROJECT/tools/apple_transcribe.swift" -o "$PREBUILT/apple_transcribe" \
+        && echo "  built apple_transcribe" || echo "  WARNING: apple_transcribe failed to build here"
+    xcrun swiftc -O -parse-as-library "$PROJECT/tools/apple_live.swift" -o "$PREBUILT/apple_live" \
+        && echo "  built apple_live" || echo "  WARNING: apple_live failed to build here"
+    xcrun swiftc -O -parse-as-library "$PROJECT/tools/apple_llm.swift" -o "$PREBUILT/apple_llm" \
+        && echo "  built apple_llm" || echo "  WARNING: apple_llm failed to build here"
+    xcrun swiftc -O "$PROJECT/tools/calendar_events.swift" -o "$PREBUILT/calendar_events" \
+        && echo "  built calendar_events" || echo "  WARNING: calendar_events failed to build here"
+fi
+
 cat > "$DEST/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
