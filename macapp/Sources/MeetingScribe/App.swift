@@ -82,9 +82,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return .terminateCancel
             }
         }
-        backend.shutdown {
-            DispatchQueue.main.async {
+        backend.shutdown { [weak self] didQuit in
+            if didQuit {
                 NSApp.reply(toApplicationShouldTerminate: true)
+                return
+            }
+            // The backend refused: a transcript or summary is still being
+            // built. Ask instead of killing the job mid-flight.
+            let alert = NSAlert()
+            alert.messageText = "A meeting is still being processed"
+            alert.informativeText = "Quitting now interrupts it — you can use "
+                + "“Reprocess audio” on that meeting later. Quit anyway?"
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Quit Anyway")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSApp.reply(toApplicationShouldTerminate: false)
+            } else {
+                self?.backend.forceShutdown {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                }
             }
         }
         return .terminateLater

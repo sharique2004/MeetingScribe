@@ -108,25 +108,45 @@ def _probe():
 
 
 # ------------------------------------------------------------ serve process --
+#
+# The helper handles requests concurrently (one task per line), so several
+# callers can be in flight at once — that's what makes long summaries fast
+# (the map phase fans out). _proc_lock guards process lifecycle, stdin
+# writes and the pending table; each caller then waits on its own event.
+
+MAX_INFLIGHT = 3          # concurrent on-device generations (ANE saturates fast)
 
 _proc_lock = threading.Lock()
 _proc = None
-_proc_queue = None
+_pending = {}             # id -> {"event": Event, "resp": dict|None}
 _last_used = 0.0
 _next_id = 1
 _reaper_started = False
+_inflight = threading.BoundedSemaphore(MAX_INFLIGHT)
 
 
-def _reader(proc, out_queue):
+def _reader(proc):
+    """Route responses to their waiting callers; fail everything on EOF."""
     for line in proc.stdout:
         line = line.strip()
-        if line:
-            out_queue.put(line)
-    out_queue.put(None)  # EOF sentinel
+        if not line:
+            continue
+        try:
+            resp = json.loads(line)
+        except ValueError:
+            continue
+        with _proc_lock:
+            slot = _pending.pop(resp.get("id"), None)
+        if slot is not None:
+            slot["resp"] = resp
+            slot["event"].set()
+    with _proc_lock:
+        if _proc is proc:  # died on its own (not replaced by a restart)
+            _stop_proc_locked()
 
 
-def _start_proc():
-    global _proc, _proc_queue
+def _start_proc_locked():
+    global _proc
     exe = _binary()
     if exe is None:
         raise LocalLLMError(reason_message("not_supported"), code="unavailable")
@@ -135,101 +155,124 @@ def _start_proc():
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, bufsize=1,
     )
-    _proc_queue = queue.Queue()
-    threading.Thread(target=_reader, args=(_proc, _proc_queue), daemon=True).start()
+    threading.Thread(target=_reader, args=(_proc,), daemon=True).start()
     log.info("apple_llm serve started (pid %s)", _proc.pid)
 
 
-def _stop_proc():
-    global _proc, _proc_queue
+def _stop_proc_locked():
+    global _proc
     if _proc is not None:
         try:
             _proc.kill()
         except OSError:
             pass
         _proc = None
-        _proc_queue = None
+    # Anyone still waiting gets a crash answer instead of a timeout.
+    for slot in _pending.values():
+        slot["resp"] = {"ok": False, "error": "crashed"}
+        slot["event"].set()
+    _pending.clear()
 
 
 def _reaper():
-    global _proc
     while True:
         time.sleep(30)
         with _proc_lock:
-            if _proc is not None and time.time() - _last_used > IDLE_KILL_S:
+            if (_proc is not None and not _pending
+                    and time.time() - _last_used > IDLE_KILL_S):
                 log.info("apple_llm idle — stopping")
-                _stop_proc()
+                _stop_proc_locked()
 
 
-def _ensure_proc():
-    global _reaper_started
-    if _proc is None or _proc.poll() is not None:
-        _stop_proc()
-        _start_proc()
-    if not _reaper_started:
-        threading.Thread(target=_reaper, daemon=True).start()
-        _reaper_started = True
+def _submit(request):
+    """Register + write one request under the lock. -> its pending slot."""
+    global _next_id, _last_used, _reaper_started
+    with _proc_lock:
+        if _proc is None or _proc.poll() is not None:
+            _stop_proc_locked()
+            _start_proc_locked()
+        if not _reaper_started:
+            threading.Thread(target=_reaper, daemon=True).start()
+            _reaper_started = True
+        _next_id += 1
+        request = dict(request, id=_next_id)
+        slot = {"event": threading.Event(), "resp": None}
+        _pending[_next_id] = slot
+        _last_used = time.time()
+        try:
+            _proc.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            _proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            _pending.pop(request["id"], None)
+            _stop_proc_locked()
+            raise LocalLLMError("The on-device model stopped unexpectedly.",
+                                code="crashed")
+    return request["id"], slot
+
+
+def _roundtrip(request, timeout):
+    """Send one request, wait for its response. Concurrent-safe."""
+    global _last_used
+    request_id, slot = _submit(request)
+    if not slot["event"].wait(timeout):
+        with _proc_lock:
+            _pending.pop(request_id, None)
+            _stop_proc_locked()  # the model is stuck; fail fast for everyone
+        raise LocalLLMError("The on-device model took too long — try again.",
+                            code="timeout")
+    with _proc_lock:
+        _last_used = time.time()
+    resp = slot["resp"] or {}
+    if resp.get("error") == "crashed":
+        raise LocalLLMError("The on-device model stopped unexpectedly.",
+                            code="crashed")
+    return resp
+
+
+def _stop_proc():
+    with _proc_lock:
+        _stop_proc_locked()
 
 
 atexit.register(_stop_proc)
 
 
-def _roundtrip(request, timeout):
-    """Send one request line, wait for its response line."""
-    global _last_used
-    _ensure_proc()
-    _last_used = time.time()
-    line = json.dumps(request, ensure_ascii=False)
-    try:
-        _proc.stdin.write(line + "\n")
-        _proc.stdin.flush()
-    except (BrokenPipeError, OSError):
-        raise LocalLLMError("The on-device model stopped unexpectedly.", code="crashed")
-    deadline = time.time() + timeout
-    while True:
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            _stop_proc()
-            raise LocalLLMError(
-                "The on-device model took too long — try again.", code="timeout")
-        try:
-            raw = _proc_queue.get(timeout=min(remaining, 5.0))
-        except queue.Empty:
-            continue
-        if raw is None:  # helper exited
-            _stop_proc()
-            raise LocalLLMError("The on-device model stopped unexpectedly.", code="crashed")
-        try:
-            resp = json.loads(raw)
-        except ValueError:
-            continue  # stray non-JSON line; keep waiting
-        if resp.get("id") == request["id"]:
-            _last_used = time.time()
-            return resp
-        # stale response from an abandoned request — drop it
-
-
 def generate(instructions, prompt, schema, *, temperature=0.2, max_tokens=1500,
              timeout=180):
-    """One guided generation -> parsed dict/list per `schema`. Thread-safe."""
-    global _next_id
-    with _proc_lock:
-        _next_id += 1
-        request = {
-            "id": _next_id,
-            "instructions": instructions,
-            "prompt": prompt,
-            "schema": schema,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        try:
-            resp = _roundtrip(request, timeout)
-        except LocalLLMError as exc:
-            if exc.code != "crashed":
-                raise
-            # One retry after a crash — the OS model daemon may have restarted.
-            resp = _roundtrip(request, timeout)
+    """One guided generation -> parsed dict/list per `schema`. Thread-safe;
+    up to MAX_INFLIGHT callers run concurrently on the Neural Engine."""
+    request = {
+        "instructions": instructions,
+        "prompt": prompt,
+        "schema": schema,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    with _inflight:
+        resp = None
+        grew_budget = False
+        for attempt in range(5):
+            try:
+                resp = _roundtrip(request, timeout)
+            except LocalLLMError as exc:
+                if exc.code != "crashed" or attempt:
+                    raise
+                # One retry after a crash — the OS daemon may have restarted.
+                resp = _roundtrip(request, timeout)
+            if resp.get("ok"):
+                break
+            code = str(resp.get("error") or "")
+            if code == "decoding_failure" and not grew_budget:
+                # max_tokens cut the constrained output mid-structure; give
+                # the same request one shot with double the budget.
+                grew_budget = True
+                request = dict(request, max_tokens=min(2000, max_tokens * 2))
+                continue
+            if code not in ("busy", "rate_limited"):
+                break
+            # The system model rejected a concurrent request — back off and
+            # retry; with the semaphore this resolves quickly.
+            time.sleep(0.4 * (attempt + 1))
     if resp.get("ok"):
         return resp.get("result")
     code = str(resp.get("error") or "error")

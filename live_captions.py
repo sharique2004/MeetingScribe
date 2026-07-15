@@ -42,6 +42,7 @@ class _TrackFeed:
         self.key = key
         self.queue = queue.Queue(maxsize=QUEUE_CHUNKS)
         self.dropped = 0
+        self._closing = False
         cmd = [session.binary, session.locale, str(rate), str(channels)]
         if session.context_path:
             cmd += ["--context", session.context_path]
@@ -67,12 +68,27 @@ class _TrackFeed:
                 pass
 
     def close(self):
-        self.queue.put(None)  # feeder sentinel -> stdin EOF -> finalize
+        # Signal end-of-input without ever blocking the caller: record_stop
+        # calls this while holding RECORD_LOCK, and the feeder may already be
+        # dead (helper crashed) with the queue pinned full. A flag the feeder
+        # also checks guarantees it stops even if the sentinel can't be queued.
+        self._closing = True
+        try:
+            self.queue.put_nowait(None)  # fast path: wake a waiting feeder
+        except queue.Full:
+            try:  # make room so the sentinel lands
+                self.queue.get_nowait()
+                self.queue.put_nowait(None)
+            except (queue.Empty, queue.Full):
+                pass  # feeder also polls _closing, so it still exits
 
     def _feeder(self):
         try:
-            while True:
-                chunk = self.queue.get()
+            while not self._closing:
+                try:
+                    chunk = self.queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue  # re-check _closing so close() can never hang us
                 if chunk is None:
                     break
                 self.proc.stdin.write(chunk)

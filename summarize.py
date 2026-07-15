@@ -17,8 +17,9 @@ import local_llm
 
 log = logging.getLogger("meetingscribe.summarize")
 
-MAX_CHUNK_CHARS = 8500     # transcript text per model call (4K-token context)
+MAX_CHUNK_CHARS = 10000    # transcript text per model call (4K-token context)
 MAX_TOTAL_CHARS = 240000   # sanity cap for pathological transcripts
+MAP_WORKERS = 3            # map chunks summarized concurrently (= llm MAX_INFLIGHT)
 
 _ACTION_ITEM = {
     "type": "object", "name": "ActionItem", "properties": [
@@ -30,14 +31,16 @@ _ACTION_ITEM = {
     ],
 }
 
+# Tight caps keep map-phase OUTPUT short — on-device generation speed is
+# dominated by output tokens, so lean notes are what make long meetings fast.
 CHUNK_SCHEMA = {
     "type": "object", "name": "ChunkNotes", "properties": [
-        {"name": "points", "type": "array", "items": {"type": "string"}, "max": 10,
+        {"name": "points", "type": "array", "items": {"type": "string"}, "max": 7,
          "description": "the important things discussed in this portion, most important first"},
-        {"name": "decisions", "type": "array", "items": {"type": "string"}, "max": 6,
+        {"name": "decisions", "type": "array", "items": {"type": "string"}, "max": 5,
          "description": "concrete decisions made in this portion"},
-        {"name": "action_items", "type": "array", "items": _ACTION_ITEM, "max": 8},
-        {"name": "open_questions", "type": "array", "items": {"type": "string"}, "max": 5,
+        {"name": "action_items", "type": "array", "items": _ACTION_ITEM, "max": 6},
+        {"name": "open_questions", "type": "array", "items": {"type": "string"}, "max": 4,
          "description": "questions raised but not resolved in this portion"},
     ],
 }
@@ -209,13 +212,19 @@ def _condense(blocks, title, progress_cb):
             if len(g) == 1:
                 merged.append(g[0])
                 continue
-            notes = local_llm.generate(
-                CONDENSE_INSTRUCTIONS,
-                f'Notes from consecutive portions of the meeting "{title}":\n\n'
-                + "\n\n".join(g),
-                CHUNK_SCHEMA, max_tokens=900,
-            )
-            merged.append(_render_notes(notes))
+            try:
+                notes = local_llm.generate(
+                    CONDENSE_INSTRUCTIONS,
+                    f'Notes from consecutive portions of the meeting "{title}":\n\n'
+                    + "\n\n".join(g),
+                    CHUNK_SCHEMA, max_tokens=700,
+                )
+                merged.append(_render_notes(notes))
+            except local_llm.LocalLLMError as exc:
+                if exc.code in ("guardrail", "refusal", "context_overflow"):
+                    merged.append("\n".join(g)[: MAX_CHUNK_CHARS // 2])
+                else:
+                    raise
         blocks = merged
     return "\n".join(blocks)
 
@@ -225,6 +234,42 @@ def _condense(blocks, title, progress_cb):
 def _speaker_note(meta):
     names = ", ".join((meta.get("speakers") or {}).values())
     return f"Participants: {names}." if names else ""
+
+
+def _extractive_fallback(chunk):
+    """When the model declines a portion, keep its opening lines as raw
+    notes so the rest of the meeting still summarizes."""
+    excerpt = " ".join(chunk.split())[:500]
+    return f"- (portion kept verbatim — could not be auto-summarized): {excerpt}…"
+
+
+def _map_chunk(i, total, chunk, title, speaker_note, depth=0):
+    try:
+        notes = local_llm.generate(
+            MAP_INSTRUCTIONS,
+            f'Portion {i} of {total} of the meeting "{title}". '
+            f'{speaker_note}\n\n{chunk}',
+            CHUNK_SCHEMA, max_tokens=800,
+        )
+        return _render_notes(notes)
+    except local_llm.LocalLLMError as exc:
+        # Dense speech can overshoot the token estimate — split and retry
+        # rather than losing the portion.
+        if exc.code == "context_overflow" and depth < 2:
+            lines = chunk.splitlines()
+            mid = len(lines) // 2
+            if mid:
+                log.info("portion %d/%d overflowed; splitting", i, total)
+                return "\n".join(
+                    _map_chunk(i, total, part, title, speaker_note, depth + 1)
+                    for part in ("\n".join(lines[:mid]), "\n".join(lines[mid:]))
+                    if part.strip()
+                )
+        # A declined portion must not sink the whole summary.
+        if exc.code in ("guardrail", "refusal", "context_overflow"):
+            log.warning("portion %d/%d fell back to excerpt (%s)", i, total, exc.code)
+            return _extractive_fallback(chunk)
+        raise
 
 
 def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
@@ -239,34 +284,46 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         raise RuntimeError(local_llm.reason_message(reason))
 
     title = meta.get("title") or "Untitled meeting"
+    speaker_note = _speaker_note(meta)
     lines = _transcript_lines(meta)
     chunks = _chunk_lines(lines)
 
     if len(chunks) == 1:
         progress_cb("Summarizing on this Mac…")
-        source = f'Transcript of the meeting "{title}". {_speaker_note(meta)}\n\n{chunks[0]}'
+        source = f'Transcript of the meeting "{title}". {speaker_note}\n\n{chunks[0]}'
     else:
-        blocks = []
-        for i, chunk in enumerate(chunks, 1):
-            progress_cb(f"Reading part {i}/{len(chunks)}…")
-            notes = local_llm.generate(
-                MAP_INSTRUCTIONS,
-                f'Portion {i} of {len(chunks)} of the meeting "{title}". '
-                f'{_speaker_note(meta)}\n\n{chunk}',
-                CHUNK_SCHEMA, max_tokens=900,
-            )
-            blocks.append(_render_notes(notes))
+        # Map phase runs CONCURRENTLY — the helper handles parallel requests,
+        # so a long meeting takes ~total/MAP_WORKERS instead of one-by-one.
+        from concurrent.futures import ThreadPoolExecutor
+        done = {"n": 0}
+
+        def run_one(args):
+            i, chunk = args
+            block = _map_chunk(i, len(chunks), chunk, title, speaker_note)
+            done["n"] += 1
+            progress_cb(f"Reading the meeting… {done['n']}/{len(chunks)}")
+            return block
+
+        progress_cb(f"Reading the meeting… 0/{len(chunks)}")
+        with ThreadPoolExecutor(max_workers=MAP_WORKERS) as pool:
+            blocks = list(pool.map(run_one, enumerate(chunks, 1)))
         notes_text = _condense([b for b in blocks if b.strip()], title, progress_cb)
         progress_cb("Writing the summary…")
         source = (
-            f'Notes covering the whole meeting "{title}", in order. {_speaker_note(meta)}\n\n'
+            f'Notes covering the whole meeting "{title}", in order. {speaker_note}\n\n'
             f"{notes_text}"
         )
 
     try:
         raw = local_llm.generate(REDUCE_INSTRUCTIONS, source, SUMMARY_SCHEMA,
-                                 max_tokens=1600)
+                                 max_tokens=1400)
     except local_llm.LocalLLMError as exc:
+        if exc.code in ("guardrail", "refusal"):
+            raise RuntimeError(
+                "The on-device model declined to summarize this meeting's "
+                "content. This should be rare — try Re-summarize once; if it "
+                "persists, the transcript may contain content Apple "
+                "Intelligence won't process.") from exc
         raise RuntimeError(str(exc)) from exc
 
     summary = _coerce(raw if isinstance(raw, dict) else {})

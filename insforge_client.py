@@ -249,35 +249,53 @@ def oauth_finish(code, oauth_state=None):
 
 # ------------------------------------------------------------- access tokens --
 
+_refresh_lock = threading.Lock()
+
+
 def access_token():
     """A valid user access token, refreshing if needed. None when signed out."""
     global _access_token, _access_expiry
     with _lock:
         if _access_token and time.time() < _access_expiry - 30:
             return _access_token
-    record = _keychain_read()
-    if not record or not record.get("refresh_token"):
-        return None
-    status, data, headers = _request(
-        "POST", "/api/auth/refresh",
-        headers={
-            "Cookie": f"insforge_refresh_token={record['refresh_token']}",
-            "X-CSRF-Token": record.get("csrf_token") or "",
-        })
-    if status == 200 and (data or {}).get("accessToken"):
-        new_refresh = _refresh_cookie_from(headers)
-        if new_refresh and new_refresh != record["refresh_token"]:
-            record["refresh_token"] = new_refresh
-        if data.get("csrfToken"):
-            record["csrf_token"] = data["csrfToken"]
-        _keychain_write(record)
+    # Serialize refreshes: the refresh token rotates (single-use), so two
+    # concurrent refreshes would make the loser's token invalid. The winner
+    # updates the cache; late arrivals then take the fast path above.
+    with _refresh_lock:
         with _lock:
-            _access_token = data["accessToken"]
-            _access_expiry = _jwt_expiry(_access_token)
-        return _access_token
-    log.warning("token refresh failed (%s); signing out locally", status)
-    sign_out()
-    return None
+            if _access_token and time.time() < _access_expiry - 30:
+                return _access_token
+        record = _keychain_read()
+        if not record or not record.get("refresh_token"):
+            return None
+        try:
+            status, data, headers = _request(
+                "POST", "/api/auth/refresh",
+                headers={
+                    "Cookie": f"insforge_refresh_token={record['refresh_token']}",
+                    "X-CSRF-Token": record.get("csrf_token") or "",
+                })
+        except AuthError:
+            return None  # network blip — keep the session, try again later
+        if status == 200 and (data or {}).get("accessToken"):
+            new_refresh = _refresh_cookie_from(headers)
+            if new_refresh and new_refresh != record["refresh_token"]:
+                record["refresh_token"] = new_refresh
+            if data.get("csrfToken"):
+                record["csrf_token"] = data["csrfToken"]
+            _keychain_write(record)
+            with _lock:
+                _access_token = data["accessToken"]
+                _access_expiry = _jwt_expiry(_access_token)
+            return _access_token
+        # Only a genuine auth rejection ends the session; a transient 5xx must
+        # not sign the user out and destroy their rotated refresh token.
+        if status in (401, 403):
+            log.warning("refresh token rejected (%s); signing out", status)
+            sign_out()
+        else:
+            log.warning("token refresh failed transiently (%s); keeping session", status)
+        return None
 
 
 # ----------------------------------------------------------------- data API --

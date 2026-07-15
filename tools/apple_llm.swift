@@ -29,19 +29,30 @@ import FoundationModels
 
 // ----------------------------------------------------------------- output --
 
+let emitLock = NSLock()
+
 func emitLine(_ obj: [String: Any]) {
     guard let data = try? JSONSerialization.data(withJSONObject: obj, options: []),
           let line = String(data: data, encoding: .utf8) else {
         FileHandle.standardOutput.write("{\"ok\":false,\"error\":\"encode_failure\"}\n".data(using: .utf8)!)
         return
     }
+    emitLock.lock()  // concurrent tasks: one whole line at a time
     FileHandle.standardOutput.write((line + "\n").data(using: .utf8)!)
+    emitLock.unlock()
 }
 
 // ----------------------------------------------------------- availability --
 
+// Permissive guardrails: this helper only TRANSFORMS the user's own content
+// (summarizing their meetings, tidying their transcripts, judging their own
+// interview answers) — Apple provides this mode precisely so ordinary
+// real-world talk (medical, legal, security topics…) isn't refused. The
+// default guardrails rejected genuine meeting transcripts.
+let llmModel = SystemLanguageModel(guardrails: .permissiveContentTransformations)
+
 func availabilityInfo() -> [String: Any] {
-    switch SystemLanguageModel.default.availability {
+    switch llmModel.availability {
     case .available:
         return ["available": true]
     case .unavailable(let reason):
@@ -130,7 +141,7 @@ func handle(_ line: String) async {
         emitLine(["id": id, "ok": false, "error": "bad_request", "detail": "missing schema"])
         return
     }
-    if case .unavailable = SystemLanguageModel.default.availability {
+    if case .unavailable = llmModel.availability {
         let info = availabilityInfo()
         emitLine(["id": id, "ok": false, "error": "unavailable",
                   "detail": info["reason"] as? String ?? "unavailable"])
@@ -141,8 +152,8 @@ func handle(_ line: String) async {
         let schema = try GenerationSchema(root: root, dependencies: [])
         let instructions = req["instructions"] as? String ?? ""
         let session = instructions.isEmpty
-            ? LanguageModelSession()
-            : LanguageModelSession(instructions: instructions)
+            ? LanguageModelSession(model: llmModel)
+            : LanguageModelSession(model: llmModel, instructions: instructions)
         var options = GenerationOptions(sampling: .greedy)
         if let t = req["temperature"] as? Double { options.temperature = t }
         if let m = req["max_tokens"] as? Int { options.maximumResponseTokens = m }
@@ -174,12 +185,18 @@ struct AppleLLM {
             emitLine(availabilityInfo())
             return
         }
-        if case .available = SystemLanguageModel.default.availability {
-            LanguageModelSession().prewarm()
+        if case .available = llmModel.availability {
+            LanguageModelSession(model: llmModel).prewarm()
         }
-        while let line = readLine(strippingNewline: true) {
-            if line.isEmpty { continue }
-            await handle(line)
+        // Requests run CONCURRENTLY — each line gets its own task and
+        // session, so callers can fan out (e.g. the map phase of a long
+        // summary). Responses interleave; callers match them by id.
+        await withTaskGroup(of: Void.self) { group in
+            while let line = readLine(strippingNewline: true) {
+                if line.isEmpty { continue }
+                group.addTask { await handle(line) }
+            }
+            await group.waitForAll()
         }
     }
 }

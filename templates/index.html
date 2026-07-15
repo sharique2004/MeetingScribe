@@ -1282,9 +1282,17 @@ function liveHTML() {
   }
   return rows.length ? rows.join("") : `<div class="live-row is-partial"><span>Listening…</span></div>`;
 }
+function resetLive(meetingId) {
+  S.live = {enabled: false, turns: [], partials: {}, seq: 0, meetingId};
+}
 async function pollLive() {
   try {
     if (S.rec.recording) {
+      // A recording started elsewhere (menu bar / nudge) has a meeting_id we
+      // haven't reset live state for — clear stale captions from the last one.
+      if (S.rec.meeting_id && S.live.meetingId !== S.rec.meeting_id) {
+        resetLive(S.rec.meeting_id);
+      }
       const r = await api(`/api/live?since=${S.live.seq}`);
       const wasEnabled = S.live.enabled;
       S.live.enabled = !!r.enabled;
@@ -1421,10 +1429,12 @@ async function startRecording() {
     const meta = await postJSON("/api/record/start",
       {title: S.pendingTitle, mode: S.recType, language: S.recLang});
     (meta.warnings || []).forEach(w => toast("⚠ " + w, 6000));
-    S.live = {enabled: false, turns: [], partials: {}, seq: 0};
+    resetLive(meta.id);
     S.activeId = meta.id;
     await refreshList();
-    await pollStatus();
+    // Don't call pollStatus() here — it self-reschedules via setTimeout, so
+    // invoking it directly would spawn a second permanent polling loop each
+    // time we record. The existing loop picks up the new state on its next tick.
     renderMain();
   } catch (e) {
     toast("⚠ " + e.message, 6000);
@@ -1483,12 +1493,18 @@ function renderMain() {
 
 /* ------------------------------------------------------------ data flow -- */
 const PAGE_SIZE = 40;
+// Every list fetch is tagged with the query it was for. A response is applied
+// only if the query hasn't changed since — so a slow page-1 "demo" response
+// can't overwrite a newer empty-query list, and load-more can't append rows
+// from a stale search.
+let _listToken = 0;
 async function refreshList() {
-  // Reload the window of meetings already on screen (at least one page) so
-  // background refreshes never collapse a scrolled list back to page one.
+  const q = S.q.trim();
+  const token = ++_listToken;
   try {
     const limit = Math.max(PAGE_SIZE, S.meetings.length);
-    const r = await api(`/api/meetings?limit=${limit}&offset=0&q=${encodeURIComponent(S.q.trim())}`);
+    const r = await api(`/api/meetings?limit=${limit}&offset=0&q=${encodeURIComponent(q)}`);
+    if (token !== _listToken) return;  // a newer query superseded this one
     S.meetings = r.items;
     S.total = r.total;
     if (!S.activeId && S.meetings.length) S.activeId = S.meetings[0].id;
@@ -1498,12 +1514,13 @@ async function refreshList() {
 async function loadMoreMeetings() {
   if (S.listLoading || S.meetings.length >= S.total) return;
   S.listLoading = true;
+  const q = S.q.trim();
+  const token = _listToken;
   const more = $("sbMore");
   if (more) more.textContent = "Loading…";
   try {
-    const r = await api(`/api/meetings?limit=${PAGE_SIZE}&offset=${S.meetings.length}&q=${encodeURIComponent(S.q.trim())}`);
-    // Guard against a search/refresh racing this fetch: only append rows we
-    // don't already have.
+    const r = await api(`/api/meetings?limit=${PAGE_SIZE}&offset=${S.meetings.length}&q=${encodeURIComponent(q)}`);
+    if (token !== _listToken) return;  // the query changed while we fetched
     const known = new Set(S.meetings.map(m => m.id));
     S.meetings = S.meetings.concat(r.items.filter(m => !known.has(m.id)));
     S.total = r.total;

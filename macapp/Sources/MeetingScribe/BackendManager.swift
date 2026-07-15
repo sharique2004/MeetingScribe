@@ -131,17 +131,34 @@ final class BackendManager {
         NSApp.terminate(nil)
     }
 
-    /// Ask the backend to exit cleanly; force-stop our child if it lingers.
-    func shutdown(then completion: @escaping () -> Void) {
-        quitting = true
+    /// Ask the backend to exit cleanly. If it refuses because a meeting is
+    /// still transcribing/summarizing (HTTP 409), the caller is told so it can
+    /// ask the user instead of killing the job. `completion(true)` = safe to
+    /// quit; `completion(false)` = backend is busy, don't force-kill yet.
+    func shutdown(then completion: @escaping (_ didQuit: Bool) -> Void) {
         var request = URLRequest(url: baseURL.appendingPathComponent("api/shutdown"))
         request.httpMethod = "POST"
         request.timeoutInterval = 2
-        URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                if let p = self?.process, p.isRunning { p.terminate() }
-                completion()
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, _ in
+            let status = (response as? HTTPURLResponse)?.statusCode
+            DispatchQueue.main.async {
+                if status == 409 {
+                    completion(false)  // busy — leave the backend running
+                    return
+                }
+                self?.quitting = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                    if let p = self?.process, p.isRunning { p.terminate() }
+                    completion(true)
+                }
             }
         }.resume()
+    }
+
+    /// Force-quit even though the backend is busy (user chose "Quit anyway").
+    func forceShutdown(then completion: @escaping () -> Void) {
+        quitting = true
+        if let p = process, p.isRunning { p.terminate() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: completion)
     }
 }

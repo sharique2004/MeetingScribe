@@ -108,13 +108,25 @@ def enqueue(meeting_id):
             _save_queue(items)
 
 
+_draining = threading.Lock()
+
+
 def drain(read_meeting):
-    """Retry queued pushes. read_meeting(id) -> meta dict or None."""
-    with _queue_lock:
-        items = _load_queue()
+    """Retry queued pushes. read_meeting(id) -> meta dict or None.
+
+    The _queue_lock is only held briefly to snapshot/rewrite the queue, never
+    across the network pushes — so a concurrent enqueue() from a request
+    handler can't block for the duration of the network calls. _draining
+    ensures only one drain runs at a time.
+    """
+    if not _draining.acquire(blocking=False):
+        return  # a drain is already in progress
+    try:
+        with _queue_lock:
+            items = _load_queue()
         if not items:
             return
-        remaining = []
+        failed = []
         for meeting_id in items:
             try:
                 meta = read_meeting(meeting_id)
@@ -123,8 +135,14 @@ def drain(read_meeting):
                 push_meeting(meta)
             except Exception as exc:
                 log.info("queued sync for %s still failing: %s", meeting_id, exc)
-                remaining.append(meeting_id)
-        _save_queue(remaining)
+                failed.append(meeting_id)
+        # Re-merge failures with anything enqueued while we were pushing.
+        with _queue_lock:
+            current = set(_load_queue())
+            still_pending = (current - set(items)) | set(failed)
+            _save_queue(list(still_pending))
+    finally:
+        _draining.release()
 
 
 def push_if_synced(read_meeting, write_meeting, meeting_id):

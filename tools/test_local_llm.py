@@ -101,7 +101,7 @@ def test_summarize_chunked():
         assert total > summarize.MAX_CHUNK_CHARS, "test transcript too short to exercise chunking"
         messages = []
         summary = summarize.summarize_meeting(d, progress_cb=messages.append)
-    assert any("part" in m.lower() for m in messages), f"expected map-phase progress, got {messages}"
+    assert any("reading the meeting" in m.lower() for m in messages), f"expected map-phase progress, got {messages}"
     assert summary["tldr"], "empty tldr on chunked path"
     print(f"PASS summarize_chunked ({total} chars, {len(messages)} progress msgs)")
 

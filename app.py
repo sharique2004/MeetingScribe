@@ -50,7 +50,25 @@ REC = MeetingRecorder()
 JOBS = {}  # meeting_id -> {"state": queued|processing|done|error, "message": str}
 SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str}
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
+JOB_LOCK = threading.Lock()  # makes "check job state then register" atomic
 LIVE = None  # live_captions.LiveSession for the current/last recording
+
+
+def _claim_job(jobs, meeting_id, message, *, blockers=()):
+    """Atomically register a background job if none conflicts.
+
+    Returns None on success, or an (error, status) tuple to return. `blockers`
+    are (dict, label) pairs whose 'processing' state blocks this job — checked
+    under the same lock as the claim so two requests can't both slip through.
+    """
+    with JOB_LOCK:
+        if jobs.get(meeting_id, {}).get("state") == "processing":
+            return ({"error": "Already in progress"}, 409)
+        for d, label in blockers:
+            if d.get(meeting_id, {}).get("state") == "processing":
+                return ({"error": label}, 409)
+        jobs[meeting_id] = {"state": "processing", "message": message}
+    return None
 
 try:  # meeting nudges (macOS signals; harmless to lack elsewhere)
     import nudge
@@ -65,6 +83,37 @@ MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 # by id alone.
 FOLDER_ID_RE = re.compile(r"^(?:.* — )?(\d{8}-\d{6})$")
 LIST_FIELDS = ("id", "title", "created", "duration", "status", "mode", "sync")
+
+
+# The server binds 127.0.0.1, but a web page in the user's browser can still
+# reach it. Two guards keep a random website from driving the app:
+#  - Host header must be a loopback name → defeats DNS-rebinding (a rebound
+#    domain arrives with Host: evil.com).
+#  - State-changing requests with a cross-origin Origin are rejected → defeats
+#    plain CSRF. The native app and curl send no Origin and are unaffected.
+_ALLOWED_HOSTS = None  # built lazily from the configured port
+
+
+def _loopback_hosts():
+    global _ALLOWED_HOSTS
+    if _ALLOWED_HOSTS is None:
+        port = load_config().get("port", 5005)
+        _ALLOWED_HOSTS = {f"127.0.0.1:{port}", f"localhost:{port}",
+                          "127.0.0.1", "localhost"}
+    return _ALLOWED_HOSTS
+
+
+@app.before_request
+def _guard_local_only():
+    host = (request.host or "").lower()
+    if host not in _loopback_hosts():
+        abort(403)
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        origin = request.headers.get("Origin")
+        if origin:
+            from urllib.parse import urlparse
+            if (urlparse(origin).hostname or "").lower() not in ("127.0.0.1", "localhost"):
+                abort(403)
 
 
 # ---------------------------------------------------------------- storage ----
@@ -125,9 +174,19 @@ def _read_meeting(meeting_id):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+_META_WRITE_LOCK = threading.Lock()
+
+
 def _write_meeting(meta):
     path = _dir_for(meta["id"]) / "meeting.json"
-    path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    data = json.dumps(meta, ensure_ascii=False, indent=1)
+    # Atomic write: a concurrent reader/writer can never see a half-written
+    # file. os.replace is atomic within a directory. The lock keeps two
+    # writers from clobbering each other's temp file.
+    with _META_WRITE_LOCK:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(data, encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def _read_meeting_safe(meeting_id):
@@ -206,8 +265,9 @@ def _list_meetings(query=""):
 
 # ------------------------------------------------------------- processing ----
 
-def _start_processing(meeting_id):
-    JOBS[meeting_id] = {"state": "processing", "message": "Loading model…"}
+def _start_processing(meeting_id, claimed=False):
+    if not claimed:  # record_stop path: register the job now
+        JOBS[meeting_id] = {"state": "processing", "message": "Loading model…"}
 
     def update(msg):
         JOBS[meeting_id]["message"] = msg
@@ -675,10 +735,6 @@ def rename_speaker(meeting_id):
 def reprocess(meeting_id):
     if REC.is_recording and REC.meeting_id == meeting_id:
         return jsonify({"error": "Meeting is currently recording"}), 409
-    if JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Already processing"}), 409
-    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Meeting is being summarized — try again in a moment"}), 409
     meta = _read_meeting(meeting_id)
     has_audio = any(
         (_dir_for(meeting_id) / t["file"]).exists()
@@ -686,9 +742,13 @@ def reprocess(meeting_id):
     )
     if not has_audio:
         return jsonify({"error": "No audio files for this meeting"}), 400
+    denied = _claim_job(JOBS, meeting_id, "Loading model…",
+                        blockers=[(SUMMARY_JOBS, "Meeting is being summarized — try again in a moment")])
+    if denied:
+        return jsonify(denied[0]), denied[1]
     meta["status"] = "processing"
     _write_meeting(meta)
-    _start_processing(meeting_id)
+    _start_processing(meeting_id, claimed=True)
     return jsonify({"ok": True})
 
 
@@ -719,19 +779,18 @@ def recluster(meeting_id):
 @app.post("/api/meetings/<meeting_id>/tidy")
 def tidy_meeting(meeting_id):
     """Clean the transcript with the on-device model (Apple Intelligence)."""
-    if JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Meeting is being processed"}), 409
-    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Meeting is being summarized — try again in a moment"}), 409
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to tidy yet"}), 400
     llm_ok, llm_reason = local_llm.available()
     if not llm_ok:
         return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
+    denied = _claim_job(JOBS, meeting_id, "Tidying on this Mac…",
+                        blockers=[(SUMMARY_JOBS, "Meeting is being summarized — try again in a moment")])
+    if denied:
+        return jsonify(denied[0]), denied[1]
     meta["status"] = "processing"
     _write_meeting(meta)
-    JOBS[meeting_id] = {"state": "processing", "message": "Tidying on this Mac…"}
 
     def run():
         try:
@@ -775,17 +834,16 @@ def tidy_undo(meeting_id):
 def summarize_meeting(meeting_id):
     """Generate a summary + action items with the on-device model (Apple
     Intelligence). Runs in the background; the transcript stays visible."""
-    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Already summarizing"}), 409
-    if JOBS.get(meeting_id, {}).get("state") == "processing":
-        return jsonify({"error": "Meeting is being processed"}), 409
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to summarize yet"}), 400
     llm_ok, llm_reason = local_llm.available()
     if not llm_ok:
         return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
-    SUMMARY_JOBS[meeting_id] = {"state": "processing", "message": "Summarizing on this Mac…"}
+    denied = _claim_job(SUMMARY_JOBS, meeting_id, "Summarizing on this Mac…",
+                        blockers=[(JOBS, "Meeting is being processed")])
+    if denied:
+        return jsonify(denied[0]), denied[1]
 
     def run():
         try:
