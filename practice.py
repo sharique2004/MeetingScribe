@@ -16,12 +16,12 @@ from datetime import datetime
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
 
 import screener
-from config import BASE_DIR
+from config import DATA_DIR
 
 log = logging.getLogger("meetingscribe.practice")
 
-SESSIONS_DIR = BASE_DIR / "practice"
-SESSIONS_DIR.mkdir(exist_ok=True)
+SESSIONS_DIR = DATA_DIR / "practice"
+SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 bp = Blueprint("practice", __name__)
 

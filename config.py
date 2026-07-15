@@ -4,14 +4,22 @@ import json
 import os
 from pathlib import Path
 
+# Code lives here (templates, tools, the Python modules). When MeetingScribe
+# runs from inside the downloaded .app bundle, this is read-only.
 BASE_DIR = Path(__file__).resolve().parent
-RECORDINGS_DIR = BASE_DIR / "recordings"
-MODELS_DIR = BASE_DIR / "models"
-CONFIG_PATH = BASE_DIR / "config.json"
+
+# User data (recordings, models, config) lives in a writable directory. The
+# packaged app sets MEETINGSCRIBE_DATA=~/.meetingscribe so recordings survive
+# app updates and the bundle stays read-only; running from a source checkout
+# (no env var) keeps everything in the project folder as before.
+DATA_DIR = Path(os.environ.get("MEETINGSCRIBE_DATA") or BASE_DIR)
+RECORDINGS_DIR = DATA_DIR / "recordings"
+MODELS_DIR = DATA_DIR / "models"
+CONFIG_PATH = DATA_DIR / "config.json"
 
 # Keep HuggingFace downloads quiet and self-contained on Windows.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-# Keep all model downloads (Whisper, MLX, speaker embeddings) in models/.
+# Keep all model downloads (Whisper, speaker embeddings) under DATA_DIR.
 os.environ.setdefault("HF_HOME", str(MODELS_DIR / "hf"))
 
 DEFAULTS = {
@@ -60,5 +68,5 @@ def load_config():
     return cfg
 
 
-for _d in (RECORDINGS_DIR, MODELS_DIR):
-    _d.mkdir(exist_ok=True)
+for _d in (DATA_DIR, RECORDINGS_DIR, MODELS_DIR):
+    _d.mkdir(parents=True, exist_ok=True)

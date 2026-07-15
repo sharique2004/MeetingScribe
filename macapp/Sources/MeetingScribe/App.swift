@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notifications: Notifications!
     private var statusPoller: StatusPoller!
     private var nudgePoller: NudgePoller!
+    private var setupWindow: SetupWindow?
     private var lastRecorder = RecorderState()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -36,6 +37,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self?.mainWindow.backendWentDown()
             }
+        }
+        // Fresh download: build the local environment once, watching progress.
+        backend.onNeedsBootstrap = { [weak self] in
+            guard let self, self.setupWindow == nil else { return }
+            let win = SetupWindow()
+            self.setupWindow = win
+            win.show()
+            self.backend.runBootstrap(
+                onLine: { win.append($0) },
+                onDone: { ok, message in
+                    if ok {
+                        win.finish(success: true)
+                        self.setupWindow = nil
+                        self.mainWindow.show()  // backend spawns on the next health tick
+                    } else {
+                        win.finish(success: false, message: message)
+                    }
+                })
         }
 
         statusPoller.onRecorderChange = { [weak self] state in

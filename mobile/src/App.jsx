@@ -6,8 +6,15 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { insforge } from "./insforge.js";
+import Landing from "./Landing.jsx";
 
 const PAGE = 25;
+
+// Phones open straight into the transcript app (that's why they'd visit).
+// Desktops see the marketing / download landing page unless they ask for the
+// app (View your meetings) or are already signed in.
+const IS_PHONE = /iphone|ipad|ipod|android|mobile/i.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 /* ------------------------------------------------------------- helpers -- */
 
@@ -335,6 +342,12 @@ function MicIcon() {
 export default function App() {
   const [user, setUser] = useState(undefined); // undefined = still checking
   const meetingId = useHashRoute();
+  const [hash, setHash] = useState(window.location.hash);
+  useEffect(() => {
+    const onChange = () => setHash(window.location.hash);
+    window.addEventListener("hashchange", onChange);
+    return () => window.removeEventListener("hashchange", onChange);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -351,6 +364,13 @@ export default function App() {
   }
 
   if (user === undefined) return <div className="boot">MeetingScribe…</div>;
+
+  // Desktop, signed out, and not explicitly asking for the app → landing page.
+  const wantsApp = IS_PHONE || user || /^#\/(app|m\/)/.test(hash);
+  if (!wantsApp) {
+    return <Landing onOpenApp={() => (window.location.hash = "#/app")} />;
+  }
+
   if (!user) return <Login onSignedIn={setUser} />;
 
   return (

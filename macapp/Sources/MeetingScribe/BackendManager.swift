@@ -11,25 +11,49 @@ final class BackendManager {
     static let port = 5005
     let baseURL = URL(string: "http://127.0.0.1:\(BackendManager.port)")!
 
-    /// Where app.py lives. Baked into Info.plist by the build script.
+    /// Where app.py lives — bundled inside the .app for a downloaded copy, or
+    /// a source checkout for developer builds.
     let projectDir: URL
     let pythonPath: String
+    let dataDir: URL
+    /// True when running the shipped self-contained bundle (as opposed to a
+    /// developer source checkout). Determines whether we can self-bootstrap.
+    let bundled: Bool
 
     private(set) var healthy = false
     var onHealthChange: ((Bool) -> Void)?
+    /// Called when the local environment must be built before the backend can
+    /// run (fresh download). The handler drives the setup window + bootstrap.
+    var onNeedsBootstrap: (() -> Void)?
 
     private var process: Process?
     private var restartDelay: TimeInterval = 2
     private var spawnedAt = Date.distantPast
     private var quitting = false
+    private(set) var bootstrapping = false
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let configured = Bundle.main.object(forInfoDictionaryKey: "MSProjectDir") as? String
-        let dir = configured.map { NSString(string: $0).expandingTildeInPath }
-            ?? home.appendingPathComponent("MeetingScribe").path
-        projectDir = URL(fileURLWithPath: dir)
-        pythonPath = home.appendingPathComponent(".meetingscribe/venv/bin/python").path
+        dataDir = home.appendingPathComponent(".meetingscribe")
+        pythonPath = dataDir.appendingPathComponent("venv/bin/python").path
+
+        // Prefer the Python source bundled inside the app (a downloaded copy);
+        // fall back to the Info.plist path or ~/MeetingScribe for dev builds.
+        let bundledApp = Bundle.main.resourceURL?.appendingPathComponent("app")
+        if let b = bundledApp, FileManager.default.fileExists(atPath: b.appendingPathComponent("app.py").path) {
+            projectDir = b
+            bundled = true
+        } else {
+            let configured = Bundle.main.object(forInfoDictionaryKey: "MSProjectDir") as? String
+            let dir = configured.map { NSString(string: $0).expandingTildeInPath }
+                ?? home.appendingPathComponent("MeetingScribe").path
+            projectDir = URL(fileURLWithPath: dir)
+            bundled = false
+        }
+    }
+
+    var needsBootstrap: Bool {
+        !FileManager.default.isExecutableFile(atPath: pythonPath)
     }
 
     func start() {
@@ -61,10 +85,15 @@ final class BackendManager {
 
     private func spawnIfNeeded() {
         if let p = process, p.isRunning { return }  // starting up — give it time
+        if bootstrapping { return }
         guard Date().timeIntervalSince(spawnedAt) >= restartDelay else { return }
-        guard FileManager.default.isExecutableFile(atPath: pythonPath),
-              FileManager.default.fileExists(atPath: projectDir.appendingPathComponent("app.py").path) else {
+        guard FileManager.default.fileExists(atPath: projectDir.appendingPathComponent("app.py").path) else {
             presentMissingInstall()
+            return
+        }
+        if needsBootstrap {
+            // Fresh download: build the local environment first.
+            if bundled { onNeedsBootstrap?() } else { presentMissingInstall() }
             return
         }
         let p = Process()
@@ -73,6 +102,7 @@ final class BackendManager {
         p.currentDirectoryURL = projectDir
         var env = ProcessInfo.processInfo.environment
         env["MEETINGSCRIBE_NO_BROWSER"] = "1"
+        if bundled { env["MEETINGSCRIBE_DATA"] = dataDir.path }
         p.environment = env
         p.standardOutput = FileHandle.nullDevice
         if let logHandle = try? FileHandle(forWritingTo: logURL()) {
@@ -102,6 +132,48 @@ final class BackendManager {
             NSLog("could not start backend: \(error)")
             restartDelay = min(restartDelay * 2, 30)
             spawnedAt = Date()
+        }
+    }
+
+    /// Run the bundled bootstrap once (fresh download): build the venv, install
+    /// dependencies, compile the Speech helpers. Streams progress lines.
+    func runBootstrap(onLine: @escaping (String) -> Void,
+                      onDone: @escaping (Bool, String?) -> Void) {
+        guard let script = Bundle.main.resourceURL?
+            .appendingPathComponent("bootstrap.sh"), !bootstrapping else {
+            onDone(false, "Setup script is missing from the app bundle.")
+            return
+        }
+        bootstrapping = true
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [script.path, projectDir.path]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        var sawComplete = false
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                let s = String(line)
+                if s.contains("SETUP-COMPLETE") { sawComplete = true; continue }
+                if !s.isEmpty { DispatchQueue.main.async { onLine(s) } }
+            }
+        }
+        p.terminationHandler = { [weak self] proc in
+            DispatchQueue.main.async {
+                self?.bootstrapping = false
+                pipe.fileHandleForReading.readabilityHandler = nil
+                let ok = proc.terminationStatus == 0 && sawComplete
+                onDone(ok, ok ? nil : "Setup exited with an error — see the log above.")
+            }
+        }
+        do {
+            try p.run()
+        } catch {
+            bootstrapping = false
+            onDone(false, "Could not start setup: \(error.localizedDescription)")
         }
     }
 

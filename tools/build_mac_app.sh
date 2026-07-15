@@ -1,21 +1,24 @@
 #!/bin/bash
-# Build and install MeetingScribe.app — the native menu-bar Mac app.
+# Build MeetingScribe.app — a self-contained, distributable Mac app.
 #
-# Compiles macapp/Sources with bare swiftc (Command Line Tools are enough,
-# same as the other Swift helpers), assembles the .app bundle, draws the
-# icon, ad-hoc code-signs it (required for notifications), and installs to
-# /Applications (falling back to ~/Applications).
+# The Python source ships INSIDE the bundle (Contents/Resources/app), so a
+# downloaded copy is complete on its own. It does not ship the ~2 GB of
+# Python dependencies; the app builds those on first launch via the bundled
+# bootstrap.sh (see BackendManager.runBootstrap). User data (recordings,
+# models, config) lives in ~/.meetingscribe, so the bundle stays read-only.
 #
-# The project path is baked into Info.plist (MSProjectDir) so the app can
-# find app.py and the venv wherever the user keeps this folder.
+# Compiles macapp/Sources with bare swiftc (Command Line Tools are enough),
+# assembles the bundle, draws the icon, ad-hoc signs it. Pass a destination
+# dir as arg 1 (default: install into /Applications).
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="MeetingScribe"
 BUNDLE_ID="com.meetingscribe.app"
+VERSION="2.0"
 VENV_PY="$HOME/.meetingscribe/venv/bin/python"
 
-DEST_DIR="/Applications"
+DEST_DIR="${1:-/Applications}"
 [ -w "$DEST_DIR" ] || DEST_DIR="$HOME/Applications"
 mkdir -p "$DEST_DIR"
 DEST="$DEST_DIR/$APP_NAME.app"
@@ -29,8 +32,22 @@ xcrun swiftc -O -parse-as-library \
 
 echo "Assembling $DEST…"
 rm -rf "$DEST"
-mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources"
+mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources/app"
 cp "$BUILD_DIR/$APP_NAME" "$DEST/Contents/MacOS/$APP_NAME"
+
+# Bundle the Python source (everything the backend needs, none of the data).
+echo "Bundling the Python engine…"
+APP_SRC="$DEST/Contents/Resources/app"
+( cd "$PROJECT" && rsync -a \
+    --exclude ".git" --exclude "__pycache__" --exclude "*.pyc" \
+    --exclude "recordings" --exclude "models" --exclude "practice" \
+    --exclude "macapp" --exclude "mobile" --exclude ".insforge" \
+    --exclude "config.json" --exclude "*.log" --exclude ".DS_Store" \
+    --exclude "venv" \
+    ./*.py templates tools requirements.txt static "$APP_SRC/" 2>/dev/null || true )
+# The static/ folder is optional.
+cp "$PROJECT/tools/bootstrap.sh" "$DEST/Contents/Resources/bootstrap.sh"
+chmod +x "$DEST/Contents/Resources/bootstrap.sh"
 
 cat > "$DEST/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -39,14 +56,13 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>$APP_NAME</string>
   <key>CFBundleDisplayName</key><string>$APP_NAME</string>
   <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
-  <key>CFBundleVersion</key><string>2.0</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>$APP_NAME</string>
-  <key>LSMinimumSystemVersion</key><string>26.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
-  <key>MSProjectDir</key><string>$PROJECT</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>MeetingScribe records meetings with your microphone. Audio never leaves this Mac.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
@@ -56,18 +72,19 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# Icon: drawn procedurally by tools/make_icon.py (needs the venv's numpy).
+# Icon: drawn procedurally by tools/make_icon.py (needs numpy — available in
+# the build machine's venv). Ships pre-built inside the bundle.
 if [ -x "$VENV_PY" ] && "$VENV_PY" "$PROJECT/tools/make_icon.py" \
         "$DEST/Contents/Resources/$APP_NAME.icns" 2>/dev/null; then
-    echo "wrote $DEST/Contents/Resources/$APP_NAME.icns"
+    echo "wrote the app icon"
 else
     echo "(icon skipped — venv python or numpy unavailable)"
 fi
 
-# Ad-hoc signature: enough for local use, and required for the app to post
-# native notifications. Distribution needs Developer ID + notarization.
-codesign --force --sign - "$DEST"
+# Ad-hoc signature: enough to run locally and to post notifications. A
+# downloaded copy is unsigned by a Developer ID, so Gatekeeper asks the user
+# to right-click → Open the first time (the download page explains this).
+codesign --force --deep --sign - "$DEST" 2>/dev/null || codesign --force --sign - "$DEST"
 
 touch "$DEST"  # nudge LaunchServices to refresh the icon
-echo "Installed: $DEST"
-echo "Launch it from Spotlight (⌘-space, type MeetingScribe), or drag it to the Dock."
+echo "Built: $DEST"
