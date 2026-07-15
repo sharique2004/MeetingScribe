@@ -28,6 +28,10 @@ final class RecordingPanel {
         panel.isMovableByWindowBackground = true
         panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = true
+        // Excluded from screen capture: the panel stays visible to the user
+        // but never shows up in screen shares or recordings, so recording a
+        // meeting stays private.
+        panel.sharingType = .none
 
         let dot = NSView()
         dot.wantsLayer = true

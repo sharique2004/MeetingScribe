@@ -23,6 +23,7 @@ import local_llm
 import pipeline
 import summarize
 import sync
+import tech_vocabulary
 import tidy
 from audio_recorder import MeetingRecorder
 from config import BASE_DIR, RECORDINGS_DIR, load_config
@@ -411,17 +412,19 @@ def _do_record_start(data):
         meeting_dir = RECORDINGS_DIR / _folder_name_for({"id": meeting_id, "title": title})
         meeting_dir.mkdir(parents=True)
 
-        # Live captions: bias recognition toward attendee names + user
-        # vocabulary; feed the recorder's PCM straight into the streaming
-        # recognizer. Optional — recording works identically without it.
+        # Live captions: bias recognition toward the user's vocabulary,
+        # attendee names, and the built-in tech-term list; feed the recorder's
+        # PCM straight into the streaming recognizer. Optional — recording
+        # works identically without it.
         taps = None
         if cfg.get("live_captions", True):
             try:
-                context = list(cfg.get("vocabulary") or [])
+                names = []
                 if event:
-                    context += (event.get("names") or [])
+                    names += (event.get("names") or [])
                     if event.get("organizer"):
-                        context.append(event["organizer"])
+                        names.append(event["organizer"])
+                context = tech_vocabulary.merge_context(cfg.get("vocabulary"), names)
                 if LIVE is not None:
                     LIVE.discard()
                 LIVE = live_captions.LiveSession(

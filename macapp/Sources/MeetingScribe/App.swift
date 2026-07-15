@@ -63,8 +63,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if state.recording {
                 self.recordingPanel.update(elapsed: state.elapsed, title: nil)
                 self.recordingPanel.show()
+                // Stealth: on the start transition only, tuck the main window
+                // away so just the small floating panel is on screen. The Dock
+                // icon or menu bar can still bring it back mid-recording.
+                if !self.lastRecorder.recording {
+                    self.mainWindow.hide()
+                }
             } else {
                 self.recordingPanel.hide()
+                // Recording ended: bring the app back so the user sees the
+                // processing state and, soon after, the transcript.
+                if self.lastRecorder.recording {
+                    self.mainWindow.show()
+                }
             }
             self.lastRecorder = state
         }

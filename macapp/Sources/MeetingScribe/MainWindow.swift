@@ -37,6 +37,12 @@ final class MainWindow: NSObject, WKUIDelegate, WKNavigationDelegate, WKDownload
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Hide without closing — the same thing windowShouldClose does, so the
+    /// app (and any recording) stays alive and the Dock icon brings it back.
+    func hide() {
+        window.orderOut(nil)
+    }
+
     /// Load the web app once the backend answers; safe to call repeatedly.
     func backendBecameHealthy() {
         guard !loadedApp else { return }

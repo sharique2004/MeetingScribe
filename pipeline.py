@@ -30,6 +30,7 @@ import numpy as np
 import diarization
 import stats as stats_mod
 import swift_helpers
+import tech_vocabulary
 from config import BASE_DIR, MODELS_DIR, load_config
 
 log = logging.getLogger("meetingscribe.pipeline")
@@ -645,6 +646,27 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     return meta
 
 
+# "get hub" -> "GitHub" etc. Compiled once; word-boundary, case-insensitive.
+_ALIAS_RES = [
+    (re.compile(rf"\b{re.escape(wrong)}\b", re.IGNORECASE), right)
+    for wrong, right in tech_vocabulary.ALIASES.items()
+]
+
+
+def _fix_known_mishearings(segments):
+    """Conservative post-pass: repair unambiguous multi-word mishearings of
+    tech terms in the batch transcript (segment text only)."""
+    fixed = 0
+    for seg in segments:
+        text = seg["text"]
+        for pattern, right in _ALIAS_RES:
+            text, n = pattern.subn(right, text)
+            fixed += n
+        seg["text"] = text
+    if fixed:
+        log.info("fixed %d known mishearing(s)", fixed)
+
+
 def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     """Read meeting.json + WAVs in meeting_dir, write back the transcript."""
     meeting_dir = Path(meeting_dir)
@@ -654,10 +676,12 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     # Per-meeting language override (chosen on the record form) beats config.
     if meta.get("language"):
         cfg["language"] = meta["language"]
-    # Bias recognition toward attendee names + user vocabulary (Apple backend).
-    cfg["_context_strings"] = (
-        list(cfg.get("vocabulary") or [])
-        + list((meta.get("calendar_event") or {}).get("names") or [])
+    # Bias recognition toward the user's vocabulary, attendee names, and the
+    # built-in tech-term list ("GitHub", "Kubernetes", …) — proper names and
+    # jargon are the recognizer's biggest error class.
+    cfg["_context_strings"] = tech_vocabulary.merge_context(
+        cfg.get("vocabulary"),
+        (meta.get("calendar_event") or {}).get("names"),
     )
     started = time.time()
     mode = meta.get("mode", "online")
@@ -682,6 +706,7 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
         progress_cb(f"Transcribing {key} track…")
         segs, lang = transcribe_track(path, key, cfg, progress_cb)
         _apply_offset(segs, float(track.get("start_offset") or 0.0))
+        _fix_known_mishearings(segs)
         transcripts[key] = segs
         languages[key] = lang
 
