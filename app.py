@@ -17,6 +17,7 @@ from datetime import datetime
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
+import live_captions
 import local_llm
 import pipeline
 import summarize
@@ -47,6 +48,7 @@ REC = MeetingRecorder()
 JOBS = {}  # meeting_id -> {"state": queued|processing|done|error, "message": str}
 SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str}
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
+LIVE = None  # live_captions.LiveSession for the current/last recording
 
 MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 # Folders are "<title> — <id>" so meetings are spottable in Finder, or a bare
@@ -264,6 +266,15 @@ def record_start():
     if not title and event:
         title = event["title"]
 
+    # Language: per-meeting choice from the record form, else the config.
+    cfg = load_config()
+    language = (data.get("language") or "").strip() or None
+    if language not in (None, "auto") and not re.match(r"^[a-zA-Z-]{2,10}$", language):
+        language = None
+    if language == "auto":
+        language = None
+
+    global LIVE
     with RECORD_LOCK:
         if REC.is_recording:
             return jsonify({"error": "Already recording"}), 409
@@ -272,9 +283,33 @@ def record_start():
             return jsonify({"error": "Just started another recording — wait a second"}), 409
         meeting_dir = RECORDINGS_DIR / _folder_name_for({"id": meeting_id, "title": title})
         meeting_dir.mkdir(parents=True)
+
+        # Live captions: bias recognition toward attendee names + user
+        # vocabulary; feed the recorder's PCM straight into the streaming
+        # recognizer. Optional — recording works identically without it.
+        taps = None
+        if cfg.get("live_captions", True):
+            try:
+                context = list(cfg.get("vocabulary") or [])
+                if event:
+                    context += (event.get("names") or [])
+                    if event.get("organizer"):
+                        context.append(event["organizer"])
+                if LIVE is not None:
+                    LIVE.discard()
+                LIVE = live_captions.LiveSession(
+                    locale=pipeline.apple_locale(language or cfg.get("language")),
+                    context_strings=context,
+                )
+                if LIVE.enabled:
+                    taps = {"mic": LIVE.tap("mic"), "system": LIVE.tap("system")}
+            except Exception as exc:  # captions must never block recording
+                app.logger.warning("live captions unavailable: %s", exc)
+                LIVE = None
+
         try:
-            auto_route = bool(load_config().get("auto_route_macos", True))
-            info = REC.start(meeting_dir, meeting_id, auto_route=auto_route)
+            auto_route = bool(cfg.get("auto_route_macos", True))
+            info = REC.start(meeting_dir, meeting_id, auto_route=auto_route, taps=taps)
         except RuntimeError as exc:
             shutil.rmtree(meeting_dir, ignore_errors=True)
             return jsonify({"error": str(exc)}), 500
@@ -297,8 +332,14 @@ def record_start():
         "warnings": info["warnings"],
         "routing": info.get("routing"),
     }
+    if language:
+        meta["language"] = language
     if event:
-        meta["calendar_event"] = {"title": event["title"], "start": event["start"]}
+        meta["calendar_event"] = {
+            "title": event["title"],
+            "start": event["start"],
+            "names": event.get("names") or [],
+        }
     _write_meeting(meta)
     return jsonify(meta)
 
@@ -310,6 +351,8 @@ def record_stop():
             return jsonify({"error": "Not recording"}), 409
         meeting_id = REC.meeting_id
         result = REC.stop()
+        if LIVE is not None:
+            LIVE.stop()  # helpers finalize; captions stay readable meanwhile
     meta = _read_meeting(meeting_id)
     for key, tr in result["tracks"].items():
         meta["tracks"].setdefault(key, {}).update(tr)
@@ -320,6 +363,18 @@ def record_stop():
     _write_meeting(meta)
     _start_processing(meeting_id)
     return jsonify(meta)
+
+
+@app.get("/api/live")
+def live():
+    """Live-caption events since ?since=<seq> for the current recording."""
+    if LIVE is None:
+        return jsonify({"enabled": False, "turns": [], "partials": {}, "seq": 0})
+    try:
+        since = max(0, int(request.args.get("since", 0)))
+    except (TypeError, ValueError):
+        since = 0
+    return jsonify(LIVE.snapshot(since=since))
 
 
 @app.get("/api/meetings")

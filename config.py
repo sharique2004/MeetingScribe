@@ -34,6 +34,12 @@ DEFAULTS = {
     # macOS: switch the sound output to a Multi-Output Device (speakers +
     # BlackHole) while recording, and switch back afterwards.
     "auto_route_macos": True,
+    # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
+    "live_captions": True,
+    # Extra words/names the speech recognizer should be biased toward, e.g.
+    # ["Kubernetes", "Priya", "InsForge"]. Calendar attendee names are added
+    # automatically per meeting.
+    "vocabulary": [],
     "port": 5005,
     "open_browser": True,
 }

@@ -215,6 +215,32 @@ def _apple_locale(cfg):
     return _APPLE_LOCALES.get(lang, "en-US")
 
 
+def apple_locale(language):
+    """Public: map a bare language code (or None) to an Apple locale id."""
+    return _apple_locale({"language": language})
+
+
+def _context_file(cfg):
+    """Write the contextual-strings file for the Apple helpers, or None.
+
+    Biasing recognition toward attendee names and user vocabulary fixes the
+    single biggest error class in meeting transcripts: proper names.
+    """
+    strings = [s for s in (cfg.get("_context_strings") or []) if str(s).strip()]
+    if not strings:
+        return None
+    import tempfile
+
+    try:
+        f = tempfile.NamedTemporaryFile(
+            "w", suffix=".json", prefix="ms-ctx-", delete=False)
+        json.dump({"strings": [str(s)[:80] for s in strings[:100]]}, f)
+        f.close()
+        return f.name
+    except OSError:
+        return None
+
+
 def _transcribe_apple(path, label, cfg, progress_cb):
     """Apple SpeechAnalyzer on the Neural Engine — fast, cool, on-device."""
     binary = _ensure_apple_binary()
@@ -222,10 +248,17 @@ def _transcribe_apple(path, label, cfg, progress_cb):
         raise RuntimeError("Apple Speech helper unavailable")
     locale = _apple_locale(cfg)
     progress_cb(f"Transcribing {label} with Apple Speech ({locale})…")
-    proc = subprocess.run(
-        [binary, str(path), locale],
-        capture_output=True, text=True, timeout=_APPLE_TIMEOUT_S,
-    )
+    cmd = [binary, str(path), locale]
+    ctx = _context_file(cfg)
+    if ctx:
+        cmd.append(ctx)
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=_APPLE_TIMEOUT_S,
+        )
+    finally:
+        if ctx:
+            Path(ctx).unlink(missing_ok=True)
     if proc.returncode != 0:
         detail = (proc.stderr or "").strip().splitlines()
         raise RuntimeError(detail[-1] if detail else f"exit {proc.returncode}")
@@ -243,6 +276,17 @@ def _transcribe_apple(path, label, cfg, progress_cb):
         out.append(
             {"start": float(seg["start"]), "end": float(seg["end"]), "text": text, "words": words}
         )
+    # Same silence guard the Whisper paths get: recognizers hallucinate
+    # phrases over dead air, and dead air is cheap to detect.
+    if out:
+        try:
+            audio = diarization.load_mono_16k(path)
+            filtered = [s for s in out if not _is_hallucination(s, audio)]
+            if len(filtered) < len(out):
+                log.info("%s: dropped %d silent segment(s)", label, len(out) - len(filtered))
+            out = filtered
+        except Exception as exc:  # guard is best-effort
+            log.debug("silence guard skipped for %s: %s", label, exc)
     return out, data.get("language")
 
 
@@ -318,17 +362,58 @@ def _echo_containment(mic_tokens, window_tokens):
     return matched / len(mic_tokens)
 
 
+def _trim_echo_words(seg, window_tokens):
+    """Word-level trim for part-echo segments: strip a leading/trailing run
+    of words that duplicate the system track, keep the genuine middle.
+
+    Conservative on purpose: only trims when the echoed edge run is ≥4 words,
+    the kept remainder is ≥3 words, and the segment has word timestamps.
+    Returns a trimmed copy, or None when no safe trim exists.
+    """
+    words = seg.get("words") or []
+    tokens = [_norm_text(w["w"]) for w in words]
+    pairs = [(i, t) for i, t in enumerate(tokens) if t]
+    if len(pairs) < 7 or not window_tokens:
+        return None
+    sm = difflib.SequenceMatcher(None, [t for _, t in pairs], window_tokens, autojunk=False)
+    echoed = set()
+    for block in sm.get_matching_blocks():
+        for k in range(block.a, block.a + block.size):
+            echoed.add(k)
+    # Echoed prefix / suffix runs (indices into `pairs`).
+    lead = 0
+    while lead < len(pairs) and lead in echoed:
+        lead += 1
+    tail = 0
+    while tail < len(pairs) - lead and (len(pairs) - 1 - tail) in echoed:
+        tail += 1
+    kept_n = len(pairs) - lead - tail
+    if kept_n < 3 or max(lead, tail) < 4:
+        return None
+    kept_words = [words[pairs[i][0]] for i in range(lead, len(pairs) - tail)]
+    trimmed = dict(seg)
+    trimmed["words"] = kept_words
+    trimmed["text"] = " ".join(w["w"].strip() for w in kept_words).strip()
+    trimmed["start"] = float(kept_words[0]["s"])
+    trimmed["end"] = float(kept_words[-1]["e"])
+    return trimmed if trimmed["text"] else None
+
+
 def drop_echo(mic_segs, sys_segs):
     """Remove mic segments that duplicate overlapping system-track speech.
 
     Remote voices can leak from the speakers back into the mic when the user
     is not wearing headphones; the system track is the clean copy, so the mic
-    duplicate is dropped.
+    duplicate is dropped. Segments that are only PART echo (the user starts
+    talking as the remote side finishes) get the echoed words trimmed off
+    instead of a whole-segment keep/drop decision.
 
     Matching is done against ALL system-track words inside the mic segment's
-    time window (not segment-by-segment): Whisper rarely puts the echo and
+    time window (not segment-by-segment): recognizers rarely put the echo and
     the original on the same segment boundaries, so per-segment comparison
     misses most duplicates that span two system segments.
+
+    Returns (kept_segments, dropped_count, trimmed_count).
     """
     sys_words = []
     for s in sys_segs:
@@ -341,7 +426,7 @@ def drop_echo(mic_segs, sys_segs):
     sys_words.sort(key=lambda w: w[0])
     starts = [w[0] for w in sys_words]
 
-    kept, dropped = [], 0
+    kept, dropped, trimmed = [], 0, 0
     for m in mic_segs:
         mic_tokens = _norm_text(m["text"]).split()
         win_start = float(m["start"]) - ECHO_SLACK_S
@@ -358,9 +443,16 @@ def drop_echo(mic_segs, sys_segs):
         threshold = 0.7 if len(mic_tokens) >= 4 else 0.999
         if ratio >= threshold:
             dropped += 1
+        elif ratio >= 0.35:
+            cut = _trim_echo_words(m, window_tokens)
+            if cut is not None:
+                trimmed += 1
+                kept.append(cut)
+            else:
+                kept.append(m)
         else:
             kept.append(m)
-    return kept, dropped
+    return kept, dropped, trimmed
 
 
 def _build_turns(labelled_segments):
@@ -558,7 +650,15 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     meeting_dir = Path(meeting_dir)
     meta_path = meeting_dir / "meeting.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    cfg = load_config()
+    cfg = dict(load_config())
+    # Per-meeting language override (chosen on the record form) beats config.
+    if meta.get("language"):
+        cfg["language"] = meta["language"]
+    # Bias recognition toward attendee names + user vocabulary (Apple backend).
+    cfg["_context_strings"] = (
+        list(cfg.get("vocabulary") or [])
+        + list((meta.get("calendar_event") or {}).get("names") or [])
+    )
     started = time.time()
     mode = meta.get("mode", "online")
     expected = meta.get("expected_speakers") or None
@@ -587,12 +687,17 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     # --- 2. Echo cleanup (online mode) --------------------------------------------
     if mode == "online" and transcripts.get("mic") and transcripts.get("system"):
-        kept, dropped = drop_echo(transcripts["mic"], transcripts["system"])
+        kept, dropped, trimmed = drop_echo(transcripts["mic"], transcripts["system"])
         transcripts["mic"] = kept
-        if dropped:
+        if dropped or trimmed:
+            parts = []
+            if dropped:
+                parts.append(f"removed {dropped} echo segment(s)")
+            if trimmed:
+                parts.append(f"trimmed echoed words from {trimmed} segment(s)")
             warnings.append(
-                f"Removed {dropped} mic segment(s) that were echo of the meeting audio "
-                "(tip: headphones avoid this entirely)."
+                "Mic audio contained speaker echo: " + " and ".join(parts)
+                + " (tip: headphones avoid this entirely)."
             )
 
     # --- 3+4. Speaker labelling and assembly ---------------------------------------

@@ -153,6 +153,7 @@ class _BaseTrackRecorder(threading.Thread):
         self.frames_written = 0
         self.started_at = None  # perf_counter at stream start
         self.error = None
+        self.tap = None  # optional fn(pcm_bytes, channels, rate) — must not block
 
     def _open_stream(self):
         raise NotImplementedError
@@ -182,6 +183,11 @@ class _BaseTrackRecorder(threading.Thread):
                 if samples.size:
                     rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
                     self.levels[self.key] = min(1.0, rms / 6000.0)
+                if self.tap is not None:
+                    try:  # live captions — never allowed to break recording
+                        self.tap(data, self.channels, self.rate)
+                    except Exception:
+                        self.tap = None
         except Exception as exc:
             self.error = f"{type(exc).__name__}: {exc}"
             log.warning("%s track failed: %s", self.key, self.error)
@@ -394,7 +400,7 @@ class MeetingRecorder:
             self._preflight_cache = (now, info)
             return info
 
-    def start(self, out_dir, meeting_id, auto_route=True):
+    def start(self, out_dir, meeting_id, auto_route=True, taps=None):
         with self._lock:
             if self._tracks:
                 raise RuntimeError("Already recording")
@@ -435,6 +441,8 @@ class MeetingRecorder:
                     rec = _WasapiTrackRecorder(self._pa, dev, path, self._stop_event, self.levels, key)
                 else:
                     rec = _SounddeviceTrackRecorder(dev, path, self._stop_event, self.levels, key)
+                if taps:
+                    rec.tap = taps.get(key)
                 self._tracks[key] = rec
             if BACKEND == "wasapi" and "system" in self._tracks:
                 self._silence = _SilenceKeeper(self._pa, self._stop_event)

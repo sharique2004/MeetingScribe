@@ -270,6 +270,16 @@ input, select { font: inherit; color: inherit; }
 .meter .m-track { height: 6px; border-radius: 3px; background: color-mix(in oklab, var(--text) 10%, transparent); overflow: hidden; }
 .meter .m-fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .12s linear; }
 .rec-stop { width: 100%; height: 40px; border-radius: var(--r-md); background: var(--danger); color: #fff; font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.rec-lang { width: 100%; height: 34px; padding: 0 8px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--panel-2); font-size: 13px; outline: none; }
+.live-pane { text-align: left; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); margin: 0 0 22px; overflow: hidden; }
+.live-head { display: flex; align-items: center; gap: 7px; padding: 8px 12px; font-size: 11px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+.live-head .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); animation: ms-blink 1.6s ease infinite; }
+.live-head .live-note { font-weight: 450; text-transform: none; letter-spacing: 0; color: var(--text-faint); margin-left: auto; }
+.live-body { max-height: 240px; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+.live-row { display: flex; gap: 8px; font-size: 13px; line-height: 1.5; }
+.live-row .live-who { flex: 0 0 auto; font-weight: 650; color: var(--text-dim); min-width: 38px; }
+.live-row .live-who.you { color: var(--accent); }
+.live-row.is-partial { opacity: .55; font-style: italic; }
 .rec-stop:hover { filter: brightness(1.08); }
 .proc-steps { display: flex; flex-direction: column; gap: 2px; margin-top: 18px; }
 .proc-step { display: flex; align-items: center; gap: 11px; padding: 9px 4px; font-size: 13px; color: var(--text-faint); }
@@ -408,6 +418,8 @@ const S = {
   menu: null,               // 'export' | 'more'
   reclusterFlash: null,
   recType: "online",
+  recLang: "auto",          // per-meeting language for speech recognition
+  live: {enabled: false, turns: [], partials: {}, seq: 0},
   pendingTitle: "",
   busyTidy: false,
   busySummary: false,
@@ -1083,6 +1095,40 @@ function procStepIndex(msg) {
   for (let i = PROC_STEPS.length - 1; i >= 0; i--) if (PROC_STEPS[i].match.test(msg || "")) return i;
   return 0;
 }
+
+/* Live captions: final lines + a dimmed in-progress line per track. */
+function liveHTML() {
+  const rows = S.live.turns.map(t =>
+    `<div class="live-row"><span class="live-who ${t.track === "mic" ? "you" : ""}">${esc(t.who)}</span><span>${esc(t.text)}</span></div>`);
+  for (const [track, p] of Object.entries(S.live.partials || {})) {
+    if (p && p.text) rows.push(
+      `<div class="live-row is-partial"><span class="live-who ${track === "mic" ? "you" : ""}">${esc(p.who || track)}</span><span>${esc(p.text)}</span></div>`);
+  }
+  return rows.length ? rows.join("") : `<div class="live-row is-partial"><span>Listening…</span></div>`;
+}
+async function pollLive() {
+  try {
+    if (S.rec.recording) {
+      const r = await api(`/api/live?since=${S.live.seq}`);
+      const wasEnabled = S.live.enabled;
+      S.live.enabled = !!r.enabled;
+      if (r.enabled) {
+        if (r.turns && r.turns.length) S.live.turns = S.live.turns.concat(r.turns).slice(-400);
+        S.live.partials = r.partials || {};
+        S.live.seq = r.seq || S.live.seq;
+        const body = $("liveBody");
+        if (body) {
+          const stick = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+          body.innerHTML = liveHTML();
+          if (stick) body.scrollTop = body.scrollHeight;
+        } else if (!wasEnabled) {
+          renderMain();  // pane appears once the first helper spins up
+        }
+      }
+    }
+  } catch (e) { /* transient */ }
+  setTimeout(pollLive, S.rec.recording ? 700 : 2000);
+}
 function renderRecorder() {
   const rec = S.rec || {};
   if (rec.recording) {
@@ -1103,11 +1149,18 @@ function renderRecorder() {
           <div class="m-track"><div class="m-fill" id="lvlSys" style="width:0%"></div></div>
         </div>
       </div>
+      ${S.live.enabled ? `
+      <div class="live-pane">
+        <div class="live-head"><span class="dot"></span>Live captions <span class="live-note">on-device · draft — the full transcript is built when you stop</span></div>
+        <div class="live-body" id="liveBody">${liveHTML()}</div>
+      </div>` : ""}
       <button class="rec-stop" id="stopBtn" onclick="stopRecording()">${icon("stop", 14)}Stop &amp; transcribe</button>
       <div class="hint" style="font-size:11.5px;color:var(--text-faint);margin-top:12px">
         Both tracks stay on this Mac. Remember to tell people you're recording.
       </div>
     </div></div>`;
+    const lb = $("liveBody");
+    if (lb) lb.scrollTop = lb.scrollHeight;
     return;
   }
 
@@ -1147,6 +1200,16 @@ function renderRecorder() {
         : "Everyone shares this Mac's microphone and voices are told apart automatically. Place the laptop near the centre of the table."}</div>
     </div>
     <div class="field">
+      <label>Language</label>
+      <select class="rec-lang" onchange="S.recLang = this.value">
+        ${[["auto", "Auto-detect"], ["en", "English"], ["hi", "Hindi"], ["es", "Spanish"],
+           ["fr", "French"], ["de", "German"], ["it", "Italian"], ["pt", "Portuguese"],
+           ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese"], ["ar", "Arabic"], ["ru", "Russian"]]
+          .map(([v, n]) => `<option value="${v}"${S.recLang === v ? " selected" : ""}>${n}</option>`).join("")}
+      </select>
+      <div class="hint">Locks speech recognition to one language for better accuracy. Live captions always need a chosen or default language.</div>
+    </div>
+    <div class="field">
       <label>Audio devices</label>
       <div class="rec-devices">
         <div class="rec-dev">
@@ -1179,8 +1242,10 @@ async function startRecording() {
   btn.disabled = true;
   S.pendingTitle = ($("recTitle") || {}).value || "";
   try {
-    const meta = await postJSON("/api/record/start", {title: S.pendingTitle, mode: S.recType});
+    const meta = await postJSON("/api/record/start",
+      {title: S.pendingTitle, mode: S.recType, language: S.recLang});
     (meta.warnings || []).forEach(w => toast("⚠ " + w, 6000));
+    S.live = {enabled: false, turns: [], partials: {}, seq: 0};
     S.activeId = meta.id;
     await refreshList();
     await pollStatus();
@@ -1213,12 +1278,20 @@ function renderProcessing(meta) {
       <span>${s.label}</span>
       <span class="proc-detail" id="${i === idx ? "procMsg" : ""}">${i === idx ? esc(job.message || "Working…") : s.detail}</span>
     </div>`).join("");
+  // Live captions captured during the recording stay readable while the
+  // full-quality transcript is being built.
+  const capturedRows = (S.live.turns || []).map(t =>
+    `<div class="live-row"><span class="live-who ${t.track === "mic" ? "you" : ""}">${esc(t.who)}</span><span>${esc(t.text)}</span></div>`).join("");
   $("main").innerHTML = `
   <div class="rec-stage"><div class="rec-card">
     <div class="rec-kicker">Processing on-device</div>
     <h1 class="rec-h1" style="margin-bottom:4px">${esc(meta.title)}</h1>
     <div class="mono" style="font-size:12px;color:var(--text-dim)">${meta.duration ? fmtTs(meta.duration) + " recorded · " : ""}~90 s for a 45-min call</div>
     <div class="proc-steps">${steps}</div>
+    ${capturedRows ? `<div class="live-pane" style="margin-top:14px">
+      <div class="live-head">Live captions from the recording <span class="live-note">draft — being replaced by the full transcript</span></div>
+      <div class="live-body" style="max-height:180px">${capturedRows}</div>
+    </div>` : ""}
   </div></div>`;
 }
 
@@ -1380,6 +1453,7 @@ async function pollCalendar() {
   pollStatus();
   pollDevices();
   pollCalendar();
+  pollLive();
   setInterval(pollCalendar, 300000);
 })();
 </script>

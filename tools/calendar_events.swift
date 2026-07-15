@@ -26,6 +26,7 @@ struct EventOut: Codable {
     let calendar: String
     let attendees: Int
     let organizer: String?
+    let names: [String]   // attendee display names (excludes the current user)
 }
 
 func die(_ message: String, code: Int32 = 3) -> Never {
@@ -76,13 +77,21 @@ for event in events where !event.isAllDay {
     if !all.isEmpty && others.count == all.count {
         others.removeLast()
     }
+    // Display names for speech-recognition biasing; skip bare emails.
+    var names: [String] = []
+    for person in others {
+        guard let n = person.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !n.isEmpty, !n.contains("@"), !names.contains(n) else { continue }
+        names.append(n)
+    }
     out.append(EventOut(
         title: event.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Untitled event",
         start: start.timeIntervalSince1970,
         end: end.timeIntervalSince1970,
         calendar: event.calendar?.title ?? "",
         attendees: others.count,
-        organizer: event.organizer?.name
+        organizer: event.organizer?.name,
+        names: names
     ))
 }
 out.sort { $0.start < $1.start }

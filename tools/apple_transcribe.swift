@@ -7,7 +7,9 @@
 //       "words":[{"w":"Hello","s":1.2,"e":1.6}, …]}]}
 //
 // Build:  swiftc -O tools/apple_transcribe.swift -o ~/.meetingscribe/bin/apple_transcribe
-// Usage:  apple_transcribe <file.wav> [locale]   (locale default en-US)
+// Usage:  apple_transcribe <file.wav> [locale] [context.json]
+//   locale defaults to en-US; context.json may carry {"strings": ["Priya", …]}
+//   — names/vocabulary the recognizer should be biased toward.
 //
 // Exit codes: 0 ok · 2 usage/IO error · 3 backend/model unavailable.
 
@@ -33,17 +35,18 @@ func note(_ message: String) {
 struct AppleTranscribe {
     static func main() async {
         let args = CommandLine.arguments
-        guard args.count >= 2 else { die("usage: apple_transcribe <file.wav> [locale]") }
+        guard args.count >= 2 else { die("usage: apple_transcribe <file.wav> [locale] [context.json]") }
         let url = URL(fileURLWithPath: args[1])
         let localeID = (args.count >= 3 && !args[2].isEmpty) ? args[2] : "en-US"
+        let contextPath = (args.count >= 4 && !args[3].isEmpty) ? args[3] : nil
         do {
-            try await transcribe(url: url, localeID: localeID)
+            try await transcribe(url: url, localeID: localeID, contextPath: contextPath)
         } catch {
             die("apple_transcribe error: \(error)", code: 3)
         }
     }
 
-    static func transcribe(url: URL, localeID: String) async throws {
+    static func transcribe(url: URL, localeID: String, contextPath: String?) async throws {
         let requested = Locale(identifier: localeID)
         let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) ?? requested
 
@@ -61,6 +64,17 @@ struct AppleTranscribe {
         }
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+
+        // Bias recognition toward meeting-specific names and vocabulary.
+        if let path = contextPath,
+           let data = FileManager.default.contents(atPath: path),
+           let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           let strings = obj["strings"] as? [String], !strings.isEmpty {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = strings
+            try await analyzer.setContext(context)
+        }
+
         let audioFile = try AVAudioFile(forReading: url)
 
         // Collect finalized results as they stream in.
