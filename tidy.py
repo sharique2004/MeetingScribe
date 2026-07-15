@@ -1,10 +1,11 @@
-"""Optional transcript clean-up through the local `claude` CLI.
+"""Optional transcript clean-up — fully on-device via Apple Intelligence.
 
-Uses the Claude Code subscription already on this machine — no API key.
-Only the transcript TEXT is sent, never audio. Claude returns edit
-*operations* (drop / trim / merge speakers / rename), which are validated
-and applied locally: a trim may only keep words that are already in the
-turn, so the model cannot invent words that were never transcribed.
+The transcript TEXT (never audio) goes to the ~3B on-device model through
+local_llm.py. The model returns edit *operations* (drop / trim / merge
+speakers / rename), which are validated and applied locally: a trim may only
+keep words that are already in the turn, so the model cannot invent words
+that were never transcribed. Long transcripts are cleaned in overlapping
+windows (the model has a 4K-token context) and the operations are merged.
 
 A backup of the pre-tidy transcript is kept as meeting.pretidy.json and can
 be restored from the UI.
@@ -12,71 +13,56 @@ be restored from the UI.
 
 import json
 import logging
-import os
 import re
-import shutil
-import subprocess
 from pathlib import Path
 
+import local_llm
 import stats as stats_mod
 
 log = logging.getLogger("meetingscribe.tidy")
 
-TIMEOUT_S = 900
 TURN_MERGE_GAP_S = 3.0
+WINDOW_TURNS = 36          # turns per model call
+WINDOW_OVERLAP = 6         # turns repeated between windows (echo pairs sit close)
+WINDOW_MAX_CHARS = 8000    # char cap per window payload (4K-token context)
 
-PROMPT = """You are cleaning an automatically generated meeting transcript. It has two known defect types:
+INSTRUCTIONS = """You are cleaning one window of an automatically generated meeting transcript. It has two known defect types:
 
-1. ECHO DUPLICATES: when the local user is not wearing headphones, the remote
-   side's voice leaks from the speakers into the microphone. The same sentence
-   then appears twice: once on the "system" track (the clean copy, belongs to a
-   remote speaker) and once on the "mic" track (the echo), a few seconds apart
-   and often split across turn boundaries. The mic track is genuine only when
-   the local user ("you") is actually speaking.
-2. OVER-SPLIT SPEAKERS: one real person may have been split into several labels
-   (e.g. s1, s2 and s4 are clearly the same voice given the conversation flow).
-   The label "you" is always the local user and is never merged into others.
+1. ECHO DUPLICATES: when the local user is not wearing headphones, the remote side's voice leaks from the speakers into the microphone. The same sentence then appears twice: once on the "system" track (the clean copy, belongs to a remote speaker) and once on the "mic" track (the echo), a few seconds apart and often split across turn boundaries. The mic track is genuine only when the local user ("you") is actually speaking.
+2. OVER-SPLIT SPEAKERS: one real person may have been split into several labels (e.g. s1, s2 and s4 are clearly the same voice given the conversation flow). The label "you" is always the local user and is never merged into others.
 
-INPUT: a JSON object with "speakers" (label -> display name) and "turns"
-(id, speaker label, track, start time in seconds, text).
+INPUT: a JSON object with "speakers" (label -> display name) and "turns" (id, speaker label, track, start time in seconds, text). The ids are global — return them exactly as given.
 
-OUTPUT: ONLY a JSON object — no markdown fences, no commentary:
-{
- "merge_speakers": {"s2": "s1"},
- "drop_turns": [12, 47],
- "trim_turns": {"33": "text to keep"},
- "rename_speakers": {"s1": "Jess"}
-}
-
-Field meanings and rules:
-- merge_speakers: fold the key label into the value label when they are the
-  same person. Never use "you" as a key.
-- drop_turns: ids of turns that are pure echo duplicates of a nearby turn
-  (within ~20 seconds) by ANOTHER speaker on the OTHER track. Drop the mic
-  copy of remote speech; keep what the local user genuinely said.
-- trim_turns: turns that are PART echo, PART genuine: give the text to KEEP.
-  The kept text must use ONLY words already present in that turn, in the same
-  order — never add, reorder or rephrase words.
-- rename_speakers: only when someone's real name is clearly stated in the
-  conversation (introductions, "thanks <name>", an interviewer naming
-  themselves). Otherwise leave names alone.
+Rules for the operations you return:
+- merge_speakers: fold one label into another when they are clearly the same person. "you" is the local user's own microphone — never fold "you" into another label, and never fold another label into "you" (an identical sentence on both tracks is an echo, not the same speaker).
+- drop_turns: ids of turns that are pure echo duplicates of a nearby turn (within ~20 seconds) by ANOTHER speaker on the OTHER track. Drop the mic copy of remote speech; keep what the local user genuinely said.
+- trim_turns: turns that are PART echo, PART genuine: give the text to KEEP. The kept text must use ONLY words already present in that turn, in the same order — never add, reorder or rephrase words.
+- rename_speakers: only when someone's real name is clearly stated in the conversation (introductions, "thanks <name>", an interviewer naming themselves). Otherwise leave names alone.
 - When unsure about any operation, do nothing — prefer keeping turns.
-- Use empty objects/arrays for operations you do not need.
-"""
+- Use empty arrays for operations you do not need."""
 
-
-def find_claude():
-    exe = shutil.which("claude")
-    if exe:
-        return exe
-    for cand in (
-        Path.home() / ".local" / "bin" / "claude",
-        Path("/usr/local/bin/claude"),
-        Path("/opt/homebrew/bin/claude"),
-    ):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+TIDY_SCHEMA = {
+    "type": "object", "name": "TidyOps", "properties": [
+        {"name": "merge_speakers", "type": "array", "max": 6,
+         "items": {"type": "object", "name": "Merge", "properties": [
+             {"name": "fold", "type": "string", "description": "the label to fold away (never 'you')"},
+             {"name": "into", "type": "string", "description": "the label it belongs to"}]},
+         "description": "labels that are the same person"},
+        {"name": "drop_turns", "type": "array", "items": {"type": "integer"}, "max": 40,
+         "description": "ids of pure-echo turns to delete"},
+        {"name": "trim_turns", "type": "array", "max": 20,
+         "items": {"type": "object", "name": "Trim", "properties": [
+             {"name": "id", "type": "integer"},
+             {"name": "keep", "type": "string",
+              "description": "the genuine part to keep, using only words already in the turn, in order"}]},
+         "description": "part-echo turns and the text to keep"},
+        {"name": "rename_speakers", "type": "array", "max": 8,
+         "items": {"type": "object", "name": "Rename", "properties": [
+             {"name": "label", "type": "string"},
+             {"name": "name", "type": "string", "description": "the real name stated in the conversation"}]},
+         "description": "labels whose real name was clearly stated"},
+    ],
+}
 
 
 def _norm_tokens(text):
@@ -88,31 +74,17 @@ def _is_ordered_subset(small, big):
     return all(tok in it for tok in small)
 
 
-def _extract_json(text):
-    """Claude was told to return bare JSON, but tolerate fences/prose."""
-    text = str(text).strip()
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-    if fenced:
-        text = fenced.group(1)
-    start = text.find("{")
-    if start == -1:
-        raise ValueError("no JSON object in Claude's reply")
-    depth = 0
-    for i in range(start, len(text)):  # first balanced {...}, ignore trailing prose
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return json.loads(text[start : i + 1])
-    raise ValueError("unbalanced JSON object in Claude's reply")
-
-
 def _resolve_merges(merges, speakers):
-    """Validated, transitively resolved label -> label mapping."""
+    """Validated, transitively resolved label -> label mapping.
+
+    "you" can be neither source nor target: it is the local user's own mic,
+    a physically different audio source from every other label.
+    """
     flat = {}
     for src, dst in (merges or {}).items():
-        if src == "you" or src not in speakers or dst not in speakers or src == dst:
+        if src == "you" or dst == "you":
+            continue
+        if src not in speakers or dst not in speakers or src == dst:
             continue
         flat[src] = dst
     resolved = {}
@@ -194,6 +166,62 @@ def apply_ops(meta, ops):
     return merged, new_speakers, summary
 
 
+# ------------------------------------------------------------------ windows --
+
+def _windows(turns):
+    """Overlapping windows of (global_id, turn) small enough for one call."""
+    entries = [
+        {"id": i, "speaker": t["speaker"], "track": t.get("track"),
+         "start": t["start"], "text": t["text"]}
+        for i, t in enumerate(turns)
+    ]
+    windows, start = [], 0
+    while start < len(entries):
+        window, size = [], 0
+        for e in entries[start:]:
+            cost = len(e["text"]) + 40
+            if window and (len(window) >= WINDOW_TURNS or size + cost > WINDOW_MAX_CHARS):
+                break
+            window.append(e)
+            size += cost
+        windows.append(window)
+        if start + len(window) >= len(entries):
+            break
+        start += max(1, len(window) - WINDOW_OVERLAP)
+    return windows
+
+
+def _merge_window_ops(all_ops):
+    """Union the per-window array ops into the dict shape apply_ops expects."""
+    merged = {"merge_speakers": {}, "drop_turns": [], "trim_turns": {}, "rename_speakers": {}}
+    seen_drops = set()
+    for ops in all_ops:
+        for m in ops.get("merge_speakers") or []:
+            src, dst = str(m.get("fold", "")), str(m.get("into", ""))
+            if src and dst and src not in merged["merge_speakers"]:
+                merged["merge_speakers"][src] = dst
+        for i in ops.get("drop_turns") or []:
+            try:
+                i = int(i)
+            except (TypeError, ValueError):
+                continue
+            if i not in seen_drops:
+                seen_drops.add(i)
+                merged["drop_turns"].append(i)
+        for t in ops.get("trim_turns") or []:
+            try:
+                idx = str(int(t.get("id")))
+            except (TypeError, ValueError):
+                continue
+            if idx not in merged["trim_turns"] and str(t.get("keep") or "").strip():
+                merged["trim_turns"][idx] = str(t["keep"])
+        for r in ops.get("rename_speakers") or []:
+            label, name = str(r.get("label", "")), str(r.get("name", "")).strip()
+            if label and name and label not in merged["rename_speakers"]:
+                merged["rename_speakers"][label] = name
+    return merged
+
+
 def tidy_meeting(meeting_dir, progress_cb=lambda msg: None):
     """Run the clean-up on one meeting; rewrites meeting.json in place."""
     meeting_dir = Path(meeting_dir)
@@ -202,44 +230,32 @@ def tidy_meeting(meeting_dir, progress_cb=lambda msg: None):
     turns = meta.get("turns") or []
     if not turns:
         raise RuntimeError("No transcript to tidy yet.")
-    exe = find_claude()
-    if exe is None:
-        raise RuntimeError("The `claude` CLI was not found on this machine.")
+    ok, reason = local_llm.available()
+    if not ok:
+        raise RuntimeError(local_llm.reason_message(reason))
 
-    payload = {
-        "speakers": meta.get("speakers", {}),
-        "turns": [
-            {
-                "id": i,
-                "speaker": t["speaker"],
-                "track": t.get("track"),
-                "start": t["start"],
-                "text": t["text"],
-            }
-            for i, t in enumerate(turns)
-        ],
-    }
-    progress_cb("Asking Claude to tidy the transcript (uses your Claude subscription)…")
-    proc = subprocess.run(
-        [exe, "-p", "--output-format", "json"],
-        input=PROMPT + "\n\n" + json.dumps(payload, ensure_ascii=False),
-        capture_output=True,
-        text=True,
-        timeout=TIMEOUT_S,
-        cwd=str(meeting_dir),
-    )
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise RuntimeError("claude CLI failed: " + (detail[-1] if detail else "unknown error"))
+    speakers = meta.get("speakers", {})
+    windows = _windows(turns)
+    all_ops = []
+    for w, window in enumerate(windows, 1):
+        if len(windows) > 1:
+            progress_cb(f"Tidying on this Mac ({w}/{len(windows)})…")
+        else:
+            progress_cb("Tidying on this Mac…")
+        payload = {"speakers": speakers, "turns": window}
+        try:
+            ops = local_llm.generate(
+                INSTRUCTIONS,
+                "Transcript window to clean:\n" + json.dumps(payload, ensure_ascii=False),
+                TIDY_SCHEMA, max_tokens=1200,
+            )
+        except local_llm.LocalLLMError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if isinstance(ops, dict):
+            all_ops.append(ops)
 
-    try:
-        envelope = json.loads(proc.stdout)
-        ops = _extract_json(envelope.get("result") or "")
-    except (ValueError, AttributeError) as exc:
-        raise RuntimeError(f"Could not parse Claude's reply: {exc}") from exc
-
-    progress_cb("Applying Claude's clean-up…")
-    new_turns, new_speakers, summary = apply_ops(meta, ops)
+    progress_cb("Applying the clean-up…")
+    new_turns, new_speakers, summary = apply_ops(meta, _merge_window_ops(all_ops))
     if not new_turns:
         raise RuntimeError("Clean-up would have removed the whole transcript; nothing applied.")
 

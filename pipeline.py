@@ -29,6 +29,7 @@ import numpy as np
 
 import diarization
 import stats as stats_mod
+import swift_helpers
 from config import BASE_DIR, MODELS_DIR, load_config
 
 log = logging.getLogger("meetingscribe.pipeline")
@@ -71,40 +72,14 @@ _APPLE_LOCALES = {
 }
 
 
-def _macos_version():
-    try:
-        return tuple(int(x) for x in platform.mac_ver()[0].split(".")[:2])
-    except (ValueError, IndexError):
-        return (0, 0)
-
-
 def _ensure_apple_binary():
     """Return the path to the compiled Apple helper, building it on demand.
 
     Returns None if the platform can't support it or compilation fails — the
-    caller then falls back to a Whisper backend.
+    caller then falls back to a Whisper backend. SpeechAnalyzer needs
+    macOS 26+.
     """
-    if sys.platform != "darwin" or platform.machine() != "arm64":
-        return None
-    if _macos_version() < (26, 0):  # SpeechAnalyzer needs macOS 26+
-        return None
-    if not _APPLE_SRC.exists():
-        return None
-    if _APPLE_BIN.exists() and _APPLE_BIN.stat().st_mtime >= _APPLE_SRC.stat().st_mtime:
-        return str(_APPLE_BIN)
-    swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"
-    if not (shutil.which("swiftc") or os.path.exists("/usr/bin/swiftc")):
-        return None
-    try:
-        _APPLE_BIN.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [swiftc, "-O", "-parse-as-library", str(_APPLE_SRC), "-o", str(_APPLE_BIN)],
-            check=True, capture_output=True, text=True, timeout=300,
-        )
-        return str(_APPLE_BIN)
-    except (subprocess.SubprocessError, OSError) as exc:
-        log.warning("could not build Apple Speech helper: %s", exc)
-        return None
+    return swift_helpers.ensure_binary(_APPLE_SRC, "apple_transcribe", min_macos=(26, 0))
 
 
 def _mlx_available():

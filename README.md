@@ -89,11 +89,26 @@ where your meetings actually happen.
    selector above the stats: set the real number and the transcript is
    re-clustered instantly (the voice analysis is saved, so nothing needs to
    be re-transcribed).
-6. **✨ Tidy with Claude** (optional): if the transcript has echo duplicates
-   or split-up speakers, this button cleans it using the `claude` CLI already
-   on your machine (your Claude Code subscription — no API key). Only the
-   transcript *text* is sent, never audio, and a backup is kept so you can
-   **↩ Undo tidy**.
+6. **✨ Tidy** (optional): if the transcript has echo duplicates or split-up
+   speakers, this button cleans it **fully on-device** with Apple
+   Intelligence (macOS 26+, the on-device model on the Neural Engine —
+   nothing leaves your Mac). Every edit is validated locally (no words can
+   be invented), and a backup is kept so you can **↩ Undo tidy**.
+7. **Summary**: one click writes a TL;DR, key points, decisions, action
+   items with owners, open questions and a ready-to-send follow-up email —
+   also fully on-device with Apple Intelligence. Long meetings are
+   summarized in passes, so any length works.
+
+## Practice interview
+
+The **✨ Practice interview** button in the sidebar opens a mock recruiter
+screen. It asks you questions, you answer out loud, and it judges each answer
+like a recruiter — strengths, concerns, follow-ups — then gives a final
+scorecard with a "would I advance you?" verdict and your top fixes. Paste a
+job description and your resume so it interviews you in context. It runs
+**entirely on this Mac** with Apple Intelligence — questions, answers,
+resume and scores never leave the machine. Past sessions are saved as
+Markdown. (Personal practice only — don't run it as a service for others.)
 
 ## Tips for best results
 

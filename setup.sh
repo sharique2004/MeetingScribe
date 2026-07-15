@@ -63,6 +63,12 @@ if [ "${MACOS_MAJOR:-0}" -ge 26 ] && command -v xcrun >/dev/null 2>&1; then
     else
         echo "(Apple Speech helper did not build — Whisper will be used instead.)"
     fi
+    if xcrun swiftc -O -parse-as-library tools/apple_llm.swift \
+            -o "$HOME/.meetingscribe/bin/apple_llm" 2>/dev/null; then
+        echo "On-device AI helper built (Apple Intelligence: summaries, tidy, practice)."
+    else
+        echo "(On-device AI helper did not build — AI features need macOS 26+.)"
+    fi
 fi
 
 # Build the double-clickable MeetingScribe.app (Dock/Spotlight launcher).

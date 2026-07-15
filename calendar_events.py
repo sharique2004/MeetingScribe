@@ -11,19 +11,17 @@ runs; the prompt is attributed to whichever app launched the server
 
 import json
 import logging
-import os
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import swift_helpers
 from config import BASE_DIR
 
 log = logging.getLogger("meetingscribe.calendar")
 
 _SRC = BASE_DIR / "tools" / "calendar_events.swift"
-_BIN = Path.home() / ".meetingscribe" / "bin" / "calendar_events"
 _CACHE_TTL_S = 60
 _HELPER_TIMEOUT_S = 150  # generous: the first run waits on the permission prompt
 
@@ -31,23 +29,8 @@ _cache = {"at": 0.0, "events": None, "error": None}
 
 
 def _ensure_binary():
-    if sys.platform != "darwin" or not _SRC.exists():
-        return None
-    if _BIN.exists() and _BIN.stat().st_mtime >= _SRC.stat().st_mtime:
-        return str(_BIN)
-    swiftc = shutil.which("swiftc") or "/usr/bin/swiftc"
-    if not (shutil.which("swiftc") or os.path.exists("/usr/bin/swiftc")):
-        return None
-    try:
-        _BIN.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            [swiftc, "-O", str(_SRC), "-o", str(_BIN)],
-            check=True, capture_output=True, text=True, timeout=300,
-        )
-        return str(_BIN)
-    except (subprocess.SubprocessError, OSError) as exc:
-        log.warning("could not build calendar helper: %s", exc)
-        return None
+    return swift_helpers.ensure_binary(
+        _SRC, "calendar_events", require_arm64=False, parse_as_library=False)
 
 
 def todays_events(force_refresh=False, cached_only=False):

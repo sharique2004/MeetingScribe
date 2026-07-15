@@ -17,7 +17,9 @@ from datetime import datetime
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
+import local_llm
 import pipeline
+import summarize
 import tidy
 from audio_recorder import MeetingRecorder
 from config import BASE_DIR, RECORDINGS_DIR, load_config
@@ -34,8 +36,16 @@ except Exception:
 
 app = Flask(__name__, static_folder=str(BASE_DIR / "static"), static_url_path="/static")
 app.json.sort_keys = False  # keep speaker/stats ordering ("You" first, then Speaker 1…)
+
+try:  # mock-interview coach, served at /practice (its own UI + /api/practice/*)
+    import practice
+    app.register_blueprint(practice.bp)
+except Exception as exc:  # missing claude/transcribe deps must not break recording
+    app.logger.warning("practice mode unavailable: %s", exc)
+
 REC = MeetingRecorder()
 JOBS = {}  # meeting_id -> {"state": queued|processing|done|error, "message": str}
+SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str}
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
 
 MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
@@ -179,12 +189,24 @@ def index():
 
 @app.get("/api/status")
 def status():
-    return jsonify({"recorder": REC.status(), "jobs": JOBS})
+    return jsonify({"recorder": REC.status(), "jobs": JOBS, "summary_jobs": SUMMARY_JOBS})
 
 
 @app.get("/api/devices")
 def devices():
     return jsonify(REC.preflight())
+
+
+@app.get("/api/llm/status")
+def llm_status():
+    """Is the on-device model (Apple Intelligence) ready for AI features?"""
+    ok, reason = local_llm.available()
+    return jsonify({
+        "available": ok,
+        "engine": "apple-intelligence",
+        "reason": reason,
+        "message": None if ok else local_llm.reason_message(reason),
+    })
 
 
 @app.get("/api/calendar/today")
@@ -291,11 +313,14 @@ def meeting_delete(meeting_id):
         return jsonify({"error": "Meeting is currently recording"}), 409
     if JOBS.get(meeting_id, {}).get("state") == "processing":
         return jsonify({"error": "Meeting is being processed"}), 409
+    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
+        return jsonify({"error": "Meeting summary is being generated"}), 409
     target = _meeting_dir(meeting_id)
     if not target.exists():
         abort(404)
     shutil.rmtree(target, ignore_errors=True)
     JOBS.pop(meeting_id, None)
+    SUMMARY_JOBS.pop(meeting_id, None)
     return jsonify({"ok": True})
 
 
@@ -332,6 +357,8 @@ def reprocess(meeting_id):
         return jsonify({"error": "Meeting is currently recording"}), 409
     if JOBS.get(meeting_id, {}).get("state") == "processing":
         return jsonify({"error": "Already processing"}), 409
+    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
+        return jsonify({"error": "Meeting is being summarized — try again in a moment"}), 409
     meta = _read_meeting(meeting_id)
     has_audio = any(
         (_dir_for(meeting_id) / t["file"]).exists()
@@ -370,17 +397,20 @@ def recluster(meeting_id):
 
 @app.post("/api/meetings/<meeting_id>/tidy")
 def tidy_meeting(meeting_id):
-    """Clean the transcript with the local `claude` CLI (no API key)."""
+    """Clean the transcript with the on-device model (Apple Intelligence)."""
     if JOBS.get(meeting_id, {}).get("state") == "processing":
         return jsonify({"error": "Meeting is being processed"}), 409
+    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
+        return jsonify({"error": "Meeting is being summarized — try again in a moment"}), 409
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to tidy yet"}), 400
-    if tidy.find_claude() is None:
-        return jsonify({"error": "The claude CLI was not found on this machine"}), 400
+    llm_ok, llm_reason = local_llm.available()
+    if not llm_ok:
+        return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
     meta["status"] = "processing"
     _write_meeting(meta)
-    JOBS[meeting_id] = {"state": "processing", "message": "Tidying with Claude…"}
+    JOBS[meeting_id] = {"state": "processing", "message": "Tidying on this Mac…"}
 
     def run():
         try:
@@ -418,12 +448,44 @@ def tidy_undo(meeting_id):
     return jsonify(meta)
 
 
+@app.post("/api/meetings/<meeting_id>/summarize")
+def summarize_meeting(meeting_id):
+    """Generate a summary + action items with the on-device model (Apple
+    Intelligence). Runs in the background; the transcript stays visible."""
+    if SUMMARY_JOBS.get(meeting_id, {}).get("state") == "processing":
+        return jsonify({"error": "Already summarizing"}), 409
+    if JOBS.get(meeting_id, {}).get("state") == "processing":
+        return jsonify({"error": "Meeting is being processed"}), 409
+    meta = _read_meeting(meeting_id)
+    if not meta.get("turns"):
+        return jsonify({"error": "No transcript to summarize yet"}), 400
+    llm_ok, llm_reason = local_llm.available()
+    if not llm_ok:
+        return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
+    SUMMARY_JOBS[meeting_id] = {"state": "processing", "message": "Summarizing on this Mac…"}
+
+    def run():
+        try:
+            summarize.summarize_meeting(
+                _dir_for(meeting_id),
+                lambda msg: SUMMARY_JOBS[meeting_id].update(message=msg),
+            )
+            _write_transcript_md(_read_meeting(meeting_id))
+            SUMMARY_JOBS[meeting_id] = {"state": "done", "message": "Summary ready"}
+        except Exception:
+            err = traceback.format_exc().strip().splitlines()[-1]
+            SUMMARY_JOBS[meeting_id] = {"state": "error", "message": err}
+
+    threading.Thread(target=run, daemon=True, name=f"summarize-{meeting_id}").start()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/shutdown")
 def shutdown():
     """Quit cleanly from the web UI (the .app launcher has no terminal)."""
     if REC.is_recording:
         return jsonify({"error": "Stop the recording before quitting"}), 409
-    if any(j.get("state") == "processing" for j in JOBS.values()):
+    if any(j.get("state") == "processing" for j in list(JOBS.values()) + list(SUMMARY_JOBS.values())):
         return jsonify({"error": "A meeting is still being processed — quit when it finishes"}), 409
     threading.Timer(0.4, lambda: os._exit(0)).start()  # reply first, then exit
     return jsonify({"ok": True})
@@ -452,6 +514,9 @@ def _export_markdown(meta):
         f"*Recorded:* {meta.get('created', '')}  |  *Duration:* "
         f"{_fmt_ts(meta.get('duration') or 0)}  |  *Mode:* {meta.get('mode')}"
     )
+    summary_md = summarize.to_markdown(meta.get("summary"))
+    if summary_md:
+        lines += ["", summary_md.rstrip()]
     stats = meta.get("stats", {})
     per = stats.get("per_speaker", {})
     if per:

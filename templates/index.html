@@ -63,6 +63,9 @@ input, select { font: inherit; color: inherit; }
 .sb-new { margin: 6px 14px 10px; height: 32px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 12.5px; transition: filter .12s; }
 .sb-new:hover { filter: brightness(1.07); }
 .sb-new.is-active { outline: 2px solid color-mix(in oklab, var(--accent) 50%, transparent); outline-offset: 2px; }
+  .sb-practice { margin: 0 14px 10px; height: 30px; display: flex; align-items: center; justify-content: center; gap: 7px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--panel); color: var(--text-dim); font-weight: 550; font-size: 12px; transition: background .12s, color .12s; }
+  .sb-practice:hover { background: var(--panel-2); color: var(--text); }
+  .sb-practice svg { color: var(--accent); }
 .sb-search { position: relative; margin: 0 14px 10px; }
 .sb-search input { width: 100%; height: 28px; padding: 0 9px 0 28px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel); color: var(--text); outline: none; font-size: 12px; }
 .sb-search input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
@@ -161,6 +164,31 @@ input, select { font: inherit; color: inherit; }
 .spk-stats td { padding: 3px 18px 3px 0; color: var(--text-dim); white-space: nowrap; }
 .spk-stats td.who { color: var(--text); font-weight: 600; }
 .spk-stats td .num { color: var(--text); }
+
+/* Summary panel */
+.sum { margin: 2px 0 18px; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--panel); padding: 14px 16px 16px; }
+.sum-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.sum-title { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650; letter-spacing: .07em; text-transform: uppercase; color: var(--text-faint); }
+.sum-title svg { color: var(--accent); }
+.sum-loading { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); }
+.sum-tldr { margin: 2px 0 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); max-width: 820px; }
+.sum-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 28px; }
+@media (max-width: 900px) { .sum-cols { grid-template-columns: 1fr; } }
+.sum-block { margin-bottom: 12px; }
+.sum-label { font-size: 10.5px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
+.sum-list { margin: 0; padding-left: 17px; }
+.sum-list li { font-size: 12.5px; line-height: 1.5; color: var(--text-dim); margin-bottom: 4px; }
+.sum-actions { list-style: none; margin: 0; padding: 0; }
+.sum-actions li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; line-height: 1.5; color: var(--text); margin-bottom: 7px; }
+.sum-owner { flex: none; font-size: 11px; font-weight: 600; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; padding: 1px 9px; }
+.sum-owner.me { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+.sum-due { font-size: 11px; color: var(--text-faint); }
+.sum-email { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
+.sum-email-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.sum-copy { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px 9px; }
+.sum-copy:hover { background: var(--panel-2); color: var(--text); }
+.sum-subject { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.sum-body { font-size: 12.5px; line-height: 1.6; color: var(--text-dim); white-space: pre-wrap; max-width: 760px; }
 
 /* Transcript */
 .tr-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 14px; }
@@ -367,6 +395,8 @@ const S = {
   rec: {recording: false},
   jobs: {},
   lastJobs: {},
+  summaryJobs: {},
+  lastSummaryJobs: {},
   dismissed: new Set(),     // per-session dismissed notes
   insightsOpen: false,
   menu: null,               // 'export' | 'more'
@@ -374,6 +404,7 @@ const S = {
   recType: "online",
   pendingTitle: "",
   busyTidy: false,
+  busySummary: false,
 };
 document.documentElement.setAttribute("data-theme", S.theme);
 
@@ -524,6 +555,7 @@ function renderSidebar() {
       <div class="sb-badge" title="All processing happens on this Mac. Nothing is uploaded."><span class="dot"></span>local</div>
     </div>
     <button class="sb-new${S.view === "new" ? " is-active" : ""}" onclick="goNew()">${icon("plus", 13, 2.2)} New recording</button>
+    <button class="sb-practice" onclick="location.href='/practice'" title="Practice a recruiter screen with an AI interviewer that judges your spoken answers">${icon("sparkle", 13)} Practice interview</button>
     <div class="sb-search">
       ${icon("search", 13)}
       <input type="text" id="sbSearch" placeholder="Search meetings" value="${esc(S.q)}" oninput="sbSearch(this.value)">
@@ -608,7 +640,7 @@ function noteRows(meta) {
   if (meta.tidied) {
     const td = meta.tidied;
     rows.push(`<div class="note tidy"><span class="ic">${icon("sparkle", 13)}</span>
-      <span>Tidied with Claude — ${td.dropped_turns || 0} echo turns removed, ${td.trimmed_turns || 0} trimmed, ${Object.keys(td.merged_speakers || {}).length} speaker labels merged. Validated locally; no words invented.</span></div>`);
+      <span>Tidied on-device — ${td.dropped_turns || 0} echo turns removed, ${td.trimmed_turns || 0} trimmed, ${Object.keys(td.merged_speakers || {}).length} speaker labels merged. Validated locally; no words invented.</span></div>`);
   }
   return rows.length ? `<div class="rv-notes">${rows.join("")}</div>` : "";
 }
@@ -616,6 +648,46 @@ function dismissNote(idx) {
   const key = (S._noteKeys || [])[idx];
   if (key) S.dismissed.add(key);
   renderMain();
+}
+
+function summaryPanel(meta, busy) {
+  const s = meta.summary;
+  if (busy && !s) {
+    return `<div class="sum"><div class="sum-head"><span class="sum-title">${icon("sparkle", 12)} Summary</span></div>
+      <div class="sum-loading"><span class="spinner"></span> Reading the transcript and pulling out the highlights…</div></div>`;
+  }
+  if (!s) return "";
+  const ul = (arr) => arr && arr.length ? `<ul class="sum-list">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : "";
+  const block = (label, arr) => arr && arr.length ? `<div class="sum-block"><div class="sum-label">${label}</div>${ul(arr)}</div>` : "";
+
+  let actions = "";
+  if ((s.action_items || []).length) {
+    actions = `<div class="sum-block"><div class="sum-label">Action items</div><ul class="sum-actions">` +
+      s.action_items.map(a => {
+        const you = (a.owner || "").toLowerCase() === "you";
+        return `<li><span class="sum-owner${you ? " me" : ""}">${esc(a.owner || "—")}</span>${esc(a.task)}${a.due ? `<span class="sum-due">${esc(a.due)}</span>` : ""}</li>`;
+      }).join("") + `</ul></div>`;
+  }
+
+  const email = s.follow_up_email || {};
+  let emailBlock = "";
+  if (email.body) {
+    emailBlock = `<div class="sum-email">
+      <div class="sum-email-head"><span class="sum-label">Draft follow-up email</span>
+        <button class="sum-copy" onclick="copySummaryEmail('${meta.id}')">${icon("copy", 12)} Copy</button></div>
+      ${email.subject ? `<div class="sum-subject">${esc(email.subject)}</div>` : ""}
+      <div class="sum-body">${esc(email.body)}</div></div>`;
+  }
+
+  return `<div class="sum">
+    <div class="sum-head"><span class="sum-title">${icon("sparkle", 12)} Summary</span>${busy ? `<span class="sum-loading"><span class="spinner"></span> updating…</span>` : ""}</div>
+    ${s.tldr ? `<p class="sum-tldr">${esc(s.tldr)}</p>` : ""}
+    <div class="sum-cols">
+      <div>${actions}${block("Open questions", s.open_questions)}</div>
+      <div>${block("Decisions", s.decisions)}${block("Follow-ups", s.follow_ups)}${block("Key points", s.key_points)}</div>
+    </div>
+    ${emailBlock}
+  </div>`;
 }
 
 function speakerStrip(meta) {
@@ -774,15 +846,20 @@ function renderReview(meta) {
   const engine = {apple: "Apple Speech", mlx: "Whisper · GPU", faster: "Whisper · CPU"}[(meta.processing || {}).backend] || null;
   const lang = (meta.languages || {}).mic || (meta.languages || {}).system || null;
   const hasTurns = (meta.turns || []).length > 0;
+  const sumJob = S.summaryJobs[meta.id];
+  const sumBusy = S.busySummary || (sumJob && sumJob.state === "processing");
   const exportOpen = S.menu === "export", moreOpen = S.menu === "more";
   let html = `
   <header class="rv-head">
     <div class="rv-title-row">
       <h1 class="rv-title" contenteditable spellcheck="false" id="rvTitle">${esc(meta.title)}</h1>
       <div class="rv-actions">
-        ${hasTurns ? `<button class="btn primary" id="tidyBtn" onclick="tidyMeeting('${meta.id}')" ${S.busyTidy ? "disabled" : ""}
-          title="Merge echo duplicates and fix speaker labels using your Claude subscription. Sends transcript text, never audio.">
-          ${S.busyTidy ? `<span class="spinner"></span>Tidying…` : `${icon("sparkle", 13)}Tidy with Claude`}</button>` : ""}
+        ${hasTurns ? `<button class="btn primary" id="sumBtn" onclick="summarizeMeeting('${meta.id}')" ${sumBusy ? "disabled" : ""}
+          title="Summarize the meeting and pull out action items, decisions and a follow-up email — fully on-device with Apple Intelligence. Nothing leaves this Mac.">
+          ${sumBusy ? `<span class="spinner"></span>Summarizing…` : `${icon("sparkle", 13)}${meta.summary ? "Re-summarize" : "Summary"}`}</button>` : ""}
+        ${hasTurns ? `<button class="btn" id="tidyBtn" onclick="tidyMeeting('${meta.id}')" ${S.busyTidy ? "disabled" : ""}
+          title="Merge echo duplicates and fix speaker labels — fully on-device with Apple Intelligence. Nothing leaves this Mac.">
+          ${S.busyTidy ? `<span class="spinner"></span>Tidying…` : `${icon("wave", 13)}Tidy`}</button>` : ""}
         <div class="menu-wrap">
           <button class="btn" onclick="toggleMenu('export', event)">Export ${icon("chevronDown", 12)}</button>
           ${exportOpen ? `<div class="menu">
@@ -840,7 +917,7 @@ function renderReview(meta) {
         <input type="text" id="trSearch" placeholder="Find in transcript" value="${esc(S.tq)}" oninput="trSearch(this.value)">
       </div>
     </div>
-    <div class="tr-scroll"><div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
+    <div class="tr-scroll">${summaryPanel(meta, sumBusy)}<div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
   </div>`;
 
   if (hasTurns && (AU.mic || AU.sys)) {
@@ -900,9 +977,31 @@ async function revealMd(id) {
   try { await postJSON(`/api/meetings/${id}/reveal`, {}); toast("📂 Opened in Finder"); }
   catch (e) { toast("⚠ " + e.message); }
 }
+async function summarizeMeeting(id) {
+  const sumJob = S.summaryJobs[id];
+  if (S.busySummary || (sumJob && sumJob.state === "processing")) return;
+  S.busySummary = true;
+  renderMain();
+  try {
+    await postJSON(`/api/meetings/${id}/summarize`, {});
+    // The job runs in the background; polling will load the summary when ready.
+  } catch (e) {
+    toast("⚠ " + e.message, 6000);
+    S.busySummary = false;
+    renderMain();
+  }
+}
+async function copySummaryEmail(id) {
+  if (!S.detail || S.detail.id !== id) { toast("Open the meeting again to copy its email"); return; }
+  const email = (S.detail.summary || {}).follow_up_email || {};
+  const text = (email.subject ? "Subject: " + email.subject + "\n\n" : "") + (email.body || "");
+  if (!text.trim()) { toast("No email to copy"); return; }
+  try { await navigator.clipboard.writeText(text); toast("Follow-up email copied"); }
+  catch (e) { toast("⚠ Could not copy"); }
+}
 async function tidyMeeting(id) {
   if (S.busyTidy) return;
-  if (!confirm("Tidy this transcript with Claude?\n\nThe transcript TEXT (never audio) goes through your local Claude Code subscription — no API key — to remove echo duplicates and fix speaker labels. A backup is kept so you can undo.")) return;
+  if (!confirm("Tidy this transcript?\n\nThe on-device model (Apple Intelligence) removes echo duplicates and fixes speaker labels. Nothing leaves this Mac. A backup is kept so you can undo.")) return;
   S.busyTidy = true;
   renderMain();
   try {
@@ -1115,10 +1214,11 @@ async function refreshList() {
   } catch (e) { /* transient */ }
 }
 async function openMeeting(id) {
+  const switching = !S.detail || S.detail.id !== id;
   S.activeId = id;
   S.view = "meeting";
   S.menu = null;
-  S.tq = "";
+  if (switching) { S.tq = ""; S.busySummary = false; }  // keep search/spinner on same-meeting reloads
   try {
     const meta = await api("/api/meetings/" + id);
     const switched = !S.detail || S.detail.id !== id;
@@ -1137,6 +1237,7 @@ async function pollStatus() {
     const st = await api("/api/status");
     const rec = st.recorder || {};
     S.jobs = st.jobs || {};
+    S.summaryJobs = st.summary_jobs || {};
     const startedRec = rec.recording && !S.rec.recording;
     const stoppedRec = !rec.recording && S.rec.recording;
     S.rec = rec;
@@ -1182,6 +1283,20 @@ async function pollStatus() {
         }
       }
       S.lastJobs = JSON.parse(JSON.stringify(S.jobs));
+
+      // finished summary jobs -> load the summary into the open meeting
+      for (const [id, job] of Object.entries(S.summaryJobs)) {
+        const prev = S.lastSummaryJobs[id];
+        if (prev && prev.state === "processing" && job.state !== "processing") {
+          S.busySummary = false;
+          if (id === S.activeId) openMeeting(id);
+          toast(job.state === "done" ? "✅ Summary ready" : "⚠ Summary failed: " + (job.message || ""), 6000);
+        }
+      }
+      // keep the button spinner live while the open meeting's summary runs
+      const mine = S.detail && S.summaryJobs[S.detail.id];
+      if (mine && mine.state === "processing" && !S.busySummary && !$("sumBtn")?.disabled) renderMain();
+      S.lastSummaryJobs = JSON.parse(JSON.stringify(S.summaryJobs));
     }
   } catch (e) { /* server briefly unavailable */ }
   setTimeout(pollStatus, S.rec.recording ? 700 : 1200);

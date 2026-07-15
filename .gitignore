@@ -1,5 +1,6 @@
 venv/
 recordings/
+practice/
 models/
 __pycache__/
 *.pyc
@@ -9,3 +10,23 @@ nohup.out
 *.log
 .claude/
 templates/index-previous.html
+.insforge/
+mobile/.env*
+mobile/node_modules/
+mobile/dist/
+macapp/.build/
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
