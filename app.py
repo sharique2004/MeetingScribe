@@ -132,21 +132,46 @@ def _write_transcript_md(meta):
         app.logger.warning("could not write transcript.md for %s: %s", meta.get("id"), exc)
 
 
-def _list_meetings():
+# List-scan cache: folder name -> (meeting.json mtime, item, searchable text).
+# Keeps GET /api/meetings O(changed files) per request even with thousands of
+# meetings — only new/edited meeting.json files are re-read.
+_LIST_CACHE = {}
+
+
+def _list_meetings(query=""):
     items = []
     if not RECORDINGS_DIR.exists():
         return items
+    seen = set()
+    query = (query or "").strip().lower()
     for d in RECORDINGS_DIR.iterdir():
         meta_path = d / "meeting.json"
         if not d.is_dir() or not FOLDER_ID_RE.match(d.name) or not meta_path.exists():
             continue
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            mtime = meta_path.stat().st_mtime
+        except OSError:
             continue
-        item = {k: meta.get(k) for k in LIST_FIELDS}
-        item["speakers"] = len(meta.get("speakers") or {})
+        seen.add(d.name)
+        cached = _LIST_CACHE.get(d.name)
+        if cached and cached[0] == mtime:
+            item, haystack = cached[1], cached[2]
+        else:
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError):
+                continue
+            item = {k: meta.get(k) for k in LIST_FIELDS}
+            item["speakers"] = len(meta.get("speakers") or {})
+            haystack = " ".join(
+                [str(meta.get("title") or "")] + list((meta.get("speakers") or {}).values())
+            ).lower()
+            _LIST_CACHE[d.name] = (mtime, item, haystack)
+        if query and query not in haystack:
+            continue
         items.append(item)
+    for stale in set(_LIST_CACHE) - seen:  # renamed/deleted folders
+        del _LIST_CACHE[stale]
     items.sort(key=lambda m: m["id"], reverse=True)
     return items
 
@@ -299,7 +324,18 @@ def record_stop():
 
 @app.get("/api/meetings")
 def meetings():
-    return jsonify(_list_meetings())
+    """Paged meeting list: ?limit=40&offset=0&q=<search over titles/speakers>."""
+    try:
+        limit = max(1, min(500, int(request.args.get("limit", 40))))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except (TypeError, ValueError):
+        return jsonify({"error": "limit/offset must be integers"}), 400
+    all_items = _list_meetings(query=request.args.get("q", ""))
+    return jsonify({
+        "items": all_items[offset:offset + limit],
+        "total": len(all_items),
+        "offset": offset,
+    })
 
 
 @app.get("/api/meetings/<meeting_id>")
