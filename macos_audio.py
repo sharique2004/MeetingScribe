@@ -135,6 +135,8 @@ _SCOPE_GLOBAL = _fourcc("glob")
 _SCOPE_OUTPUT = _fourcc("outp")
 _SEL_DEVICES = _fourcc("dev#")
 _SEL_DEFAULT_OUTPUT = _fourcc("dOut")
+_SEL_DEFAULT_INPUT = _fourcc("dIn ")
+_SEL_RUNNING_SOMEWHERE = _fourcc("gone")  # kAudioDevicePropertyDeviceIsRunningSomewhere
 _SEL_UID = _fourcc("uid ")
 _SEL_NAME = _fourcc("lnam")
 _SEL_TRANSPORT = _fourcc("tran")
@@ -232,6 +234,25 @@ def _has_output(dev):
 
 def _default_output():
     return struct.unpack("I", _get_data(_SYSTEM_OBJECT, _SEL_DEFAULT_OUTPUT)[:4])[0]
+
+
+def mic_in_use():
+    """True when any process is running IO on the default input device.
+
+    This is the call-detection signal: Zoom, Teams, or a Meet tab holding
+    the microphone all flip kAudioDevicePropertyDeviceIsRunningSomewhere on
+    the default input — no per-app APIs or browser extensions needed. Note
+    it is also true while MeetingScribe itself records; callers suppress
+    that case.
+    """
+    try:
+        dev = struct.unpack("I", _get_data(_SYSTEM_OBJECT, _SEL_DEFAULT_INPUT)[:4])[0]
+        if not dev:
+            return False
+        raw = _get_data(dev, _SEL_RUNNING_SOMEWHERE)
+        return bool(struct.unpack("I", raw[:4])[0])
+    except Exception:  # no input device / permission oddity — just no signal
+        return False
 
 
 def _set_default_output(dev):

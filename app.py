@@ -50,6 +50,13 @@ SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": s
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
 LIVE = None  # live_captions.LiveSession for the current/last recording
 
+try:  # meeting nudges (macOS signals; harmless to lack elsewhere)
+    import nudge
+    NUDGES = nudge.NudgeEngine()
+except Exception as _exc:
+    app.logger.warning("nudges unavailable: %s", _exc)
+    NUDGES = None
+
 MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 # Folders are "<title> — <id>" so meetings are spottable in Finder, or a bare
 # id before a title exists. The id suffix keeps names unique and the API keyed
@@ -247,7 +254,11 @@ def calendar_today():
 @app.post("/api/record/start")
 def record_start():
     data = request.get_json(force=True, silent=True) or {}
+    return _do_record_start(data)
 
+
+def _do_record_start(data):
+    """Start a recording. Shared by the record button and nudge-accept."""
     expected = data.get("expected_speakers")
     try:
         expected = max(1, min(8, int(expected))) if expected else None
@@ -363,6 +374,42 @@ def record_stop():
     _write_meeting(meta)
     _start_processing(meeting_id)
     return jsonify(meta)
+
+
+@app.get("/api/nudges")
+def nudges():
+    """The current meeting nudge (calendar / call detection), if any."""
+    if NUDGES is None:
+        return jsonify({"nudge": None})
+    try:
+        return jsonify({"nudge": NUDGES.evaluate(REC.is_recording)})
+    except Exception as exc:  # nudges must never break the app
+        app.logger.warning("nudge evaluation failed: %s", exc)
+        return jsonify({"nudge": None})
+
+
+@app.post("/api/nudges/<nudge_id>/accept")
+def nudge_accept(nudge_id):
+    """'Record now' on a nudge notification: start recording that meeting."""
+    if NUDGES is None:
+        return jsonify({"error": "nudges unavailable"}), 404
+    nudge_info = NUDGES.take(nudge_id)
+    if nudge_info is None:
+        return jsonify({"error": "unknown or expired nudge"}), 404
+    if REC.is_recording:
+        return jsonify({"ok": True, "already_recording": True})
+    return _do_record_start({
+        "title": nudge_info.get("meeting_title") or "",
+        "mode": "online",
+    })
+
+
+@app.post("/api/nudges/<nudge_id>/ack")
+def nudge_ack(nudge_id):
+    """'Not this meeting' on a nudge notification."""
+    if NUDGES is None:
+        return jsonify({"error": "nudges unavailable"}), 404
+    return jsonify({"ok": NUDGES.ack(nudge_id)})
 
 
 @app.get("/api/live")
