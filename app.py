@@ -46,6 +46,7 @@ JOBS = {}  # meeting_id -> {"state": queued|processing|done|error, "message": st
 SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str}
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
 JOB_LOCK = threading.Lock()  # makes "check job state then register" atomic
+SYNC_ALL = {}  # progress of a "sync all to phone" run
 LIVE = None  # live_captions.LiveSession for the current/last recording
 
 
@@ -600,6 +601,48 @@ def meeting_sync(meeting_id):
                 app.logger.warning("could not delete synced copy of %s: %s",
                                    meeting_id, exc)
     return jsonify(meta)
+
+
+@app.post("/api/sync/all")
+def sync_all():
+    """Push every finished meeting to the phone in one go (background)."""
+    if not insforge_client.state()["signed_in"]:
+        return jsonify({"error": "Sign in first to view meetings on your phone",
+                        "needs_signin": True}), 401
+    ids = [it["id"] for it in _list_meetings()
+           if it.get("status") == "done"]
+
+    def run():
+        done = err = 0
+        for meeting_id in ids:
+            try:
+                meta = _read_meeting_safe(meeting_id)
+                if not meta or not meta.get("turns"):
+                    continue
+                meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
+                sync.push_meeting(meta)
+                meta["sync"]["pushed_at"] = datetime.now().isoformat(timespec="seconds")
+                _write_meeting(meta)
+                done += 1
+                SYNC_ALL["message"] = f"Synced {done} of {len(ids)}…"
+            except Exception as exc:  # keep going; queue the failures
+                err += 1
+                sync.enqueue(meeting_id)
+                app.logger.warning("sync-all failed for %s: %s", meeting_id, exc)
+        SYNC_ALL.update(state="done", message=f"Synced {done} meeting(s)"
+                        + (f", {err} will retry" if err else ""), synced=done)
+
+    if SYNC_ALL.get("state") == "processing":
+        return jsonify({"error": "Already syncing"}), 409
+    SYNC_ALL.clear()
+    SYNC_ALL.update(state="processing", message=f"Syncing {len(ids)} meeting(s)…", total=len(ids))
+    threading.Thread(target=run, daemon=True, name="sync-all").start()
+    return jsonify({"ok": True, "total": len(ids)})
+
+
+@app.get("/api/sync/all")
+def sync_all_status():
+    return jsonify(SYNC_ALL or {"state": "idle"})
 
 
 @app.get("/api/nudges")

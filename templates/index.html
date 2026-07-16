@@ -77,6 +77,10 @@ input, select { font: inherit; color: inherit; }
   border-radius: var(--r-md); font-size: 11.5px; color: var(--text-dim); }
 .sb-account .val { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-account.as-btn:hover { background: var(--bg-hover); color: var(--text); }
+.sb-syncall { display: flex; align-items: center; justify-content: center; gap: 7px; width: calc(100% - 16px); margin: 2px 8px 4px; padding: 7px 8px; font-size: 11.5px; font-weight: 600; color: var(--accent); border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border)); border-radius: var(--r-md); background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.sb-syncall:hover { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+.sb-syncall:disabled { opacity: .7; }
+.sb-syncall .spinner { border-top-color: var(--accent); }
 .sb-signout { font-size: 11px; color: var(--text-faint); }
 .sb-signout:hover { color: var(--danger); }
 .btn.sync-on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -709,7 +713,10 @@ function renderSidebar() {
       ${S.auth.signed_in
         ? `<div class="sb-account" title="Synced meetings are readable on your phone">
              ${icon("phone", 12)}<span class="val">${esc(S.auth.email || "Signed in")}</span>
-             <button class="sb-signout" onclick="authSignOut()">Sign out</button></div>`
+             <button class="sb-signout" onclick="authSignOut()">Sign out</button></div>
+           <button class="sb-syncall" onclick="syncAll()" ${S.syncAllBusy ? "disabled" : ""}
+             title="Push every finished meeting to your phone at once">
+             ${S.syncAllBusy ? `<span class="spinner"></span>${esc(S.syncAllMsg || "Syncing…")}` : `${icon("cloud", 13)} Sync all to phone`}</button>`
         : `<button class="sb-account as-btn" onclick="openAuth('signin')" title="Sign in to read transcripts and summaries on your phone">
              ${icon("phone", 12)}<span class="val">Sign in for phone sync</span></button>`}
       <div class="sb-foot-row">
@@ -872,6 +879,27 @@ async function authGoogle() {
     }
     if (S.authModal === "waiting") { closeAuth(); toast("Sign-in timed out — try again."); }
   } catch (e) { toast("⚠ " + e.message, 6000); }
+}
+async function syncAll() {
+  if (S.syncAllBusy) return;
+  S.syncAllBusy = true; S.syncAllMsg = "Syncing…"; renderSidebar();
+  try {
+    const r = await postJSON("/api/sync/all", {});
+    const poll = async () => {
+      try {
+        const st = await api("/api/sync/all");
+        S.syncAllMsg = st.message || "Syncing…";
+        if (st.state === "processing") { renderSidebar(); return setTimeout(poll, 1200); }
+        S.syncAllBusy = false; renderSidebar(); refreshList();
+        toast("✅ " + (st.message || "Synced to your phone"), 5000);
+      } catch (e) { S.syncAllBusy = false; renderSidebar(); }
+    };
+    poll();
+  } catch (e) {
+    S.syncAllBusy = false; renderSidebar();
+    if (e.data && e.data.needs_signin) openAuth("signin");
+    else toast("⚠ " + e.message, 6000);
+  }
 }
 async function authSignOut() {
   if (!confirm("Sign out?\n\nMeetings already synced stay readable on your phone; new syncs need a sign-in.")) return;
