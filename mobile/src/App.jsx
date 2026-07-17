@@ -60,13 +60,13 @@ function useHashRoute() {
 
 /* --------------------------------------------------------------- login -- */
 
-function Login({ onSignedIn }) {
+function Login({ onSignedIn, initialError }) {
   const [mode, setMode] = useState("signin"); // signin | signup | verify
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(initialError || "");
 
   async function submit(e) {
     e.preventDefault();
@@ -349,10 +349,42 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onChange);
   }, []);
 
+  const [authError, setAuthError] = useState("");
   useEffect(() => {
     (async () => {
-      const { data } = await insforge.auth.getCurrentUser();
-      setUser(data?.user || null);
+      try {
+        // Complete a Google/OAuth sign-in: the provider redirects back here
+        // with ?insforge_code=… which must be exchanged for a session. (The
+        // SDK does not do this on its own for a fresh page load.)
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get("insforge_code");
+        const oauthErr = url.searchParams.get("insforge_error") || url.searchParams.get("error");
+        if (code || oauthErr) {
+          for (const k of ["insforge_code", "insforge_error", "insforge_status",
+                           "insforge_type", "error", "state"]) url.searchParams.delete(k);
+          window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+        }
+        if (code) {
+          const { data, error } = await insforge.auth.exchangeOAuthCode(code);
+          if (!error) {
+            const u = data?.user || (await insforge.auth.getCurrentUser()).data?.user;
+            setUser(u || null);
+            return;
+          }
+          // The exchange failed — but the SDK's own auto-detect may have
+          // already consumed the (single-use) code and established the
+          // session. Only surface an error if we're genuinely signed out.
+          const { data: cur } = await insforge.auth.getCurrentUser();
+          if (cur?.user) { setUser(cur.user); return; }
+          setAuthError(error.message || "Google sign-in could not be completed.");
+        } else if (oauthErr) {
+          setAuthError("Google sign-in was cancelled or failed. Please try again.");
+        }
+        const { data } = await insforge.auth.getCurrentUser();
+        setUser(data?.user || null);
+      } catch (e) {
+        setUser(null);
+      }
     })();
   }, []);
 
@@ -371,7 +403,7 @@ export default function App() {
     return <Landing onOpenApp={() => (window.location.hash = "#/app")} />;
   }
 
-  if (!user) return <Login onSignedIn={setUser} />;
+  if (!user) return <Login onSignedIn={setUser} initialError={authError} />;
 
   return (
     <div className="shell">
