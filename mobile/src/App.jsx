@@ -5,7 +5,7 @@
 // by owner-only RLS; this app just signs in and reads.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { insforge } from "./insforge.js";
+import { insforge, oauthReturnError } from "./insforge.js";
 import Landing from "./Landing.jsx";
 
 const PAGE = 25;
@@ -351,41 +351,31 @@ export default function App() {
 
   const [authError, setAuthError] = useState("");
   useEffect(() => {
+    let cancelled = false;
+    const apply = (u) => { if (!cancelled) setUser(u || null); };
     (async () => {
       try {
-        // Complete a Google/OAuth sign-in: the provider redirects back here
-        // with ?insforge_code=… which must be exchanged for a session. (The
-        // SDK does not do this on its own for a fresh page load.)
-        const url = new URL(window.location.href);
-        const code = url.searchParams.get("insforge_code");
-        const oauthErr = url.searchParams.get("insforge_error") || url.searchParams.get("error");
-        if (code || oauthErr) {
-          for (const k of ["insforge_code", "insforge_error", "insforge_status",
-                           "insforge_type", "error", "state"]) url.searchParams.delete(k);
-          window.history.replaceState({}, "", url.pathname + url.search + url.hash);
-        }
-        if (code) {
-          const { data, error } = await insforge.auth.exchangeOAuthCode(code);
-          if (!error) {
-            const u = data?.user || (await insforge.auth.getCurrentUser()).data?.user;
-            setUser(u || null);
-            return;
-          }
-          // The exchange failed — but the SDK's own auto-detect may have
-          // already consumed the (single-use) code and established the
-          // session. Only surface an error if we're genuinely signed out.
-          const { data: cur } = await insforge.auth.getCurrentUser();
-          if (cur?.user) { setUser(cur.user); return; }
-          setAuthError(error.message || "Google sign-in could not be completed.");
-        } else if (oauthErr) {
-          setAuthError("Google sign-in was cancelled or failed. Please try again.");
-        }
+        // A Google/OAuth return lands here with ?insforge_code=… The SDK
+        // detects and exchanges it for a session automatically on init, and
+        // getCurrentUser() awaits that exchange (authCallbackHandled) before
+        // answering. Exchanging the single-use code ourselves would race the
+        // SDK and one side would fail with "invalid or expired code" — so we
+        // just wait for the SDK and read the resulting session.
         const { data } = await insforge.auth.getCurrentUser();
-        setUser(data?.user || null);
+        apply(data?.user);
+        if (!cancelled && !data?.user && oauthReturnError) {
+          setAuthError("Google sign-in was cancelled or didn't complete. Please try again.");
+        }
       } catch (e) {
-        setUser(null);
+        apply(null);
       }
     })();
+    // If the session lands slightly later (token refresh, delayed exchange),
+    // pick it up rather than leaving the user on the login screen.
+    const unsub = insforge.auth.onAuthStateChange(() => {
+      insforge.auth.getCurrentUser().then(({ data }) => apply(data?.user)).catch(() => {});
+    });
+    return () => { cancelled = true; if (typeof unsub === "function") unsub(); };
   }, []);
 
   async function signOut() {
