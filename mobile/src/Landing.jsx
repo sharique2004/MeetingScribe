@@ -1,6 +1,9 @@
-// Marketing landing page — shown to desktop visitors. Phones skip this and
-// go straight to sign-in (to read synced transcripts). The primary action is
-// downloading the Mac app (.dmg hosted on InsForge storage).
+// Marketing / info landing page — shown to every signed-out visitor.
+//
+// On desktop the primary action is downloading the Mac app (.dmg on InsForge
+// storage). On a phone you can't run the Mac app, so the download and install
+// steps are hidden and the primary action becomes "View your meetings →",
+// which opens the sign-in page (same arrow the desktop nav uses).
 
 import React from "react";
 
@@ -35,7 +38,8 @@ const FEATURES = [
     body: "Choose a meeting to sync and read its transcript and summary on your phone. Text only — audio never leaves the Mac." },
 ];
 
-export default function Landing({ onOpenApp }) {
+export default function Landing({ onOpenApp, phone = false }) {
+  const showDownload = !phone;
   return (
     <div className="landing">
       <nav className="lp-nav">
@@ -52,12 +56,22 @@ export default function Landing({ onOpenApp }) {
           all running on your own machine. No accounts required, no subscription, nothing uploaded.
         </p>
         <div className="lp-cta">
-          <a className="lp-btn primary" href={DMG_URL} download>
-            <DownloadGlyph /> Download for Mac
-          </a>
+          {showDownload ? (
+            <a className="lp-btn primary" href={DMG_URL} download>
+              <DownloadGlyph /> Download for Mac
+            </a>
+          ) : (
+            <button className="lp-btn primary" onClick={onOpenApp}>
+              View your meetings <span className="lp-arrow">→</span>
+            </button>
+          )}
           <a className="lp-btn ghost" href="#how">How it works</a>
         </div>
-        <div className="lp-meta">Free · Apple Silicon Mac · macOS 26 recommended (older works with Whisper){!IS_MAC && " · you're not on a Mac, but you can still view synced meetings"}</div>
+        <div className="lp-meta">
+          {showDownload
+            ? <>Free · Apple Silicon Mac · macOS 26 recommended (older works with Whisper){!IS_MAC && " · you're not on a Mac, but you can still view synced meetings"}</>
+            : <>Sign in with your MeetingScribe account to read the transcripts and summaries you synced from your Mac — audio stays on the Mac.</>}
+        </div>
       </header>
 
       <section className="lp-shot">
@@ -101,20 +115,33 @@ export default function Landing({ onOpenApp }) {
         </p>
       </section>
 
-      <section className="lp-install">
-        <h2>Installing</h2>
-        <ol>
-          <li><b>Download</b> the disk image and drag <b>MeetingScribe</b> into Applications.</li>
-          <li><b>First open:</b> right-click the app → <b>Open</b> (it's a free indie app, not
-            signed through Apple's paid program, so macOS asks once).</li>
-          <li><b>First launch</b> sets itself up — it installs its local engine on your Mac
-            (a few minutes, one time). After that it opens instantly.</li>
-          <li>For meeting summaries, sign in to Claude once in Terminal
-            (<code>claude</code>); for capturing the other side of calls, install the free
-            <code> BlackHole</code> audio driver. The app guides you.</li>
-        </ol>
-        <a className="lp-btn primary" href={DMG_URL} download><DownloadGlyph /> Download for Mac</a>
-      </section>
+      {showDownload ? (
+        <section className="lp-install">
+          <h2>Installing</h2>
+          <ol>
+            <li><b>Download</b> the disk image and drag <b>MeetingScribe</b> into Applications.</li>
+            <li><b>First open:</b> right-click the app → <b>Open</b> (it's a free indie app, not
+              signed through Apple's paid program, so macOS asks once).</li>
+            <li><b>First launch</b> sets itself up — it installs its local engine on your Mac
+              (a few minutes, one time). After that it opens instantly.</li>
+            <li>For meeting summaries, sign in to Claude once in Terminal
+              (<code>claude</code>); for capturing the other side of calls, install the free
+              <code> BlackHole</code> audio driver. The app guides you.</li>
+          </ol>
+          <a className="lp-btn primary" href={DMG_URL} download><DownloadGlyph /> Download for Mac</a>
+        </section>
+      ) : (
+        <section className="lp-install">
+          <h2>Your meetings, on your phone</h2>
+          <p>
+            You record and summarize on your Mac; the meetings you choose to sync show up
+            here to read anywhere. Sign in with the same account as the Mac app to open them.
+          </p>
+          <button className="lp-btn primary" onClick={onOpenApp}>
+            View your meetings <span className="lp-arrow">→</span>
+          </button>
+        </section>
+      )}
 
       <footer className="lp-foot">
         <div className="brand"><MicIcon size={16} /><span>MeetingScribe</span></div>

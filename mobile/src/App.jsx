@@ -387,10 +387,13 @@ export default function App() {
 
   if (user === undefined) return <div className="boot">MeetingScribe…</div>;
 
-  // Desktop, signed out, and not explicitly asking for the app → landing page.
-  const wantsApp = IS_PHONE || user || /^#\/(app|m\/)/.test(hash);
+  // Signed out and not explicitly asking for the app → the info landing page.
+  // Phone and desktop both land here; the difference is only what the landing
+  // offers (phones can't download the Mac app, so it shows the arrow instead).
+  // Signed-in visitors and the #/app|#/m routes go straight into the meetings.
+  const wantsApp = user || /^#\/(app|m\/)/.test(hash);
   if (!wantsApp) {
-    return <Landing onOpenApp={() => (window.location.hash = "#/app")} />;
+    return <Landing phone={IS_PHONE} onOpenApp={() => (window.location.hash = "#/app")} />;
   }
 
   if (!user) return <Login onSignedIn={setUser} initialError={authError} />;

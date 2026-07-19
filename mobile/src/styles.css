@@ -164,7 +164,10 @@ a { color: var(--accent); }
 }
 .lp-btn.primary:hover { filter: brightness(1.05); }
 .lp-btn.ghost { background: var(--panel); }
+.lp-arrow { display: inline-block; transition: transform .15s ease; }
+.lp-btn:hover .lp-arrow { transform: translateX(3px); }
 .lp-meta { color: var(--text-faint); font-size: 12.5px; margin-top: 6px; }
+.lp-install p { color: var(--text-dim); font-size: 15px; line-height: 1.65; margin-bottom: 24px; }
 
 .lp-shot { margin: 40px 0 8px; }
 .lp-window {
@@ -223,7 +226,16 @@ a { color: var(--accent); }
 .lp-foot .brand span { font-size: 13px; color: var(--text-dim); }
 
 @media (max-width: 720px) {
+  .landing { padding: 0 18px; }
+  .lp-nav { padding: 16px 2px; }
+  .lp-nav .brand span { font-size: 15px; }
   .lp-shotbody { grid-template-columns: 1fr; }
-  .lp-features { grid-template-columns: 1fr; }
-  .lp-hero { padding-top: 24px; }
+  .lp-features { grid-template-columns: 1fr; margin: 40px 0; }
+  .lp-hero { padding-top: 20px; }
+  .lp-cta { flex-direction: column; margin: 26px 0 10px; }
+  .lp-cta .lp-btn { width: 100%; justify-content: center; }
+  .lp-shot { margin: 32px 0 8px; }
+  .lp-window { box-shadow: 0 16px 44px rgba(0,0,0,.45); }
+  .lp-privacy, .lp-install { margin: 44px auto; }
+  .lp-privacy h2, .lp-install h2 { font-size: 21px; }
 }
