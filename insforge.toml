@@ -2,6 +2,8 @@
 allowed_redirect_urls = [
   "http://127.0.0.1:5005/api/auth/callback",
   "https://5uh76ypz.insforge.site",
+  "https://meetingscribe.insforge.site",
+  "https://meetingscribe.shariquekhatri.com",
 ]
 require_email_verification = true
 verify_email_method = "code"
