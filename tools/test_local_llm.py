@@ -177,14 +177,14 @@ def test_merge_window_ops():
     ops = tidy._merge_window_ops([
         {"merge_speakers": [{"fold": "s2", "into": "s1"}],
          "drop_turns": [3, 4], "trim_turns": [{"id": 7, "keep": "hello"}],
-         "rename_speakers": [{"label": "s1", "name": "Jess"}]},
+         "rename_speakers": [{"label": "s1", "name": "Alex"}]},
         {"merge_speakers": [{"fold": "s2", "into": "s3"}],  # conflict: first wins
          "drop_turns": [4, 9], "trim_turns": [], "rename_speakers": []},
     ])
     assert ops["merge_speakers"] == {"s2": "s1"}
     assert ops["drop_turns"] == [3, 4, 9]
     assert ops["trim_turns"] == {"7": "hello"}
-    assert ops["rename_speakers"] == {"s1": "Jess"}
+    assert ops["rename_speakers"] == {"s1": "Alex"}
     print("PASS merge_window_ops")
 
 

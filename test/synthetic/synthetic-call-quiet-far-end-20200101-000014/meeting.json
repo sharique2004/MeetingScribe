@@ -1,0 +1,45 @@
+{
+ "id": "20200101-000014",
+ "title": "Synthetic — online call, quietest far end in the corpus",
+ "created": "2020-01-01T00:00:00",
+ "mode": "online",
+ "expected_speakers": null,
+ "status": "done",
+ "tracks": {
+  "mic": {
+   "file": "mic.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 97.98,
+   "start_offset": 0.0
+  },
+  "system": {
+   "file": "system.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 97.98,
+   "start_offset": 0.0
+  }
+ },
+ "warnings": [],
+ "duration": 97.98,
+ "speakers": {},
+ "turns": [],
+ "stats": {
+  "per_speaker": {},
+  "total_spoken_seconds": 0.0,
+  "duration": 97.98,
+  "total_words": 0
+ },
+ "languages": {
+  "mic": "en_US",
+  "system": "en_US"
+ },
+ "processing": {
+  "model": "synthetic",
+  "backend": "synthetic",
+  "seconds": 0.0,
+  "mode": "online"
+ },
+ "synthetic": true
+}

@@ -318,6 +318,56 @@ class _SilenceKeeper(threading.Thread):
 
 # --------------------------------------------------------------- controller --
 
+def _routing_alert(routing, auto_route, loopback_name):
+    """Turn a routing_status() value into (alert, human note), or (None, None).
+
+    The alert is only ever raised for a problem the app will NOT fix itself.
+    macos_audio.ensure_routing() — called from start() whenever auto_route is
+    on — repairs both bad states: it pairs the loopback with a real output in a
+    multi-output device and makes that the default. Read it and you will see
+    "loopback_only" is handled explicitly (`preferred=None if current is the
+    loopback`), which is the whole point: the user does not have to do
+    anything. So while auto-routing is on there is nothing to alarm about, and
+    a blinking red "you will not hear this meeting" banner would be a false
+    alarm telling the user to hand-fix something the app fixes two seconds
+    later. What is left is a calm note for the device tooltip.
+
+    Three cases:
+
+    - "loopback_only" + auto-routing ON: the Mac's default output IS the
+      loopback right now, so at this instant the user would hear nothing — but
+      ensure_routing() repairs exactly this at record time. Informational note,
+      NO alert.
+    - "loopback_only" + auto-routing OFF: nothing will repair it, so the user
+      really will sit through the meeting in silence. Loud alarm.
+    - "not_routed": nothing feeds the loopback yet. That is the NORMAL idle
+      state when auto-routing is on (routing happens when recording starts),
+      so it is only worth flagging when auto-routing is off.
+    """
+    if routing == "loopback_only":
+        if auto_route:
+            # No alert: the note rides along as the System row's tooltip.
+            return None, (
+                "Your Mac's sound output is currently set to " + loopback_name
+                + ". MeetingScribe switches it to a multi-output device when you "
+                "start recording, so you will hear the meeting and it still gets "
+                "captured. Your previous output is restored afterwards."
+            )
+        return "silent", (
+            "Your Mac's sound output is set to " + loopback_name + " itself, so "
+            "you will not hear the other participants. Automatic audio routing "
+            "is turned off (auto_route_macos), so switch the output back to your "
+            "speakers or headphones in Sound settings yourself."
+        )
+    if routing == "not_routed" and not auto_route:
+        return "not_routed", (
+            "Automatic audio routing is turned off (auto_route_macos), so the "
+            "other participants will not be recorded unless you route the "
+            "output through " + loopback_name + " yourself."
+        )
+    return None, None
+
+
 class MeetingRecorder:
     """Singleton-style recorder driven by the Flask app."""
 
@@ -328,7 +378,7 @@ class MeetingRecorder:
         self._silence = None
         self._stop_event = None
         self._route = None  # macOS: result of ensure_routing() while recording
-        self._preflight_cache = None  # (timestamp, info)
+        self._preflight_cache = None  # (timestamp, info, auto_route)
         self.levels = {}
         self.meeting_id = None
         self.started_at = None  # wall-clock time the meeting started
@@ -362,16 +412,23 @@ class MeetingRecorder:
             warnings.append("No microphone found — your own voice will not be recorded.")
         return mic, system, warnings
 
-    def preflight(self):
+    def preflight(self, auto_route=True):
         """Device snapshot for the UI — no streams are opened.
+
+        `auto_route` is the caller's auto_route_macos setting; it is reported
+        back verbatim so the UI can tell "routing happens at record time" from
+        "nothing will ever route".
 
         Cached for a few seconds so the UI can poll freely.
         """
+        auto_route = bool(auto_route)
         with self._lock:
             if self._tracks:
                 return {"recording": True}
             now = time.time()
-            if self._preflight_cache and now - self._preflight_cache[0] < 3.0:
+            if (self._preflight_cache
+                    and now - self._preflight_cache[0] < 3.0
+                    and self._preflight_cache[2] == auto_route):
                 return self._preflight_cache[1]
             if BACKEND == "wasapi":
                 pa = pyaudio.PyAudio()
@@ -391,13 +448,18 @@ class MeetingRecorder:
                 "system": {"name": str(system["name"])} if system else None,
             }
             if system is not None and macos_audio is not None:
+                info["system"]["auto_route"] = auto_route
                 try:
                     info["system"]["routing"] = macos_audio.routing_status(str(system["name"]))
-                    info["system"]["auto_route"] = True
                 except Exception as exc:
                     log.debug("routing status failed: %s", exc)
                     info["system"]["routing"] = "unknown"
-            self._preflight_cache = (now, info)
+                alert, note = _routing_alert(
+                    info["system"]["routing"], auto_route, str(system["name"])
+                )
+                info["system"]["routing_alert"] = alert
+                info["system"]["routing_note"] = note
+            self._preflight_cache = (now, info, auto_route)
             return info
 
     def start(self, out_dir, meeting_id, auto_route=True, taps=None):

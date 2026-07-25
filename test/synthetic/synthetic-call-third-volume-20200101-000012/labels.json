@@ -1,0 +1,27 @@
+{
+ "slug": "synthetic-call-third-volume-20200101-000012",
+ "title": "Synthetic — online call, far end talks a third as much",
+ "note": "System/mic ratio ~0.31.",
+ "embedding_mode": "clean",
+ "true_speaker_count": 2,
+ "tracks": {},
+ "generated_by": "tools/make_synthetic_fixtures.py",
+ "parameters": {
+  "seed": 20260725,
+  "embedding_dim": 192,
+  "max_voices": 8,
+  "between_speaker_cosine_distance": 0.85,
+  "within_speaker_sigma": 0.35,
+  "within_speaker_pair_distance_expected": 0.109131,
+  "drift_degrees": 80.0,
+  "phantom_cosine_distance": 0.65,
+  "phantom_window_share": 0.12,
+  "turn_gap_seconds": 0.18,
+  "windowing": {
+   "source": "diarization.build_windows (the real one)",
+   "window_s": 2.0,
+   "hop_s": 1.0,
+   "min_window_s": 0.4
+  }
+ }
+}

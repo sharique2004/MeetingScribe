@@ -1,37 +1,84 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="teal">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MeetingScribe</title>
 <style>
 /* MeetingScribe — Mac-native pro-tool: SF type, hairline borders, tight density.
-   Theme via html[data-theme="dark"|"light"]. */
+   Theme via html[data-theme="teal"|"graphite"|"indigo"|"ember"|"light"].
+   Every palette below defines the SAME token set, so no other rule in this file
+   ever needs to know which one is active. The JS mirror of this table (THEMES,
+   in the state section) only carries the three colours the swatches paint with. */
 :root {
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Menlo", "JetBrains Mono", monospace;
   --r-sm: 6px; --r-md: 9px; --r-lg: 13px;
   --sidebar-w: 264px;
 }
-html[data-theme="dark"] {
+html[data-theme="teal"] {
   color-scheme: dark;
-  --bg: #131316; --bg-sidebar: #18181c;
-  --panel: #1c1c21; --panel-2: #232329; --panel-3: #2a2a31;
-  --border: rgba(255,255,255,.075); --border-strong: rgba(255,255,255,.14);
-  --text: #ececf1; --text-dim: #9c9ca7; --text-faint: #65656f;
+  --bg: #101014; --bg-sidebar: #16161b;
+  --panel: #1b1b21; --panel-2: #212128; --panel-3: #2a2a33;
+  --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.11);
+  --bg-hover: rgba(255,255,255,.055);
+  --text: #f0f0f4; --text-dim: #9a9aa6; --text-faint: #63636e;
   --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
   --ok: #3fbe89; --warn: #d9a13c; --danger: #e0524d;
   --mark-bg: rgba(217,161,60,.28);
-  --accent: #33bbd6; --accent-ink: #063038;
+  --accent: #35c2dd; --accent-ink: #04262d;
   --spk-a: #8b8af5; --spk-b: #3fbe89; --spk-c: #e8920f;
-  --avatar-ink: #0e0e12;
+  --avatar-ink: #0b0b12;
+}
+html[data-theme="graphite"] {
+  color-scheme: dark;
+  --bg: #1c1c1e; --bg-sidebar: #232325;
+  --panel: #2c2c2e; --panel-2: #3a3a3c; --panel-3: #48484a;
+  --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.14);
+  --bg-hover: rgba(255,255,255,.07);
+  --text: #f5f5f7; --text-dim: #98989d; --text-faint: #6c6c70;
+  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #30d158; --warn: #ff9f0a; --danger: #ff453a;
+  --mark-bg: rgba(255,214,10,.28);
+  --accent: #0a84ff; --accent-ink: #ffffff;
+  --spk-a: #bf5af2; --spk-b: #30d158; --spk-c: #ff9f0a;
+  --avatar-ink: #ffffff;
+}
+html[data-theme="indigo"] {
+  color-scheme: dark;
+  --bg: #111120; --bg-sidebar: #16162a;
+  --panel: #1b1b30; --panel-2: #23233c; --panel-3: #2c2c48;
+  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.13);
+  --bg-hover: rgba(255,255,255,.06);
+  --text: #f0f0f8; --text-dim: #9797ad; --text-faint: #66667d;
+  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #30d158; --warn: #ff9f0a; --danger: #ff453a;
+  --mark-bg: rgba(255,214,10,.26);
+  --accent: #5e5ce6; --accent-ink: #ffffff;
+  --spk-a: #64d2ff; --spk-b: #30d158; --spk-c: #ff9f0a;
+  --avatar-ink: #04202b;
+}
+html[data-theme="ember"] {
+  color-scheme: dark;
+  --bg: #17161a; --bg-sidebar: #1d1c21;
+  --panel: #232127; --panel-2: #2b2930; --panel-3: #35323b;
+  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.13);
+  --bg-hover: rgba(255,255,255,.06);
+  --text: #f4f2f0; --text-dim: #a09b9c; --text-faint: #6f6a6d;
+  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #30d158; --warn: #ffd60a; --danger: #ff453a;
+  --mark-bg: rgba(255,214,10,.26);
+  --accent: #ff9f0a; --accent-ink: #2a1600;
+  --spk-a: #64d2ff; --spk-b: #30d158; --spk-c: #bf5af2;
+  --avatar-ink: #04202b;
 }
 html[data-theme="light"] {
   color-scheme: light;
-  --bg: #f3f3f5; --bg-sidebar: #ebebee;
-  --panel: #ffffff; --panel-2: #f6f6f8; --panel-3: #ededf0;
-  --border: rgba(20,20,28,.09); --border-strong: rgba(20,20,28,.18);
-  --text: #1b1b20; --text-dim: #62626d; --text-faint: #9b9ba5;
+  --bg: #f1f1f4; --bg-sidebar: #e8e8ee;
+  --panel: #ffffff; --panel-2: #f5f5f8; --panel-3: #eaeaef;
+  --border: rgba(20,20,28,.1); --border-strong: rgba(20,20,28,.16);
+  --bg-hover: rgba(20,20,28,.05);
+  --text: #1b1b20; --text-dim: #62626d; --text-faint: #95959f;
   --shadow-pop: 0 8px 28px rgba(20,20,40,.16), 0 0 0 1px rgba(20,20,28,.06);
   --ok: #1f8a5b; --warn: #a3700a; --danger: #c2362f;
   --mark-bg: rgba(217,161,60,.35);
@@ -120,20 +167,42 @@ input, select { font: inherit; color: inherit; }
 .sb-dev { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-dim); min-width: 0; }
 .sb-dev .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); flex: none; }
 .sb-dev .dot.warn { background: var(--warn); } .sb-dev .dot.err { background: var(--danger); }
+/* "we could not check" — neither a claim of health nor an alarm. */
+.sb-dev .dot.idle { background: var(--text-faint); }
+/* "silent": the Mac's own output is the loopback, so the user hears nothing.
+   Deliberately louder than .err — a blinking red dot, same language as "recording". */
+.sb-dev .dot.silent { background: var(--danger); animation: ms-blink 1.4s ease-in-out infinite; }
 .sb-dev .lbl { color: var(--text-faint); flex: none; }
 .sb-dev .val { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-alert { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; line-height: 1.4; font-weight: 600; color: var(--danger); }
+.sb-alert .ic { flex: none; padding-top: 1px; }
 .sb-foot-row { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; }
-.theme-btn { width: 28px; height: 28px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--text-dim); border: 1px solid var(--border); }
-.theme-btn:hover { background: var(--panel-2); color: var(--text); }
+/* Appearance picker. The swatches paint each palette's OWN colours, so their
+   inline styles come from the JS THEMES table — var(--accent) here would just
+   repeat the active theme five times. Only the ring is var-driven. */
+.sb-appearance { border-top: 1px solid var(--border); margin-top: 3px; padding-top: 9px; }
+.sb-appear-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.sb-appear-label { font-size: 11.5px; color: var(--text-dim); }
+.sb-swatches { display: flex; align-items: center; gap: 5px; }
+.sb-sw { width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  border: 1.5px solid transparent; transition: transform .12s; }
+.sb-sw:hover { transform: scale(1.12); }
+.sb-sw.on { border-color: var(--accent); }
+.sb-sw i { display: block; width: 14px; height: 14px; border-radius: 50%; }
+.sb-appear-name { margin-top: 4px; text-align: right; font-size: 10.5px; color: var(--text-faint); }
 .sb-quit { font-size: 11px; color: var(--text-faint); }
 .sb-quit:hover { color: var(--text-dim); }
 
 /* Review header */
 .rv-head { padding: 22px 28px 0; }
 .rv-title-row { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.rv-title { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.25; margin: 0; min-width: 240px; flex: 1; border-radius: var(--r-sm); outline: none; }
+.rv-title { font-size: 24px; font-weight: 700; letter-spacing: -0.024em; line-height: 1.22; margin: 0; min-width: 240px; flex: 1; border-radius: var(--r-sm); outline: none; }
 .rv-title[contenteditable]:focus { box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 45%, transparent); }
-.rv-actions { display: flex; align-items: center; gap: 8px; flex: none; padding-top: 1px; }
+/* Five buttons: they wrap onto a second row rather than widening the header
+   past the pane (the title row already wraps, but the action group itself was
+   flex:none and pushed the whole main column sideways below ~800px). */
+.rv-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end;
+  gap: 8px; flex: 0 1 auto; min-width: 0; padding-top: 1px; }
 .rv-meta { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 12px; color: var(--text-dim); flex-wrap: wrap; }
 .rv-meta .sep { color: var(--text-faint); }
 .rv-meta .chip { display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel); font-size: 11px; color: var(--text-dim); }
@@ -185,6 +254,10 @@ input, select { font: inherit; color: inherit; }
 .spk-count { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--text-dim); }
 .spk-count select { height: 24px; padding: 0 4px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--panel-2); font-size: 11.5px; outline: none; }
 .spk-flash { color: var(--ok); font-size: 11px; font-weight: 550; }
+/* Shown only under the mic-only fallback: explains why no chip says "You". */
+.spk-note { display: flex; align-items: flex-start; gap: 7px; padding: 9px 12px; border-top: 1px solid var(--border); font-size: 11.5px; line-height: 1.45; color: var(--text-dim); }
+.spk-note .ic { flex: none; color: var(--warn); display: grid; place-items: center; padding-top: 1px; }
+.spk-count select:disabled { opacity: .5; cursor: not-allowed; }
 .spk-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 550; color: var(--text-dim); padding: 4px 8px; border-radius: var(--r-sm); }
 .spk-toggle:hover { color: var(--text); background: var(--panel-2); }
 .spk-toggle svg { transition: transform .15s; }
@@ -198,12 +271,52 @@ input, select { font: inherit; color: inherit; }
 
 /* Summary panel */
 /* Meeting view: tabs + Overview (brief hero, actions, decisions, aside) */
-.rv-tabs { display: flex; gap: 4px; padding: 14px 28px 0; margin-top: 2px; border-bottom: 1px solid var(--border); }
-.rv-tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px 11px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.rv-tab svg { opacity: .8; }
+/* The row wraps: below the width where the tabs and the privacy claim can share
+   a line the claim drops to its own line rather than either overflowing the
+   pane or being hidden. */
+.rv-tabs { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; row-gap: 10px;
+  padding: 14px 28px 12px; margin-top: 2px; border-bottom: 1px solid var(--border); }
+/* Segmented control: four buttons over one sliding pill. The pill is positioned,
+   not animated per-button, so the slide is a single transform. Slots are 104px
+   wide wherever there is room and shrink evenly when there is not — four fixed
+   104px slots plus the row padding no longer fit the main pane below ~745px
+   window width, and used to push the whole header sideways. Because the slot
+   width is no longer a constant, slideTabPill() measures the real buttons
+   instead of multiplying an index by 104. margin-right:auto keeps the privacy
+   claim hard right while the two share a line, and leaves it flush left once it
+   wraps (an auto margin absorbs only positive free space, so it never blocks
+   the shrink). */
+.rv-seg { position: relative; display: flex; padding: 2px; border-radius: 9px;
+  flex: 0 1 auto; min-width: 0; max-width: 100%; margin-right: auto;
+  background: color-mix(in oklab, var(--text) 6%, transparent); }
+.rv-seg-pill { position: absolute; top: 2px; left: 2px; width: 104px; height: 28px; border-radius: 7px;
+  background: var(--panel-3); box-shadow: 0 1px 2px rgba(0,0,0,.4);
+  transition: transform .24s cubic-bezier(.32,.72,0,1); }
+/* width (not flex-basis) is what makes the control ASK for 4x104px: a flex item
+   sized only by its basis contributes its text width to the container's
+   intrinsic size, which would let the strip collapse to the labels even when
+   there is room. flex-shrink 1 + min-width 0 is what lets it give that up. */
+.rv-tab { position: relative; z-index: 1; width: 104px; flex: 0 1 auto; min-width: 0;
+  height: 28px; display: inline-flex; align-items: center; overflow: hidden;
+  justify-content: center; font-size: 12.5px; font-weight: 600; color: var(--text-dim); transition: color .16s; }
 .rv-tab:hover { color: var(--text); }
-.rv-tab.on { color: var(--text); border-bottom-color: var(--accent); }
-.rv-tab.on svg { color: var(--accent); opacity: 1; }
+.rv-tab.on { color: var(--text); }
+
+/* Privacy claim lives in the tab row — the first thing read on every meeting.
+   It is never hidden: this is the product's central promise, so at every width
+   at least the headline sentence is on screen (the row wraps it onto its own
+   line, and below 1180px the second sentence drops to the tooltip). */
+.privacy-pill { display: inline-flex; align-items: center; gap: 7px; flex: none; max-width: 100%;
+  padding: 4px 11px 4px 9px; border-radius: 99px; font-size: 11.5px; line-height: 1.3;
+  color: color-mix(in oklab, var(--ok) 80%, var(--text));
+  background: color-mix(in oklab, var(--ok) 11%, transparent);
+  border: 1px solid color-mix(in oklab, var(--ok) 26%, transparent); }
+.privacy-pill svg { flex: none; color: var(--ok); }
+.privacy-pill b { color: color-mix(in oklab, var(--ok) 92%, var(--text)); font-weight: 650; }
+/* Below ~1180px the tabs and the pill stop fitting on one line together: drop
+   the second sentence first, and only then let the pill wrap (.rv-tabs above).
+   It is never display:none — a narrow window must still state the promise. */
+@media (max-width: 1180px) { .privacy-pill .pp-more { display: none; } }
 
 .ov-scroll { flex: 1; overflow-y: auto; }
 .ov-grid { display: grid; grid-template-columns: minmax(0,1fr) 316px; gap: 22px; width: min(1160px, 100%); margin: 0 auto; padding: 22px 28px 40px; }
@@ -211,10 +324,6 @@ input, select { font: inherit; color: inherit; }
 .ov-main { min-width: 0; }
 .ov-pad { padding: 22px 28px 40px; max-width: 1000px; }
 .section-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
-
-.privacy-strip { display: flex; align-items: center; gap: 9px; padding: 8px 12px; margin-bottom: 16px; font-size: 11.5px; color: color-mix(in oklab, var(--ok) 80%, var(--text)); background: color-mix(in oklab, var(--ok) 11%, transparent); border: 1px solid color-mix(in oklab, var(--ok) 26%, transparent); border-radius: var(--r-md); }
-.privacy-strip svg { flex: none; color: var(--ok); }
-.privacy-strip b { color: color-mix(in oklab, var(--ok) 92%, var(--text)); font-weight: 650; }
 
 .brief { position: relative; overflow: hidden; padding: 24px 26px 22px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); }
 .brief::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 3px; background: var(--accent); }
@@ -285,19 +394,90 @@ input, select { font: inherit; color: inherit; }
 .tr-search input:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); width: 250px; }
 .tr-search svg { position: absolute; left: 7px; top: 6px; color: var(--text-faint); }
 .tr-count { font-size: 11px; color: var(--text-faint); }
+.tr-size { display: flex; align-items: center; border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; flex: none; }
+.tr-size button { width: 26px; height: 26px; display: grid; place-items: center; font-size: 12px; font-weight: 600; color: var(--text-dim); background: var(--panel); }
+.tr-size button:hover { background: var(--panel-2); color: var(--text); }
+.tr-size button:disabled { opacity: .4; cursor: default; background: var(--panel); }
+.tr-size button + button { border-left: 1px solid var(--border); }
 .tr-scroll { flex: 1; overflow-y: auto; padding: 2px 28px 28px; }
 .tr-inner { max-width: 780px; }
-.tr-group { display: grid; grid-template-columns: 56px 1fr; gap: 0 16px; padding: 9px 0; }
-.tr-group + .tr-group { border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
-.tr-time { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); padding-top: 3px; text-align: right; border-radius: 4px; }
+/* One grid per speaker turn: avatar column spanning both rows, name + timestamp
+   on the first, the words on the second. No rules between groups — the avatar
+   already carries the rhythm; hover is the only chrome. */
+.tr-group { display: grid; grid-template-columns: 30px 1fr; gap: 0 14px; padding: 11px 12px 13px;
+  border-radius: 12px; background: transparent; transition: background .1s; }
+.tr-group:hover { background: var(--bg-hover); }
+.tr-ava { grid-row: span 2; padding-top: 2px; }
+.tr-ava i { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
+  font-size: 10.5px; font-weight: 700; font-style: normal; color: var(--avatar-ink); }
+.tr-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 4px; min-width: 0; }
+.tr-time { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); border-radius: 4px; flex: none; }
 .tr-time:hover { color: var(--accent); }
-.tr-body { min-width: 0; }
-.tr-spk { font-size: 11.5px; font-weight: 700; letter-spacing: .01em; margin-bottom: 2px; }
-.tr-text { font-size: 13.5px; line-height: 1.6; color: var(--text); }
+.tr-spk { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-text { font-size: 14.5px; line-height: 1.68; color: var(--text); text-wrap: pretty; min-width: 0; }
 .tr-text p { margin: 0 0 6px; }
 .tr-text p:last-child { margin-bottom: 0; }
 .tr-text mark { background: var(--mark-bg); color: inherit; border-radius: 3px; padding: 0 1px; }
 .tr-empty { padding: 40px 0; color: var(--text-faint); font-size: 13px; text-align: center; }
+
+/* Ask tab — a chat over the transcript. Answers cite real turn timestamps, and
+   every citation chip is a seek button into the recording. */
+.ask-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ask-privacy { display: flex; align-items: center; gap: 8px; margin: 14px 28px 0; padding: 7px 12px;
+  border-radius: var(--r-md); font-size: 11.5px; line-height: 1.4; color: var(--text-dim);
+  background: var(--panel); border: 1px solid var(--border); }
+.ask-privacy svg { flex: none; color: var(--ok); }
+.ask-privacy b { color: var(--text); font-weight: 600; }
+.ask-scroll { flex: 1; overflow-y: auto; padding: 16px 28px 6px; }
+.ask-inner { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.ask-msg { display: flex; flex-direction: column; gap: 7px; }
+.ask-msg.user { align-items: flex-end; }
+.ask-msg.assistant { align-items: flex-start; }
+.ask-bubble { padding: 10px 14px; font-size: 14px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ask-msg.user .ask-bubble { max-width: 66%; background: var(--accent); color: var(--accent-ink); border-radius: 17px 17px 5px 17px; }
+.ask-msg.assistant .ask-bubble { max-width: 76%; background: var(--panel); border: 1px solid var(--border); border-radius: 17px 17px 17px 5px; }
+.ask-bubble.is-pending { display: inline-flex; align-items: center; gap: 9px; color: var(--text-dim); }
+/* The same bubble the spinner sits in becomes the answer as it is written, so
+   the first token replaces the wait in place instead of swapping one element
+   for another (which reads as a flicker and costs a full re-render). Streaming
+   only ever ADDS .is-streaming; nothing here changes a settled answer. */
+.ask-bubble.is-pending .ask-stream { display: none; }
+.ask-bubble.is-streaming { display: block; color: var(--text); }
+.ask-bubble.is-streaming .spinner, .ask-bubble.is-streaming .ask-wait { display: none; }
+.ask-bubble.is-streaming .ask-stream { display: inline; }
+/* A caret on the last line says "still writing" without moving the text. */
+.ask-bubble.is-streaming .ask-stream::after {
+  content: ""; display: inline-block; width: 2px; height: 1em; margin-left: 2px;
+  vertical-align: -2px; background: var(--accent); animation: ms-caret 1.1s steps(1) infinite;
+}
+@keyframes ms-caret { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.ask-cites { display: flex; flex-wrap: wrap; gap: 6px; max-width: 76%; }
+.ask-cite { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 4px 10px 4px 9px;
+  border-radius: 99px; border: 1px solid var(--border); background: var(--panel-2); font-size: 11.5px; color: var(--text-dim); }
+.ask-cite:hover { color: var(--text); border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.ask-cite .t { font-family: var(--font-mono); color: var(--accent); flex: none; }
+.ask-cite .q { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-start { padding: 6px 0 2px; }
+.ask-start h3 { margin: 0 0 5px; font-size: 16px; font-weight: 680; letter-spacing: -0.01em; }
+.ask-start p { margin: 0 0 14px; font-size: 12.5px; line-height: 1.55; color: var(--text-dim); max-width: 520px; }
+.ask-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ask-chip { padding: 6px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--panel);
+  font-size: 12.5px; color: var(--text-dim); }
+.ask-chip:hover { color: var(--text); border-color: var(--border-strong); background: var(--panel-2); }
+.ask-foot { flex: none; padding: 8px 28px 18px; }
+.ask-composer { display: flex; align-items: flex-end; gap: 8px; max-width: 780px; margin: 0 auto;
+  padding: 6px 6px 6px 14px; border-radius: 14px; background: var(--panel); border: 1px solid var(--border-strong); }
+.ask-composer:focus-within { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.ask-composer textarea { flex: 1; min-width: 0; padding: 7px 0; border: none; outline: none; background: transparent;
+  resize: none; font-family: var(--font-ui); font-size: 14px; line-height: 1.5; color: var(--text); max-height: 132px; }
+.ask-composer textarea::placeholder { color: var(--text-faint); }
+.ask-send { width: 32px; height: 32px; flex: none; border-radius: 10px; display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink); }
+.ask-send:hover { filter: brightness(1.07); }
+.ask-send:disabled { opacity: .5; cursor: default; }
+.ask-hint { max-width: 780px; margin: 7px auto 0; font-size: 11px; color: var(--text-faint); text-align: center; }
+.aside-p { margin: 0 0 12px; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+.aside-btn { width: 100%; justify-content: center; height: 34px; }
 
 /* Transport bar */
 .transport { flex: none; display: flex; align-items: center; gap: 14px; height: 56px; padding: 0 20px; border-top: 1px solid var(--border); background: var(--panel); }
@@ -336,6 +516,18 @@ input, select { font: inherit; color: inherit; }
 .rec-dev + .rec-dev { border-top: 1px solid var(--border); }
 .rec-dev .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
 .rec-dev .dot.warn { background: var(--warn); } .rec-dev .dot.err { background: var(--danger); }
+.rec-dev .dot.idle { background: var(--text-faint); }
+.rec-dev .dot.silent { background: var(--danger); animation: ms-blink 1.4s ease-in-out infinite; }
+.rec-dev .role.silent { color: var(--danger); font-weight: 650; }
+/* Routing banner on the setup card. Red by default (the "silent" case: the user
+   is about to run a meeting hearing nothing); .warn tones it down for "not_routed". */
+.rec-alert { display: flex; align-items: flex-start; gap: 9px; margin-top: 10px; padding: 10px 12px; border-radius: var(--r-md);
+  border: 1px solid color-mix(in oklab, var(--danger) 55%, transparent); background: color-mix(in oklab, var(--danger) 12%, transparent); }
+.rec-alert .ic { flex: none; color: var(--danger); display: grid; place-items: center; padding-top: 1px; }
+.rec-alert b { display: block; font-size: 12.5px; font-weight: 700; color: var(--danger); margin-bottom: 2px; }
+.rec-alert span { font-size: 11.5px; line-height: 1.45; color: var(--text-dim); }
+.rec-alert.warn { border-color: color-mix(in oklab, var(--warn) 55%, transparent); background: color-mix(in oklab, var(--warn) 12%, transparent); }
+.rec-alert.warn .ic, .rec-alert.warn b { color: var(--warn); }
 .rec-dev .name { font-size: 12.5px; font-weight: 550; }
 .rec-dev .role { font-size: 11px; color: var(--text-faint); margin-left: auto; text-align: right; }
 .rec-start { width: 100%; height: 40px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
@@ -426,6 +618,8 @@ const ICONS = {
   person: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>',
   calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
   wave: '<path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/>',
+  chat: '<path d="M21 11.5a8 8 0 0 1-11.6 7.2L3.5 20.5l1.8-5.9A8 8 0 1 1 21 11.5z"/>',
+  send: '<path d="M12 20V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/>',
 };
 function icon(name, size = 14, sw = 1.7) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
@@ -488,8 +682,32 @@ function dateLabel(iso) {
 }
 
 /* ---------------------------------------------------------------- state -- */
+/* The five palettes, in picker order. `accent` and `spk` are copies of each
+   palette's --accent / --spk-a: a swatch has to paint the theme it OFFERS, not
+   the one that is active, so it cannot read the CSS variables. `name` is the
+   label under the row; the id is what lands in localStorage and on <html>. */
+const THEMES = [
+  {id: "teal",     name: "Teal",     bg: "#101014", accent: "#35c2dd", spk: "#8b8af5"},
+  {id: "graphite", name: "Graphite", bg: "#1c1c1e", accent: "#0a84ff", spk: "#bf5af2"},
+  {id: "indigo",   name: "Indigo",   bg: "#111120", accent: "#5e5ce6", spk: "#64d2ff"},
+  {id: "ember",    name: "Ember",    bg: "#17161a", accent: "#ff9f0a", spk: "#64d2ff"},
+  {id: "light",    name: "Daylight", bg: "#f1f1f4", accent: "#0c7186", spk: "#5957d8"},
+];
+/* Stored themes predate the palettes: the old toggle wrote "dark" or "light".
+   "light" still exists, "dark" became "teal"; anything else falls back. */
+function storedTheme() {
+  let id = localStorage.getItem("msTheme");
+  if (id === "dark") id = "teal";
+  return THEMES.some(t => t.id === id) ? id : "teal";
+}
+const TR_SIZE_MIN = 13, TR_SIZE_MAX = 18, TR_SIZE_DEFAULT = 14.5;
+function clampTrSize(px) {
+  if (!isFinite(px)) return TR_SIZE_DEFAULT;
+  return Math.min(TR_SIZE_MAX, Math.max(TR_SIZE_MIN, Math.round(px * 2) / 2));
+}
 const S = {
-  theme: localStorage.getItem("msTheme") || "dark",
+  theme: storedTheme(),
+  trSize: clampTrSize(parseFloat(localStorage.getItem("msTrSize")) || TR_SIZE_DEFAULT),
   connected: true,          // backend reachable? drives the reconnect banner
   meetings: [],
   total: 0,                 // total meetings on disk matching the search
@@ -499,7 +717,10 @@ const S = {
   detail: null,             // full meta of the open meeting
   q: "",                    // sidebar search
   tq: "",                   // transcript search
-  tab: "overview",          // meeting view tab: overview | transcript | insights
+  tab: "overview",          // meeting view tab: overview | transcript | insights | chat
+  chat: {},                 // meeting id -> [{role, text, citations, pending}] (this session only)
+  chatDraft: {},            // meeting id -> half-typed question (survives re-renders)
+  chatBusy: false,          // an /ask request is in flight
   devices: null,
   calendar: [],
   rec: {recording: false},
@@ -647,6 +868,50 @@ function updateTransportUI() {
   drawWave();
 }
 
+/* Routing state for the "System" audio row — shared by the sidebar and the setup
+   card so the two can never disagree.
+
+   preflight() now computes this server-side and hands it over as
+   sys.routing_alert / sys.routing_note. The inline expression below is only the
+   fallback for a payload that carries no alert (older server, or a platform
+   where macos_audio is unavailable), and it is the ORIGINAL condition verbatim,
+   "&& !sys.auto_route" included: "not_routed" is the NORMAL idle state while
+   auto-routing is on, because routing is applied when recording starts. Dropping
+   that guard would paint a warning on every single session.
+
+     "silent"      the Mac's own sound output is set to the loopback device, so
+                   the call is captured but THE USER HEARS NOTHING. Always wrong,
+                   auto-routing or not — rendered loud.
+     "not_routed"  auto-routing is off and nothing feeds the loopback, so the
+                   other participants will not be recorded.
+     "no_loopback" the device the name points at is gone. The server reports no
+                   alert for this one, but it is not healthy: nothing can feed a
+                   device that does not exist, so auto-routing will fail at
+                   record time and the other side is not captured.
+     null          healthy, or genuinely unknown (see routingKnown). */
+function routingAlert(sys) {
+  if (!sys) return null;
+  if (sys.routing_alert) return sys.routing_alert;
+  if (sys.routing === "no_loopback") return "no_loopback";
+  return (sys.routing === "not_routed" && !sys.auto_route) ? "not_routed" : null;
+}
+/* False only when the routing probe RAN AND FAILED — preflight writes
+   routing:"unknown" when CoreAudio refuses to answer. A payload with no routing
+   key at all is a platform that has no routing to do (Windows takes system audio
+   straight off the WASAPI loopback), which is healthy, not unknown. The
+   difference matters: "unknown" must not be painted as checked-and-fine. */
+function routingKnown(sys) {
+  return !!sys && sys.routing !== "unknown";
+}
+/* One reading of the System row, shared by the sidebar and the setup card. */
+function routingDot(sys) {
+  if (!sys) return "err";
+  const alert = routingAlert(sys);
+  if (alert === "silent") return "silent";
+  if (alert) return "warn";
+  return routingKnown(sys) ? "" : "idle";
+}
+
 /* -------------------------------------------------------------- sidebar -- */
 function renderSidebar() {
   // The server already filters by S.q (titles + speaker names).
@@ -663,7 +928,20 @@ function renderSidebar() {
 
   const dev = S.devices || {};
   const mic = dev.mic, sys = dev.system;
-  const sysDot = !sys ? "err" : (sys.routing === "not_routed" && !sys.auto_route ? "warn" : "");
+  const sysAlert = routingAlert(sys);
+  const sysDot = routingDot(sys);
+  // The note is the backend's own wording. Failing that, say what is actually
+  // true of THIS setup rather than the old blanket "routes automatically":
+  // with auto_route off nothing will route, and an already-routed output is
+  // working without any help from us.
+  const sysTitle = (sys && sys.routing_note)
+    || (!sys ? "Not found — the other participants cannot be captured."
+      : sysAlert === "no_loopback" ? "This device is no longer available, so the other participants will not be recorded."
+      : !routingKnown(sys) ? "Captures the other participants. Its routing could not be checked just now."
+      : sys.routing == null ? "Captures the other participants."   // platform with no routing to do
+      : sys.routing === "routed" ? "Captures the other participants. Your output already feeds it."
+      : sys.auto_route === false ? "Captures the other participants. Automatic routing is off, so route your output through it yourself."
+      : "Captures the other participants. Routes automatically while you record.");
   let html = `
     <div class="sb-head">
       <div class="sb-logo">${icon("mic", 14, 2)}</div>
@@ -700,15 +978,30 @@ function renderSidebar() {
     html += `<button class="sb-more" id="sbMore" onclick="loadMoreMeetings()">
       ${S.listLoading ? "Loading…" : `Show more (${S.total - S.meetings.length} older)`}</button>`;
   }
+  const swatches = THEMES.map(t => `<button class="sb-sw${S.theme === t.id ? " on" : ""}"
+    style="background:${t.bg}" title="${esc(t.name)}" onclick="setTheme('${t.id}')" aria-label="${esc(t.name)} appearance">
+    <i style="background:linear-gradient(90deg, ${t.accent} 0 50%, ${t.spk} 50% 100%)"></i></button>`).join("");
+  const themeName = (THEMES.find(t => t.id === S.theme) || THEMES[0]).name;
   html += `</nav>
     <div class="sb-foot">
       <div class="sb-dev" title="Records as “You”">
         <span class="dot ${mic ? "" : "err"}"></span><span class="lbl">Mic</span>
         <span class="val">${esc(mic ? mic.name : "Not found")}</span>
       </div>
-      <div class="sb-dev" title="Captures the other participants. Routes automatically while you record.">
+      <div class="sb-dev" title="${esc(sysTitle)}">
         <span class="dot ${sysDot}"></span><span class="lbl">System</span>
         <span class="val">${esc(sys ? sys.name : "BlackHole not installed")}</span>
+      </div>
+      ${sysAlert === "silent" ? `<div class="sb-alert" title="${esc(sys.routing_note || "")}">
+        <span class="ic">${icon("warn", 11)}</span>
+        <span>You will hear nothing — your Mac's output is set to ${esc(sys.name)}.</span>
+      </div>` : ""}
+      <div class="sb-appearance">
+        <div class="sb-appear-row">
+          <span class="sb-appear-label">Appearance</span>
+          <div class="sb-swatches">${swatches}</div>
+        </div>
+        <div class="sb-appear-name">${esc(themeName)}</div>
       </div>
       ${S.auth.signed_in
         ? `<div class="sb-account" title="Synced meetings are readable on your phone">
@@ -720,7 +1013,6 @@ function renderSidebar() {
         : `<button class="sb-account as-btn" onclick="openAuth('signin')" title="Sign in to read transcripts and summaries on your phone">
              ${icon("phone", 12)}<span class="val">Sign in for phone sync</span></button>`}
       <div class="sb-foot-row">
-        <button class="theme-btn" onclick="toggleTheme()" title="Toggle light / dark">${icon(S.theme === "dark" ? "sun" : "moon", 14)}</button>
         <button class="sb-quit" onclick="quitApp()">Quit MeetingScribe</button>
       </div>
     </div>`;
@@ -908,10 +1200,14 @@ async function authSignOut() {
     renderSidebar(); renderMain();
   } catch (e) { toast("⚠ " + e.message); }
 }
-function toggleTheme() {
-  S.theme = S.theme === "dark" ? "light" : "dark";
-  localStorage.setItem("msTheme", S.theme);
-  document.documentElement.setAttribute("data-theme", S.theme);
+/* Appearance. Everything else is CSS-variable driven, so only the sidebar (the
+   ring + the name label) has to re-render — and the waveform, which paints on a
+   canvas from --accent / --text and cannot repaint itself. */
+function setTheme(id) {
+  if (!THEMES.some(t => t.id === id) || id === S.theme) return;
+  S.theme = id;
+  localStorage.setItem("msTheme", id);
+  document.documentElement.dataset.theme = id;
   renderSidebar();
   drawWave();
 }
@@ -1019,12 +1315,11 @@ function overviewHTML(meta, busy) {
     <ul class="q-list">${s.follow_ups.map(x => `<li>${esc(x)}</li>`).join("")}</ul></article>` : "";
   if (kp || fu) more = `<section class="ov-two">${kp}${fu}</section>`;
 
-  const mainCol = `<div class="ov-main">
-    <div class="privacy-strip">${icon("shield", 14)}<span><b>Audio stayed on this Mac.</b> Summaries use your own Claude account — transcript text only, never audio.</span></div>
-    ${lead}${actions}${two}${more}
-  </div>`;
+  // The privacy claim moved to the tab row (.privacy-pill) — it belongs to the
+  // whole meeting, not to the Overview body.
+  const mainCol = `<div class="ov-main">${lead}${actions}${two}${more}</div>`;
 
-  const aside = `<aside class="ov-aside">${conversationAside(meta)}${followupCard(meta)}</aside>`;
+  const aside = `<aside class="ov-aside">${conversationAside(meta)}${followupCard(meta)}${askCard(meta)}</aside>`;
   return `<div class="ov-grid">${mainCol}${aside}</div>`;
 }
 
@@ -1083,9 +1378,19 @@ function followupCard(meta) {
     <button class="quiet-btn" onclick="copySummaryEmail('${meta.id}')">${icon("copy", 13)} Copy email</button>
   </section>`;
 }
+/* Right-rail entry point into the Ask tab. Pointless without a transcript. */
+function askCard(meta) {
+  if (!(meta.turns || []).length) return "";
+  return `<section class="aside-card">
+    <div class="aside-head"><span>Ask this meeting</span></div>
+    <p class="aside-p">Put a question to the transcript — “what did I promise?”, “where did we land on pricing?”. Answers link back to the moment it was said.</p>
+    <button class="btn primary aside-btn" onclick="setTab('chat')">${icon("chat", 13)} Ask a question</button>
+  </section>`;
+}
 function setTab(tab) {
   if (S.tab === tab) return;
   S.tab = tab;
+  if (tab === "chat") _askAutoFocus = true;   // opening Ask puts the caret in the composer
   renderMain();
   if (tab === "transcript") drawWave();
 }
@@ -1099,7 +1404,7 @@ function speakerStrip(meta) {
     const c = speakerColor(meta, key);
     const pct = Math.round((st.share || 0) * 100);
     chips += `<div class="spk-chip">
-      <div class="spk-avatar" style="background:${c}">${esc(name.slice(0, 2).toUpperCase())}</div>
+      <div class="spk-avatar" style="background:${c}">${esc(initials(name))}</div>
       <div class="spk-info">
         <div class="spk-name" id="spkName-${esc(key)}">
           <span style="color:${c}">${esc(name)}</span>
@@ -1113,21 +1418,130 @@ function speakerStrip(meta) {
       </div>
     </div>`;
   }
-  const sel = meta.expected_speakers || "";
+  const sel = speakerCountValue(meta);
   const flash = S.reclusterFlash ? `<span class="spk-flash">re-clustered in ${S.reclusterFlash} s</span>` : "";
+  // The mic-only fallback (pipeline.py sets meta.diarization_mode = "mic_fallback"
+  // when the call-audio track came back silent): the mic carried BOTH sides, the
+  // speaker map holds s1..sN and NONE of them is known to be the local user —
+  // there is no "you" key at all. meta.mode is still "online" here, so it cannot
+  // be used to tell this case apart; check diarization_mode first.
+  const micFallback = meta.diarization_mode === "mic_fallback";
+  // What the number in this control COUNTS — meta.speaker_count_basis states it
+  // outright ("total" under the fallback, where every voice on the mic including
+  // yours is in the count; "others" otherwise). These labels are the human form
+  // of that, and in-person has always counted the whole room because everyone
+  // shares the one mic.
+  const countLabel = micFallback ? "Voices on the mic (you are one of them)"
+    : meta.mode === "inperson" ? "People in the room (you included)"
+    : "Speakers besides you";
+  // A number this control cannot SEND, yet which is the setting in force: 0
+  // ("just you" — what a mic-fallback revert leaves behind, see
+  // speakerCountValue) or a converted total past the end of the 1..8 list. It
+  // is rendered as a disabled option rather than hidden, because falling back
+  // to "Auto" would claim a meeting is on auto-detection when a count a person
+  // chose is still being applied to it. Disabled because re-picking it is
+  // meaningless: 0 reaches the server as "no count" (recluster_meeting's
+  // `if expected_speakers:`) and would silently undo the very revert it
+  // describes.
+  const offList = typeof sel === "number" && (sel < 1 || sel > 8);
+  // The dropdown is LIVE under the fallback — it is the only way back from a
+  // wrong verdict. pipeline.py's _label_and_assemble asks _user_speaker_count()
+  // for a count a PERSON picked and hands it to the mic clustering: a TOTAL of
+  // 1 puts the meeting back on the ordinary "You" path and clears the fallback
+  // marker, N > 1 forces N voices. (A calendar-derived count is deliberately
+  // ignored there, which is why it is not preselected — see speakerCountValue.)
+  const countTitle = micFallback
+    ? "Wrong split? Set how many voices are on the mic — pick 1 if it was only you and the “You” label comes back."
+    : sel === 0
+    ? "You set this meeting to a single voice on the mic, so there is nobody besides you. Pick a number to split the mic into that many other voices."
+    : "Wrong split? Set the real number — saved voice fingerprints re-cluster the whole meeting instantly.";
+  const fallbackNote = !micFallback ? "" : `
+    <div class="spk-note">
+      <span class="ic">${icon("warn", 12)}</span>
+      <span>The call audio wasn't captured, so everyone — including you — was recorded on
+        the microphone. We can't tell which of these voices is yours, so rename them above.
+        If it was only you on the mic, set the count to 1 and the “You” label comes back —
+        or re-record with audio routing fixed.</span>
+    </div>`;
   return `<div class="spk-strip">
     <div class="spk-row">${chips}
       <div class="spk-tools">
-        <div class="spk-count" title="Wrong split? Set the real number — saved voice fingerprints re-cluster the whole meeting instantly.">
-          <span>Speakers besides you</span>
+        <div class="spk-count" title="${esc(countTitle)}">
+          <span>${countLabel}</span>
           <select id="spkSelect" onchange="reclusterMeeting('${meta.id}', this.value)">
             <option value="" ${sel === "" ? "selected" : ""}>Auto</option>
+            ${offList ? `<option value="${sel}" disabled selected>${sel}${sel === 0 ? " (just you)" : ""}</option>` : ""}
             ${[1,2,3,4,5,6,7,8].map(n => `<option value="${n}" ${sel === n ? "selected" : ""}>${n}</option>`).join("")}
           </select>
           ${flash}
         </div>
       </div>
-    </div></div>`;
+    </div>${fallbackNote}</div>`;
+}
+/* --- One control, two questions ------------------------------------------------
+   The speaker-count control asks ONE of two things, and pipeline.py records
+   which one the user was answering as meta.speaker_count_basis (see
+   _speaker_count_basis / SPEAKER_COUNT_OTHERS there):
+
+     "others"  the number EXCLUDES you  — "Speakers besides you"
+     "total"   the number INCLUDES you  — "Voices on the mic (you are one of them)"
+
+   Which question is on screen follows meta.diarization_mode — and a re-cluster
+   can change that mode underneath the number it has just stored. That is not a
+   corner case, it is the fallback's advertised escape hatch: answer the
+   mic-fallback control with 1 and the fallback reverts, so the meeting comes
+   back carrying a "total"-basis 1 while the label has flipped to "Speakers
+   besides you", where 1 reads as one OTHER person. Same digit, opposite
+   meaning — and the next edit would then mean something different from the
+   first.
+
+   So both halves are re-derived from the meta as it stands on every render.
+   The label follows the CURRENT mode, which is also the basis pipeline.py will
+   stamp on the next pick, so what the user chooses means what the label says.
+   The number is converted out of the basis it was stored in and into the basis
+   on screen, with total-voices-on-the-mic as the common currency. */
+const COUNT_BASIS_TOTAL = "total", COUNT_BASIS_OTHERS = "others";
+
+/* The question the control is asking right now — the JS mirror of pipeline.py's
+   _speaker_count_basis(), i.e. what the next pick will be stamped with. */
+function speakerCountBasis(meta) {
+  return meta.diarization_mode === "mic_fallback" ? COUNT_BASIS_TOTAL : COUNT_BASIS_OTHERS;
+}
+/* The question meta.expected_speakers was ANSWERING. A count nobody picked is
+   app.py's calendar guess — invitees besides you, i.e. "others". A user-picked
+   count with no basis is a meeting recorded before the key existed, when the
+   only control that shipped asked "besides you": the same back-compat rule
+   pipeline.py's _user_speaker_count() applies, so the two agree by
+   construction. */
+function storedSpeakerCountBasis(meta) {
+  return meta.speaker_count_source === "user"
+    ? (meta.speaker_count_basis || COUNT_BASIS_OTHERS) : COUNT_BASIS_OTHERS;
+}
+/* What the <select> should show, in the basis the label on screen is asking
+   for. "" means Auto; 0 means "nobody besides you" and is shown read-only (see
+   offList in speakerStrip).
+
+   meta.expected_speakers is only a claim that a count is IN FORCE where the
+   pipeline actually applies it. Under the mic-only fallback it applies only a
+   count a person picked (meta.speaker_count_source === "user"); a calendar
+   invitee count is ignored there, because it says how many people were invited
+   to the call, not how many voices reached this microphone. Preselecting that
+   number would show a setting that is not in effect — and hide the fact that
+   "Auto" is what ran. */
+function speakerCountValue(meta) {
+  if (!meta) return "";
+  const count = meta.expected_speakers || 0;
+  if (!count) return "";
+  // In-person has only ever had one question — "People in the room (you
+  // included)" — and app.py's calendar guess for it is already a room total, so
+  // its number is in the displayed basis as it stands. pipeline.py stamps
+  // in-person counts "others" and never reads that back (the basis is consumed
+  // only by the online-only fallback), so converting on it would be acting on a
+  // value that means nothing. Left exactly as it was.
+  if (meta.mode === "inperson") return count;
+  if (meta.diarization_mode === "mic_fallback" && meta.speaker_count_source !== "user") return "";
+  const totalVoices = storedSpeakerCountBasis(meta) === COUNT_BASIS_TOTAL ? count : count + 1;
+  return speakerCountBasis(meta) === COUNT_BASIS_TOTAL ? totalVoices : totalVoices - 1;
 }
 
 /* Full conversation stats table (Insights tab). */
@@ -1213,7 +1627,7 @@ async function reclusterMeeting(id, value) {
     refreshList();
   } catch (e) {
     const sel = $("spkSelect");
-    if (sel) sel.value = (S.detail && S.detail.expected_speakers) || "";
+    if (sel) sel.value = speakerCountValue(S.detail);
     toast("⚠ " + e.message, 6000);
   }
 }
@@ -1246,15 +1660,28 @@ function transcriptHTML(meta) {
     const c = speakerColor(meta, g.spk);
     const name = meta.speakers[g.spk] || g.spk;
     html += `<div class="tr-group">
-      <button class="tr-time mono" title="Jump audio here" onclick="seekAndPlay(${g.t})">${fmtTs(g.t)}</button>
-      <div class="tr-body">
-        <div class="tr-spk" style="color:${c}">${esc(name)}</div>
-        <div class="tr-text">${g.parts.map(p => `<p>${highlight(p.text, ql)}</p>`).join("")}</div>
+      <div class="tr-ava"><i style="background:${c}">${esc(initials(name))}</i></div>
+      <div class="tr-head">
+        <span class="tr-spk" style="color:${c}">${esc(name)}</span>
+        <button class="tr-time" title="Jump audio here" onclick="seekAndPlay(${g.t})">${fmtTs(g.t)}</button>
       </div>
+      <div class="tr-text" style="font-size:${S.trSize}px">${g.parts.map(p => `<p>${highlight(p.text, ql)}</p>`).join("")}</div>
     </div>`;
   }
   if (!visible.length) html = `<div class="tr-empty">${(meta.turns || []).length ? `Nothing in this transcript matches “${esc(S.tq)}”.` : "No speech was detected in this recording."}</div>`;
   return html;
+}
+/* Reading size. Applied straight to the live nodes so the scroll position
+   survives; transcriptHTML() re-emits it on the next full render. */
+function setTrSize(delta) {
+  const next = clampTrSize(S.trSize + delta);
+  if (next === S.trSize) return;
+  S.trSize = next;
+  localStorage.setItem("msTrSize", String(next));
+  document.querySelectorAll(".tr-text").forEach(el => { el.style.fontSize = next + "px"; });
+  const dec = $("trSizeDown"), inc = $("trSizeUp");
+  if (dec) dec.disabled = next <= TR_SIZE_MIN;
+  if (inc) inc.disabled = next >= TR_SIZE_MAX;
 }
 function trSearch(v) {
   S.tq = v;
@@ -1266,6 +1693,344 @@ function trSearch(v) {
   $("trCount").textContent = ql ? `${count} match${count === 1 ? "" : "es"}` : "";
 }
 
+/* ------------------------------------------------------------------ ask -- */
+/* A conversation with one meeting. The transcript TEXT goes to the user's own
+   Claude (same account as summaries, same failure path); the audio never moves.
+   Answers come back with citations whose "t" is a real turn start time, so each
+   chip is a seek button. Threads live in S.chat for this session only. */
+const ASK_CHIPS = [
+  ["What should I send him?", "What should I send him?"],
+  ["Where did I ramble?", "Where did I ramble?"],
+  // Open-ended: prefill and let the user name the topic, so don't auto-send.
+  ["Every mention of <topic>", "Every mention of "],
+];
+let _askAutoFocus = false;   // focus the composer only after a real user action
+/* A citation timestamp in seconds, or null if there isn't one.
+   Number() is far too generous to be the test: Number(null), Number(""),
+   Number(false) and Number([]) are all 0, so a citation carrying any of them
+   would render a confident "0:00" chip that seeks to the top of the meeting. A
+   timestamp is a number, or a string that is entirely a number — nothing else. */
+function citeSeconds(raw) {
+  if (typeof raw === "string" && raw.trim() !== "") raw = Number(raw);
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) return null;
+  return raw;
+}
+function chatThread(id) {
+  if (!S.chat[id]) S.chat[id] = [];
+  return S.chat[id];
+}
+function askMessageHTML(m) {
+  if (m.role === "user") return `<div class="ask-msg user"><div class="ask-bubble">${esc(m.text)}</div></div>`;
+  // Waiting and writing are ONE bubble in two states, so the first token lands
+  // by adding a class and setting a text node — see askSend's onDelta. Built
+  // from m.text either way, so a re-render that arrives mid-answer (a status
+  // poll, a menu) rebuilds exactly what was on screen instead of dropping back
+  // to the spinner. Note m.streaming implies m.pending is false.
+  if (m.pending || m.streaming) return `<div class="ask-msg assistant">
+    <div class="ask-bubble is-pending${m.streaming ? " is-streaming" : ""}" id="askStreamBubble"><span
+      class="spinner"></span><span class="ask-wait">Reading the transcript…</span><span
+      class="ask-stream" id="askStream">${esc(m.text || "")}</span></div></div>`;
+  const cites = (m.citations || [])
+    .map(c => (c ? citeSeconds(c.t) : null))
+    .map((t, i) => t === null ? "" : `<button class="ask-cite" title="Jump audio to ${fmtTs(t)}" onclick="seekAndPlay(${t})">
+      <span class="t">${fmtTs(t)}</span><span class="q">${esc((m.citations[i] || {}).quote || "")}</span></button>`).join("");
+  return `<div class="ask-msg assistant">
+    <div class="ask-bubble">${esc(m.text || "No answer came back — try asking again.")}</div>
+    ${cites ? `<div class="ask-cites">${cites}</div>` : ""}
+  </div>`;
+}
+function renderChat(meta) {
+  if (!(meta.turns || []).length) {
+    return `<div class="ask-wrap"><div class="ask-scroll"><div class="ask-inner">
+      <div class="tr-empty">No speech was detected in this recording, so there is nothing to ask about.</div>
+    </div></div></div>`;
+  }
+  const thread = chatThread(meta.id);
+  const body = thread.length ? thread.map(askMessageHTML).join("") : `
+    <div class="ask-start">
+      <h3>Ask this meeting anything</h3>
+      <p>Questions are answered from this transcript alone — and every answer points back at the
+         moment it was said, so you can hear it for yourself.</p>
+      <div class="ask-chips">${ASK_CHIPS.map(([label], i) =>
+        `<button class="ask-chip" onclick="askUse(${i})">${esc(label)}</button>`).join("")}</div>
+    </div>`;
+  return `<div class="ask-wrap">
+    <div class="ask-privacy">${icon("shield", 13)}
+      <span><b>Only transcript text is sent to your Claude account.</b> Audio stays on this Mac.</span></div>
+    <div class="ask-scroll" id="askScroll"><div class="ask-inner">${body}</div></div>
+    <div class="ask-foot">
+      <div class="ask-composer">
+        <textarea id="askInput" rows="1" spellcheck="false" placeholder="Ask about this meeting…"
+          oninput="askDraft(this)">${esc(S.chatDraft[meta.id] || "")}</textarea>
+        <button class="ask-send" id="askSend" onclick="askSend()" ${S.chatBusy ? "disabled" : ""}
+          title="Send — Enter">${icon("send", 15, 2)}</button>
+      </div>
+      <div class="ask-hint">Enter sends · Shift + Enter starts a new line</div>
+    </div>
+  </div>`;
+}
+function askGrow(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(132, ta.scrollHeight) + "px";
+}
+/* Every keystroke goes into state, so the composer round-trips through a
+   re-render like every other field in the app. Without this the draft lived
+   ONLY in the DOM node, and any renderMain() — a poll, a menu toggle, an answer
+   landing for another meeting — silently threw it away. Keyed by meeting, so
+   two half-written questions never collide. */
+function askDraft(ta) {
+  const meta = S.detail;
+  if (meta) S.chatDraft[meta.id] = ta.value;
+  askGrow(ta);
+}
+/* `caret` is [start, end] captured just before the re-render that replaced this
+   textarea, and only when it held the caret — restoring it is what makes a
+   background re-render invisible to someone mid-sentence. */
+function bindChat(caret) {
+  const sc = $("askScroll");
+  if (sc) sc.scrollTop = sc.scrollHeight;
+  const ta = $("askInput");
+  if (!ta) return;
+  ta.onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askSend(); }
+  };
+  askGrow(ta);
+  if (caret) {
+    ta.focus();
+    ta.setSelectionRange(Math.min(caret[0], ta.value.length), Math.min(caret[1], ta.value.length));
+  } else if (_askAutoFocus) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+  _askAutoFocus = false;
+}
+function askUse(i) {
+  const chip = ASK_CHIPS[i];
+  const ta = $("askInput");
+  if (!chip || !ta) return;
+  ta.value = chip[1];
+  askDraft(ta);
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  if (chip[0] === chip[1]) askSend();   // a complete question — just ask it
+}
+/* --- Reading the answer as it is written --------------------------------------
+   app.py answers /ask two ways and the second is opt-in, so nothing breaks if
+   this file and that one are ever out of step:
+
+     * any non-200  -> ONE JSON object with an `error` key (and `needs_claude`
+       where it applies). Every check that can fail before the model writes a
+       word still comes back like this, so the payload claudeSetupPrompt() keys
+       on is the one it has always been.
+     * 200 as application/x-ndjson -> one JSON object per line:
+         {"type":"delta","text":"…"}   zero or more, plain answer text
+         {"type":"done","answer":"…","citations":[…]}   ends it
+         {"type":"error","error":"…"}  ends it, if it broke after some text
+     * 200 as anything else -> the whole answer in one object, the way this UI
+       has always read it. A server that does not know the flag simply ignores
+       it and lands here, which is why there is no version check anywhere.
+
+   "done" is the authority: the deltas are a preview and only "done" carries
+   citations validated against the turns the model was actually shown. So the
+   deltas are shown but never kept — the returned answer is always the one the
+   server settled on. */
+const ASK_STREAM_MIME = "application/x-ndjson";
+async function askAnswer(id, question, history, onDelta) {
+  const res = await fetch(`/api/meetings/${id}/ask`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json", "Accept": ASK_STREAM_MIME},
+    body: JSON.stringify({question, history, stream: true}),
+  });
+  if (!res.ok) {                       // identical to api()'s failure, on purpose
+    let body = null;
+    try { body = await res.json(); } catch (e) { /* non-JSON */ }
+    const err = new Error((body && body.error) || res.statusText);
+    err.data = body || {};
+    throw err;
+  }
+  if (!res.body || !(res.headers.get("Content-Type") || "").includes(ASK_STREAM_MIME)) {
+    return await res.json();
+  }
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = "", last = null;
+  const take = (line) => {
+    line = line.trim();
+    if (!line) return;
+    let ev;
+    // One unparseable line must not cost the user an answer that is otherwise
+    // arriving: the "done" event is what the result is built from, and it is
+    // read on its own line like every other.
+    try { ev = JSON.parse(line); } catch (e) { return; }
+    if (ev.type === "delta") onDelta(String(ev.text == null ? "" : ev.text));
+    else if (ev.type) last = ev;
+  };
+  for (;;) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    // stream: true — a multi-byte character split across two chunks is held
+    // back rather than decoded into U+FFFD.
+    buf += dec.decode(value, {stream: true});
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) { take(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+  }
+  take(buf + dec.decode());
+  // The connection dropped between the last delta and the "done" that carries
+  // the citations. There is no answer to keep, so this joins the ordinary
+  // failure path: the exchange rolls back and the question comes back.
+  if (!last) throw new Error("The answer stopped part-way through — ask again.");
+  if (last.type === "error") {
+    const err = new Error(last.error || "Could not answer that question");
+    err.data = last;                   // carries needs_claude, so the setup prompt still fires
+    throw err;
+  }
+  return {answer: last.answer || "", citations: last.citations || []};
+}
+/* Follow a growing answer only for someone already at the bottom — never yank
+   the view back from a user who has scrolled up to read something. */
+function stickAskScroll() {
+  const sc = $("askScroll");
+  if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80) sc.scrollTop = sc.scrollHeight;
+}
+async function askSend() {
+  if (S.chatBusy) return;
+  const meta = S.detail, ta = $("askInput");
+  if (!meta || !ta) return;
+  const question = ta.value.trim();
+  if (!question) return;
+  const id = meta.id;                    // pin it: the user may switch meetings mid-answer
+  const thread = chatThread(id);
+  // History is the exchange BEFORE this question — a pending row has no text
+  // yet and a streaming one has only a preview of an answer the server has not
+  // settled, so neither is history.
+  const history = thread.filter(m => !m.pending && !m.streaming && m.text)
+    .map(m => ({role: m.role, text: m.text}));
+  thread.push({role: "user", text: question});
+  thread.push({role: "assistant", text: "", citations: [], pending: true});
+  S.chatBusy = true;
+  ta.value = "";
+  S.chatDraft[id] = "";
+  _askAutoFocus = true;
+  renderMain();
+  let restore = null;
+  // Each piece of the answer as the model writes it. The text goes into state
+  // first — so a re-render arriving mid-answer rebuilds what is on screen —
+  // and then straight into the bubble's own text node. NOT renderMain(): a
+  // re-render per token would rebuild the composer under the user's fingers
+  // and throw away the caret and any draft typed while they wait.
+  const onDelta = (chunk) => {
+    if (!chunk) return;
+    const t = chatThread(id), m = t.find(x => x.pending || x.streaming);
+    if (!m) return;                       // rolled back already — nothing to write into
+    m.text = (m.text || "") + chunk;
+    m.pending = false;
+    m.streaming = true;
+    if (!(S.detail && S.detail.id === id)) return;   // they walked away; state is enough
+    const bubble = $("askStreamBubble"), node = $("askStream");
+    if (!bubble || !node) return;         // not on the Ask tab — it renders from m.text
+    bubble.classList.add("is-streaming"); // first token: the spinner has done its job
+    node.textContent = m.text;
+    stickAskScroll();
+  };
+  try {
+    const r = await askAnswer(id, question, history, onDelta);
+    const t = chatThread(id), i = t.findIndex(m => m.pending || m.streaming);
+    // The server's answer replaces whatever the deltas drew: only this one has
+    // citations validated against the turns the model was actually shown.
+    const answer = {role: "assistant", text: (r && r.answer) || "", citations: (r && r.citations) || []};
+    if (i >= 0) t[i] = answer; else t.push(answer);
+  } catch (e) {
+    // Roll the exchange back so the thread (and the history we send next time)
+    // stays consistent, and hand the question back to the composer to retry.
+    // Partial text is dropped with it: it is a preview of an answer that never
+    // landed, with no citations, and keeping it would put words in the model's
+    // mouth — and into the history of the next question.
+    const t = chatThread(id), i = t.findIndex(m => m.pending || m.streaming);
+    if (i >= 0) {
+      t.splice(i, 1);
+      if (i > 0 && t[i - 1] && t[i - 1].role === "user") t.splice(i - 1, 1);
+    }
+    restore = question;
+    // Same failure shape as summarize/tidy: the user has no Claude login yet.
+    if (e.data && e.data.needs_claude) claudeSetupPrompt(e.message);
+    else toast("⚠ " + e.message, 6000);
+  } finally {
+    S.chatBusy = false;
+    // Whose composer is on screen right now? The answer arrived for `id`, but
+    // the user may have walked to another meeting while we waited.
+    const stillOpen = S.detail && S.detail.id === id;
+    // A draft typed while the answer was in flight is the newer intent and wins
+    // over a rolled-back question; failing that, hand the failed question back
+    // so it can be retried. Either way it goes to `id`'s draft slot, never the
+    // open meeting's.
+    const live = stillOpen ? (($("askInput") || {}).value || "") : (S.chatDraft[id] || "");
+    S.chatDraft[id] = live || restore || "";
+    if (stillOpen) {
+      _askAutoFocus = true;
+      renderMain();
+    } else {
+      // DO NOT re-render for a meeting the user has left: renderMain() would
+      // rebuild the meeting they are looking at — and if they are mid-question
+      // in ITS composer, replace the textarea under their fingers. The only
+      // thing that visibly changed for them is the shared busy flag, so undo
+      // exactly that, in place.
+      const btn = $("askSend");
+      if (btn) btn.disabled = false;
+    }
+  }
+}
+
+/* Tab order drives both the button row and the pill offset — keep them in sync. */
+const TABS = [["overview", "Overview"], ["transcript", "Transcript"], ["insights", "Insights"], ["chat", "Ask"]];
+/* Where the pill is parked, in real pixels. Slot width is no longer the 104px
+   constant — the control shrinks on a narrow window — so the parked position is
+   MEASURED off the buttons rather than computed from the index, and carried
+   across renders so a freshly parsed pill starts exactly where the old one sat. */
+let _tabPill = {index: 0, x: 0, w: 104};
+function measureTabPill(index) {
+  const seg = document.querySelector(".rv-seg");
+  const btn = seg && seg.querySelectorAll(".rv-tab")[index];
+  if (!btn) return null;
+  // .rv-seg is the offset parent (position:relative) and the pill sits at
+  // left:2px, so the transform is the button's offset minus that.
+  return {index, x: Math.round(btn.offsetLeft - 2), w: Math.round(btn.offsetWidth)};
+}
+/* renderReview() emits the pill where it already sits, then this moves it: a
+   just-parsed element has no previous computed transform to animate from.
+   Reading offsetWidth commits the start position synchronously — doing this in
+   requestAnimationFrame instead would silently no-op in a background tab and
+   leave the pill under the wrong label. */
+function slideTabPill(index) {
+  const pill = document.querySelector(".rv-seg-pill");
+  const at = measureTabPill(index);
+  if (!pill || !at) { _tabPill = Object.assign({}, _tabPill, {index}); return; }
+  if (_tabPill.index !== index || _tabPill.x !== at.x || _tabPill.w !== at.w) {
+    void pill.offsetWidth;
+    pill.style.transform = `translateX(${at.x}px)`;
+    pill.style.width = at.w + "px";
+  }
+  _tabPill = at;
+}
+/* Opening a different meeting resets the tab to Overview, so the pill has to be
+   parked back at slot 0 too — otherwise it is emitted under the tab the PREVIOUS
+   meeting was on and slides across for 240ms on every switch. Slot width is kept:
+   it only changes when the window does. */
+function resetTabPill() {
+  _tabPill = {index: 0, x: 0, w: _tabPill.w};
+}
+/* A resize changes the slot width under a pill that is already parked. Re-park
+   it silently — sliding would be a transition nobody asked for. */
+addEventListener("resize", () => {
+  const pill = document.querySelector(".rv-seg-pill");
+  const at = measureTabPill(_tabPill.index);
+  if (!pill || !at || (at.x === _tabPill.x && at.w === _tabPill.w)) return;
+  const prev = pill.style.transition;
+  pill.style.transition = "none";
+  pill.style.transform = `translateX(${at.x}px)`;
+  pill.style.width = at.w + "px";
+  void pill.offsetWidth;
+  pill.style.transition = prev;
+  _tabPill = at;
+});
 function renderReview(meta) {
   const engine = {apple: "Apple Speech", mlx: "Whisper · GPU", faster: "Whisper · CPU"}[(meta.processing || {}).backend] || null;
   const lang = (meta.languages || {}).mic || (meta.languages || {}).system || null;
@@ -1329,12 +2094,20 @@ function renderReview(meta) {
     return;
   }
 
-  // Tabs: Overview (brief) · Transcript · Insights.
+  // Tabs: a segmented control whose single pill slides between fixed 104px
+  // slots. The pill is emitted where it currently sits and moved afterwards
+  // (slideTabPill) — a freshly parsed element cannot transition from nowhere.
   const tab = S.tab || "overview";
+  const tabIndex = Math.max(0, TABS.findIndex(t => t[0] === tab));
   html += `<div class="rv-tabs">
-    <button class="rv-tab${tab === "overview" ? " on" : ""}" onclick="setTab('overview')">${icon("sparkle", 13)} Overview</button>
-    <button class="rv-tab${tab === "transcript" ? " on" : ""}" onclick="setTab('transcript')">${icon("doc", 13)} Transcript</button>
-    <button class="rv-tab${tab === "insights" ? " on" : ""}" onclick="setTab('insights')">${icon("wave", 13)} Insights</button>
+    <div class="rv-seg" role="tablist">
+      <span class="rv-seg-pill" style="transform:translateX(${_tabPill.x}px);width:${_tabPill.w}px"></span>
+      ${TABS.map(([id, label]) => `<button class="rv-tab${tab === id ? " on" : ""}" role="tab"
+        aria-selected="${tab === id}" onclick="setTab('${id}')">${label}</button>`).join("")}
+    </div>
+    <div class="privacy-pill" title="Recording, transcription and speaker separation all run on this Mac, on the Neural Engine. Only summaries and Ask questions use your Claude account — transcript text, never audio.">
+      ${icon("shield", 13)}<span><b>Audio never left this Mac.</b><span class="pp-more"> Only transcript text goes to your Claude account.</span></span>
+    </div>
   </div>`;
 
   const ql = S.tq.trim().toLowerCase();
@@ -1350,11 +2123,17 @@ function renderReview(meta) {
           ${icon("search", 13)}
           <input type="text" id="trSearch" placeholder="Find in transcript" value="${esc(S.tq)}" oninput="trSearch(this.value)">
         </div>
+        <div class="tr-size" title="Transcript text size">
+          <button id="trSizeDown" onclick="setTrSize(-0.5)" ${S.trSize <= TR_SIZE_MIN ? "disabled" : ""} aria-label="Smaller text">A−</button>
+          <button id="trSizeUp" onclick="setTrSize(0.5)" ${S.trSize >= TR_SIZE_MAX ? "disabled" : ""} aria-label="Larger text">A+</button>
+        </div>
       </div>
       <div class="tr-scroll"><div class="tr-inner" id="trInner">${transcriptHTML(meta)}</div></div>
     </div>`;
   } else if (tab === "insights") {
     html += `<div class="ov-scroll">${insightsTable(meta)}</div>`;
+  } else if (tab === "chat") {
+    html += renderChat(meta);
   } else {
     html += `<div class="ov-scroll">${overviewHTML(meta, sumBusy)}</div>`;
   }
@@ -1372,8 +2151,16 @@ function renderReview(meta) {
       </div>
     </div>`;
   }
+  // Re-rendering replaces the DOM, and background polls land here several times
+  // a minute: carry the composer's caret across, the way renderSidebar() does
+  // for the search box. (Its TEXT is carried by S.chatDraft — see askDraft.)
+  const composer = $("askInput");
+  const caret = composer && document.activeElement === composer
+    ? [composer.selectionStart, composer.selectionEnd] : null;
   $("main").innerHTML = html;
   bindTitle(meta);
+  slideTabPill(tabIndex);
+  if (tab === "chat") bindChat(caret);
   drawWave();
 }
 function bindTitle(meta) {
@@ -1587,10 +2374,37 @@ function renderRecorder() {
   // Setup phase
   const dev = S.devices || {};
   const sys = dev.system;
-  const sysDot = !sys ? "err" : (sys.routing === "not_routed" && !sys.auto_route ? "warn" : "");
+  const sysAlert = routingAlert(sys);
+  const sysDot = routingDot(sys);
+  // Each state says what is true of it, and nothing more. "silent" overrides
+  // everything: auto-routing may well be on and working, but saying "routes
+  // automatically" next to a green-ish row while the user is about to sit
+  // through a meeting in silence is the whole bug. "routed" with auto-routing
+  // OFF is healthy — the user wired it up themselves — and used to read as the
+  // bare "other participants", indistinguishable from not-routed-yet. And a
+  // routing state we could not read is not a routing state we can vouch for.
   const sysRole = !sys ? "install BlackHole to capture the other side"
+    : sysAlert === "silent" ? "you will hear nothing"
+    : sysAlert === "no_loopback" ? "device unavailable"
+    : sysAlert === "not_routed" ? "other participants · not routed"
+    : !routingKnown(sys) ? "other participants · routing not checked"
+    : sys.routing === "routed" ? `other participants · routed${sys.auto_route ? "" : " manually"}`
     : sys.auto_route ? "other participants · routes automatically"
     : "other participants";
+  const sysAlertBox = !sysAlert ? "" : `
+      <div class="rec-alert${sysAlert === "silent" ? "" : " warn"}">
+        <span class="ic">${icon("warn", 15)}</span>
+        <div>
+          <b>${sysAlert === "silent"
+            ? "You will not hear this meeting"
+            : "The other participants will not be recorded"}</b>
+          <span>${esc(sys.routing_note || (sysAlert === "silent"
+            ? `Your Mac's sound output is set to ${sys.name} itself. Switch it back to your speakers or headphones in Sound settings before you start.`
+            : sysAlert === "no_loopback"
+            ? `${sys.name} is no longer available on this Mac. Reconnect or reinstall it, then reopen this screen.`
+            : `Automatic audio routing is off, so nothing feeds ${sys.name}.`))}</span>
+        </div>
+      </div>`;
   const now = Date.now() / 1000;
   const chips = (S.calendar || []).filter(ev => ev.end > now - 300).slice(0, 3).map(ev => {
     const when = ev.start <= now && ev.end >= now ? "now"
@@ -1640,9 +2454,10 @@ function renderRecorder() {
         <div class="rec-dev">
           <span class="dot ${sysDot}"></span>
           <span class="name">${esc(sys ? sys.name : "BlackHole 2ch")}</span>
-          <span class="role">${esc(sysRole)}</span>
+          <span class="role${sysAlert === "silent" ? " silent" : ""}">${esc(sysRole)}</span>
         </div>
       </div>
+      ${sysAlertBox}
     </div>
     <button class="rec-start" id="startBtn" onclick="startRecording()">${icon("mic", 14, 2)}Start recording</button>
   </div></div>`;
@@ -1774,7 +2589,7 @@ async function openMeeting(id) {
     const meta = await api("/api/meetings/" + id);
     const switched = !S.detail || S.detail.id !== id;
     S.detail = meta;
-    if (switched) { S.tab = "overview"; transportTeardown(); }
+    if (switched) { S.tab = "overview"; resetTabPill(); transportTeardown(); }
     if (meta.status === "done" && (switched || !(AU.mic || AU.sys))) transportSetup(meta);
     renderSidebar();
     renderMain();
@@ -1825,11 +2640,13 @@ async function pollStatus() {
       }
     }
     // Never replace the main view under the user's cursor: if they are
-    // typing in the title, a rename field or a search box, defer the
-    // re-render to a later poll tick.
+    // typing in the title, a rename field, a search box or the Ask composer,
+    // defer the re-render to a later poll tick.
     const editing = document.activeElement
       && $("main").contains(document.activeElement)
-      && (document.activeElement.isContentEditable || document.activeElement.tagName === "INPUT");
+      && (document.activeElement.isContentEditable
+          || document.activeElement.tagName === "INPUT"
+          || document.activeElement.tagName === "TEXTAREA");
     // live processing updates for the open meeting
     if (S.detail && S.jobs[S.detail.id] && S.jobs[S.detail.id].state === "processing") {
       if (S.detail.status !== "processing" && !editing) { S.detail.status = "processing"; renderMain(); }

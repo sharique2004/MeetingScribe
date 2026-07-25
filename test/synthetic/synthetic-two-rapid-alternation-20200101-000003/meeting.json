@@ -1,0 +1,45 @@
+{
+ "id": "20200101-000003",
+ "title": "Synthetic — two voices, rapid alternation",
+ "created": "2020-01-01T00:00:00",
+ "mode": "inperson",
+ "expected_speakers": null,
+ "status": "done",
+ "tracks": {
+  "mic": {
+   "file": "mic.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 80.94,
+   "start_offset": 0.0
+  },
+  "system": {
+   "file": "system.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 80.94,
+   "start_offset": 0.0
+  }
+ },
+ "warnings": [],
+ "duration": 80.94,
+ "speakers": {},
+ "turns": [],
+ "stats": {
+  "per_speaker": {},
+  "total_spoken_seconds": 0.0,
+  "duration": 80.94,
+  "total_words": 0
+ },
+ "languages": {
+  "mic": "en_US",
+  "system": "en_US"
+ },
+ "processing": {
+  "model": "synthetic",
+  "backend": "synthetic",
+  "seconds": 0.0,
+  "mode": "inperson"
+ },
+ "synthetic": true
+}

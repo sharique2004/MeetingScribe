@@ -1,0 +1,113 @@
+{
+ "id": "20200101-000020",
+ "title": "Synthetic — processed call with colliding turn starts",
+ "created": "2020-01-01T00:00:00",
+ "mode": "online",
+ "expected_speakers": null,
+ "status": "done",
+ "tracks": {
+  "mic": {
+   "file": "mic.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 48.24,
+   "start_offset": 0.0
+  },
+  "system": {
+   "file": "system.wav",
+   "device": "synthetic",
+   "rate": 16000,
+   "seconds": 48.24,
+   "start_offset": 0.0
+  }
+ },
+ "warnings": [],
+ "duration": 48.24,
+ "speakers": {
+  "you": "You",
+  "s1": "Speaker 1",
+  "s2": "Speaker 2"
+ },
+ "turns": [
+  {
+   "speaker": "you",
+   "track": "mic",
+   "start": 0.0,
+   "end": 1.02,
+   "text": "Hello there, everyone."
+  },
+  {
+   "speaker": "s1",
+   "track": "system",
+   "start": 0.0,
+   "end": 1.26,
+   "text": "Morning to you all."
+  },
+  {
+   "speaker": "you",
+   "track": "mic",
+   "start": 1.02,
+   "end": 3.96,
+   "text": "I am dialling in from the other office today."
+  },
+  {
+   "speaker": "s1",
+   "track": "system",
+   "start": 1.32,
+   "end": 4.2,
+   "text": "Thanks for joining the quarterly planning review."
+  },
+  {
+   "speaker": "you",
+   "track": "mic",
+   "start": 3.96,
+   "end": 9.9,
+   "text": "I agree with the pilot idea, and I can set up the tracking dashboard before the next cycle begins."
+  },
+  {
+   "speaker": "s1",
+   "track": "system",
+   "start": 4.26,
+   "end": 13.08,
+   "text": "I wanted to start with the budget review because there are a few line items that moved this quarter."
+  },
+  {
+   "speaker": "s2",
+   "track": "system",
+   "start": 13.14,
+   "end": 29.34,
+   "text": "I actually have the numbers right here. Revenue grew 12% compared to last quarter, and customer acquisition cost went up as well, which is the part worth talking through before we decide anything."
+  },
+  {
+   "speaker": "s1",
+   "track": "system",
+   "start": 29.52,
+   "end": 41.82,
+   "text": "That is a great question. I think we should run a small pilot for two weeks and see whether the trend holds before committing the whole budget to it."
+  },
+  {
+   "speaker": "s2",
+   "track": "system",
+   "start": 41.88,
+   "end": 48.24,
+   "text": "I will draft the proposal and share it with the group by Thursday evening so everyone has time to read it."
+  }
+ ],
+ "stats": {
+  "per_speaker": {},
+  "total_spoken_seconds": 0.0,
+  "duration": 48.24,
+  "total_words": 0
+ },
+ "languages": {
+  "mic": "en_US",
+  "system": "en_US"
+ },
+ "processing": {
+  "model": "synthetic",
+  "backend": "synthetic",
+  "seconds": 0.0,
+  "mode": "online"
+ },
+ "synthetic": true
+}
