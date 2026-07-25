@@ -21,7 +21,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
+import zipfile
 from bisect import bisect_left, bisect_right
 from pathlib import Path
 
@@ -34,6 +37,73 @@ import tech_vocabulary
 from config import BASE_DIR, MODELS_DIR, load_config
 
 log = logging.getLogger("meetingscribe.pipeline")
+
+# The process umask, read once at import (single-threaded) because reading it
+# requires temporarily clearing it. _atomic_write needs it: tempfile.mkstemp
+# hardcodes 0600, while the writes it replaces — Path.write_text, open(...,
+# "wb") — create 0666 & ~umask. Without this the mode of meeting.json would
+# quietly change depending on which writer touched it last.
+_UMASK = os.umask(0)
+os.umask(_UMASK)
+
+
+def _atomic_write(path, write_body):
+    """Replace `path` in one indivisible step. write_body(tmp_path) fills it in.
+
+    Path.write_text and np.savez_compressed both TRUNCATE THE TARGET IN PLACE:
+    for the whole duration of the write the on-disk file is a prefix of the new
+    contents, and anything that stops the process there — a crash, or the
+    os._exit that /api/shutdown performs — freezes it that way. meeting.json is
+    the only copy of a meeting's transcript, so a truncated one is lost work;
+    analysis.npz truncated mid-archive is an unreadable zip.
+
+    Writing to a fresh file in the SAME directory and then os.replace()-ing it
+    over the target removes that window entirely. os.replace is atomic within a
+    filesystem: a concurrent reader sees either the entire old file or the
+    entire new one, and a crash before the replace leaves the original wholly
+    intact (only the temp file is orphaned, and it is cleaned up here).
+
+    The temp name is unique per call (mkstemp), so two writers — pipeline
+    thread, Flask request, a second process — can never share one. Note this is
+    deliberately NOT app.py's fixed "meeting.json.tmp" name; both are atomic for
+    the reader, and distinct names mean the two writers cannot destroy each
+    other's temp file even though they take no common lock.
+    """
+    path = Path(path)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent),
+                                    prefix=path.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        # The replacement inherits the temp file's permissions, so give it the
+        # ones the target would have had: whatever it has now, or — creating it
+        # for the first time — what a plain write would have produced.
+        try:
+            os.chmod(tmp, path.stat().st_mode & 0o7777)
+        except OSError:
+            os.chmod(tmp, 0o666 & ~_UMASK)
+        write_body(tmp)
+        # Flush the contents to disk before publishing the name, so a power cut
+        # just after the replace cannot leave the new name pointing at unwritten
+        # blocks. Best effort: a filesystem that refuses fsync must not cost us
+        # the write itself.
+        try:
+            with open(tmp, "rb") as fh:
+                os.fsync(fh.fileno())
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_text(path, text):
+    _atomic_write(path, lambda tmp: tmp.write_text(text, encoding="utf-8"))
+
 
 _WHISPER = None
 _WHISPER_KEY = None
@@ -456,6 +526,29 @@ def drop_echo(mic_segs, sys_segs):
     return kept, dropped, trimmed
 
 
+ECHO_WARNING_PREFIX = "Mic audio contained speaker echo"
+
+# EVERY warning _label_and_assemble can emit starts with this word — both the
+# per-track failure notice and MIC_ONLY_WARNING are built from it below. That
+# is what makes it safe to use as a "drop the previous run's labelling
+# warnings" filter: the set it removes is exactly the set the labelling step
+# regenerates.
+DIARIZATION_WARNING_PREFIX = "Diarization"
+
+# Warnings this pipeline generates itself. They are rebuilt from scratch on
+# every run, so any older copy has to be dropped first or Reprocess stacks
+# duplicates. "Removed " is the retired wording of the echo warning, still
+# present in meetings processed by older builds.
+#
+# The two filters are deliberately different sizes, and recluster's is the
+# narrow one: recluster_meeting re-runs ONLY the labelling step, so it may drop
+# only DIARIZATION_WARNING_PREFIX. Stripping the whole tuple there would delete
+# the echo warning — which recluster never recomputes, because echo cleanup
+# happens during transcription — and the meeting would silently lose it on the
+# first speaker-count change.
+PIPELINE_WARNING_PREFIXES = (DIARIZATION_WARNING_PREFIX, "Removed ", ECHO_WARNING_PREFIX)
+
+
 def _build_turns(labelled_segments):
     """Merge consecutive same-speaker segments into readable turns."""
     labelled_segments.sort(key=lambda s: s["start"])
@@ -488,6 +581,331 @@ def _build_turns(labelled_segments):
 ANALYSIS_JSON = "analysis.json"
 ANALYSIS_NPZ = "analysis.npz"
 
+# --- Keeping analysis.json and analysis.npz in step -----------------------------
+# The saved voice analysis is one logical object spread over two files: the
+# transcripts in analysis.json and the ECAPA windows/embeddings in analysis.npz.
+# They are only meaningful TOGETHER — the embeddings index windows of the exact
+# audio those transcripts describe — but they cannot be replaced in one atomic
+# step, and until now nothing tied them to each other:
+#
+#   * a Reprocess that collected no embeddings rewrote analysis.json and left
+#     analysis.npz untouched, so a NEW transcript sat beside the PREVIOUS run's
+#     cache; and
+#   * even when both are written, a crash between the two leaves the pair
+#     mismatched.
+#
+# embed_version cannot see either case: it says which code computed the
+# embeddings, and in both the stale cache was computed by this very build, so
+# the marker matches and the staleness goes undetected.
+#
+# So each save stamps BOTH files with the same fresh random token. recluster
+# uses the cache only when the tokens agree, which is true exactly when the npz
+# it is holding is the one written for the transcripts it just loaded. Tokens
+# are compared, never ordered — a token says "same save", not "newer".
+#
+# The token is what lets an npz this run did not rewrite simply STAY on disk:
+# it is either still paired (the transcripts are unchanged, so it is carried
+# over — see _carried_state_id) or plainly unpaired and ignored. Either way the
+# embeddings survive, which matters because only the WAV can regenerate them.
+#
+# Files written before the token existed have it in NEITHER file; that pair was
+# written together by the old code and is honoured as matching (see
+# _load_analysis_cache), so no existing meeting is forced to re-embed.
+STATE_ID_KEY = "state_id"
+
+# --- Lost system track (online mode) -------------------------------------------
+# When BlackHole is not installed, or the meeting app is not actually routed
+# through it, the call audio never reaches the system track and BOTH sides of
+# the conversation land on the microphone. Left undetected the whole meeting
+# renders as a monologue by "You".
+#
+# THE SIGNAL IS ABSOLUTE, NOT RELATIVE. An earlier version of this detector
+# gated on the system/mic speech RATIO, which is unsafe: a meeting where the
+# user talks 22 minutes and the far end contributes 60 s of "mhm"/"right" has a
+# ratio of 0.045 and would trip a 0.05 ratio gate even though NOTHING IS WRONG
+# — and the punishment for a false positive is severe (the user's own mic gets
+# split into several strangers and nobody is labelled "You"). The corpus agrees
+# the ratio carries no usable margin: healthy online calls sit at 0.558, 0.589,
+# 0.898, 0.964, 1.611, 2.034, 2.429, 2.903, 4.824 and 9.287, a spread of 17x
+# with no floor to lean on, while the one genuinely broken meeting
+# (Call M) has EXACTLY 0.000 s of system speech across ZERO segments.
+# What actually distinguishes the failure is that the system track carries no
+# speech AT ALL, so that is what we test. A system track with any real speech on
+# it — however little relative to the mic — was captured, and we leave it alone.
+#
+# "No speech at all" is meant literally: ZERO transcribed system segments. An
+# earlier revision allowed up to 1.0 s of system speech through, which
+# contradicted the contract stated right above — 1.0 s of transcribed speech is
+# speech, and a track that produced a segment did capture something. The
+# tolerance also bought nothing: measured over the 12 frozen fixtures plus
+# Call M, the quietest healthy system track is Call J's 23.4 s across 5
+# segments, while the one genuinely broken meeting has 0 segments and 0.000 s.
+# Nothing in the corpus lives between those, so the strictest possible gate
+# fires on exactly the same single meeting as the loose one — and it can no
+# longer be argued into firing on a meeting that recorded real speech.
+#
+# The 30 s floor on mic speech keeps short clips (a 2 s "hello", a routing test)
+# out of the fallback, where there is too little audio to cluster anything
+# meaningfully.
+MIC_ONLY_MIN_MIC_S = 30.0
+
+
+def _speech_seconds(segments):
+    return sum(float(s["end"]) - float(s["start"]) for s in segments or [])
+
+
+def _system_track_lost(mic_segs, sys_segs):
+    """True when an online meeting looks like it recorded both sides on the mic.
+
+    Deliberately conservative: it fires only when the system track transcribed
+    NOTHING — zero segments — while the mic holds at least MIC_ONLY_MIN_MIC_S of
+    speech. It never fires on a meeting whose system track captured any speech
+    at all, however little.
+    """
+    if _speech_seconds(mic_segs) < MIC_ONLY_MIN_MIC_S:
+        return False
+    return not (sys_segs or [])
+
+
+MIC_ONLY_WARNING = (
+    DIARIZATION_WARNING_PREFIX + " fell back to the microphone: the call-audio "
+    "track was silent, so both sides of the conversation were recorded on the "
+    "mic. The voices were separated by sound instead — which one is you cannot "
+    "be told apart from the others, so nobody is labelled \"You\"; rename the "
+    "speakers above. To record the call audio on its own track, install "
+    "BlackHole and select it as the meeting app's speaker."
+)
+
+# --- Is that second cluster on the mic a real second person? --------------------
+# COUNTING CLUSTERS IS NOT EVIDENCE. Run the auto path over the MIC track of
+# every online meeting in the corpus and 7 of 10 single-voice mic tracks come
+# back as 2 or 3 clusters (table below). So "more than one cluster came back"
+# cannot be the test that decides whether to throw the "You" label away: on most
+# real meetings that valve never closes, and the user loses their own label to a
+# split that never had a second person in it.
+#
+# What separates a real second speaker from a same-voice split is SIZE and
+# TEMPORAL COHERENCE, the same two signals diarization._fold_weak_clusters
+# already leans on (it folds by duration; here we add coherence, which is what
+# duration alone gets wrong). A real participant takes turns: their windows
+# arrive in a few long contiguous runs and add up to a comparable share of the
+# conversation. A phantom is scattered through the dominant speaker's windows in
+# many one-window slivers and carries almost none of the speech.
+#
+#   duration ratio = runner-up cluster's seconds ÷ biggest cluster's seconds
+#   fragmentation  = runner-up's contiguous runs ÷ its windows, time-ordered
+#
+# MEASURED ON MIC TRACKS — every online meeting in recordings/, auto path,
+# threshold 0.6 (the design table in docs/COUNT_ESTIMATION_DESIGN.md measures
+# SYSTEM tracks; this branch only ever clusters a mic, so it was re-measured
+# there):
+#
+# Meetings are named by the stable pseudonyms in tools/eval_diarization.py's
+# LABELS dict — the same label means the same meeting there, in test_diarization
+# and in docs/. Real titles carry participants' names and this repo is public;
+# `eval_diarization.py --show-titles` maps them back on this machine.
+#
+#     meeting                     clusters   ratio   fragmentation
+#     Call M (REAL 2 people)          3      0.835       0.200
+#     ---------------------------------------------------------- gate
+#     Call B                          2      0.029       0.448
+#     Call C                          3      0.020       0.750
+#     Call H                          3      0.036       0.381
+#     Call D                          2      0.004       0.909
+#     Call E                          2      0.034       0.567
+#     Call F                          2      0.012       0.750
+#     Call G                          3      0.020       0.417
+#     Call A                          1        -           -
+#
+# ("Call M" is the one row with no entry in LABELS yet — it has no cached
+# fixture, so eval_diarization has never had to name it. The letter is reserved
+# here; adding it there is the diarization owner's call.)
+#
+# Seven of the ten split a solo mic into 2-3 clusters, which is precisely why
+# the count is worthless as a test. Both signals separate the corpus completely
+# on their own (phantom ratios top out at 0.036 against the real 0.835; phantom
+# fragmentation bottoms out at 0.381 against the real 0.200), and BOTH are
+# required anyway: duration alone folds a quiet-but-real participant, coherence
+# alone risks folding a real speaker who only interjects in short bursts.
+#
+# The duration gate is set at 0.25 rather than tight against the mic numbers so
+# that it also clears the SYSTEM-track phantoms in the design doc (0.02-0.16) —
+# it is not tuned to one track type. The cost is deliberate and one-directional:
+# a genuine second voice that holds under a quarter of the biggest speaker's
+# time is read as the user alone. That verdict is recoverable (set the speaker
+# count by hand — see _user_speaker_count); a destroyed "You" label on a meeting
+# that was never broken used to be recoverable by nothing at all.
+MIC_ONLY_MIN_DURATION_RATIO = 0.25
+
+# ONE NUMBER, ONE DEFINITION — aliased, never re-declared.
+#
+# This gate and diarization.FOLD_MAX_FRAGMENTATION are not merely similar: they
+# are the same statistic (a cluster's contiguous runs ÷ its windows, in time
+# order — _runner_up_evidence below and diarization._fragmentation compute it
+# identically) about the same question (is this cluster a person, or a split of
+# the leading voice?), in opposite polarity: here frag <= gate ACCEPTS a real
+# voice, there frag > gate FOLDS a phantom. They are complements of one
+# constant. They were nonetheless two literals in two files — 0.30 here against
+# 0.25 there — so a cluster at fragmentation 0.27 was a phantom to the clusterer
+# and a genuine second speaker to this detector, on the same recording.
+#
+# diarization owns the number, because that is where it is swept against ground
+# truth. Read its comment for the measurement; the short version is that the
+# band this file needs, [0.250, 0.3333), and the band the fold rule needs,
+# [0.139, 0.3333], intersect at [0.250, 0.3333), and 0.30 is the value inside it
+# with margin on both sides. (That 0.139 is Room P's genuine second voice. It
+# was re-measured from 0.148 when diarization gained FOLD_KEEP_ABOVE_S: the
+# 0.148 case, Room Q, is now held by that absolute duration ceiling instead of
+# by this gate, which moved the fold rule's lower edge down. The intersection
+# and this value are unchanged either way.)
+#
+# The lower edge of the intersection is ours: synthetic-two-medium-turns holds a
+# KNOWN second speaker at fragmentation exactly 0.250, so any gate below that
+# deletes a real participant.
+#
+# IMPORT, DO NOT COPY. A second literal is precisely how these two drifted
+# apart, and an alias cannot drift: whatever diarization sweeps to next, this
+# gate is already that number. Nothing here re-derives it, and nothing here may.
+#
+# MEASURED, before and after: the alias resolves to 0.30, which is the literal
+# this line replaced, so today it is a no-op — tools/test_diarization.py's mic
+# verdicts, tools/eval_diarization.py's golden regression and its 21 truth-backed
+# fixtures are all unchanged. It is a correctness fix for the next time somebody
+# moves the threshold, not a behaviour change now.
+MIC_ONLY_MAX_FRAGMENTATION = diarization.FOLD_MAX_FRAGMENTATION
+
+
+def _runner_up_evidence(windows, labels):
+    """(duration_ratio, fragmentation) for the second-biggest cluster.
+
+    Both are computed exactly as in the corpus measurement above: clusters are
+    ranked by total window duration, the ratio is runner-up ÷ biggest, and
+    fragmentation is the runner-up's contiguous runs ÷ its windows over
+    time-ordered windows. Returns (None, None) when there is nothing to judge.
+    """
+    labels = list(labels)
+    if len(labels) != len(windows) or len(set(labels)) < 2:
+        return None, None
+    spans = [(float(w[0]), float(w[1]) - float(w[0])) for w in windows]
+    seconds = {}
+    for lab, (_, dur) in zip(labels, spans):
+        seconds[lab] = seconds.get(lab, 0.0) + dur
+    biggest, runner_up = sorted(seconds, key=lambda lab: -seconds[lab])[:2]
+    if seconds[biggest] <= 0:
+        return None, None
+    ratio = seconds[runner_up] / seconds[biggest]
+
+    ordered = [lab for _, lab in sorted(zip([s for s, _ in spans], labels),
+                                        key=lambda pair: pair[0])]
+    runs = sum(
+        1 for i, lab in enumerate(ordered)
+        if lab == runner_up and (i == 0 or ordered[i - 1] != runner_up)
+    )
+    count = sum(1 for lab in ordered if lab == runner_up)
+    return ratio, runs / count
+
+
+def _mic_holds_a_second_voice(state, threshold):
+    """Decide whether the mic-only fallback really found somebody else.
+
+    state is the {"windows", "embeddings"} the fallback's own diarization run
+    produced. The per-window labels are recomputed from it with the identical
+    call diarize_track makes — same inputs, deterministic clustering, therefore
+    the same labels; diarize_track returns per-SEGMENT speakers, and the corpus
+    thresholds above are defined per WINDOW, so they have to be re-derived here.
+
+    Unknowable means no: without windows to judge we keep the "You" label rather
+    than gamble it on a cluster count.
+    """
+    windows = (state or {}).get("windows")
+    embeddings = (state or {}).get("embeddings")
+    if windows is None or embeddings is None or len(windows) < 2:
+        return False, (None, None)
+    durations = [float(w[1]) - float(w[0]) for w in windows]
+    labels = diarization.cluster(
+        embeddings, n_speakers=None, threshold=threshold, durations=durations
+    )
+    ratio, fragmentation = _runner_up_evidence(windows, labels)
+    if ratio is None:
+        return False, (ratio, fragmentation)
+    real = (
+        ratio >= MIC_ONLY_MIN_DURATION_RATIO
+        and fragmentation <= MIC_ONLY_MAX_FRAGMENTATION
+    )
+    return real, (ratio, fragmentation)
+
+
+# Written by recluster_meeting() when the count came from the speaker-count
+# control, i.e. from a person looking at the result. Everywhere else
+# meta["expected_speakers"] is a guess: at record time app.py fills it in from
+# the calendar invitee count, which is a prediction about the meeting, not an
+# observation of the recording.
+SPEAKER_COUNT_USER = "user"
+
+# --- What number is meta["expected_speakers"]? ---------------------------------
+# It has always meant two different things depending on which control produced
+# it, and until now nothing on disk recorded which. meta["speaker_count_basis"]
+# is that record:
+#
+#   "others"  the count EXCLUDES the local user — the historical
+#             "Speakers besides you" control. Total voices = count + 1.
+#   "total"   the count INCLUDES the local user — the mic-fallback control,
+#             "Voices on the mic (you are one of them)". Total voices = count.
+#
+# Which one a click produces is decided by the mode the user was LOOKING at:
+# "total" when meta["diarization_mode"] == "mic_fallback", "others" otherwise.
+# recluster_meeting stamps it at the moment of the click, before the run that
+# may change diarization_mode underneath it.
+#
+# BACK-COMPAT — meetings recorded before this key existed. Their
+# expected_speakers was set through the only control that shipped, which asked
+# "Speakers besides you", so a MISSING basis reads as "others". That is a
+# faithful reading of the old data, not a reinterpretation of it: the number
+# means today exactly what the user was asked for when they typed it. The rule
+# is applied in exactly one place, _user_speaker_count() below, so there is one
+# thing to revisit if it is ever wrong.
+#
+# NOTE the in-person control ("People in the room (you included)") is a total,
+# yet it is stamped "others" by the rule above. That is intentional and
+# harmless: basis is consumed only by the mic-only fallback, which exists only
+# in online mode, so an in-person meeting's basis is never read. Anything that
+# starts reading basis outside the fallback must handle in-person first.
+SPEAKER_COUNT_OTHERS = "others"
+SPEAKER_COUNT_TOTAL = "total"
+
+
+def _speaker_count_basis(meta):
+    """Which question the speaker-count control was asking on this meeting."""
+    return (SPEAKER_COUNT_TOTAL
+            if meta.get("diarization_mode") == "mic_fallback"
+            else SPEAKER_COUNT_OTHERS)
+
+
+def _user_speaker_count(meta):
+    """TOTAL voices on the mic if a PERSON chose the count, else None.
+
+    Only the mic-only fallback needs the distinction. Everywhere else the count
+    is applied to the system track, where a calendar guess is a reasonable prior
+    and a wrong one is corrected by the same control. In the fallback it decides
+    whether the user keeps their "You" label, so a guess is not good enough.
+
+    The return value is always a TOTAL, because that is what the fallback needs:
+    under the fallback every voice, the user's included, is on the one mic being
+    clustered. A "others"-basis count is therefore converted (count + 1), and a
+    "total"-basis count is used as-is. See SPEAKER_COUNT_OTHERS above for the
+    back-compat rule when no basis was ever stored.
+    """
+    if meta.get("speaker_count_source") != SPEAKER_COUNT_USER:
+        return None
+    try:
+        count = int(meta.get("expected_speakers") or 0)
+    except (TypeError, ValueError):
+        return None
+    if count <= 0:
+        return None
+    basis = meta.get("speaker_count_basis") or SPEAKER_COUNT_OTHERS
+    return count if basis == SPEAKER_COUNT_TOTAL else count + 1
+
 
 def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_cb,
                         precomputed=None, collect=None):
@@ -497,10 +915,36 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     the labelling warnings. precomputed maps track -> (windows, embeddings)
     to skip the audio embedding pass; collect (dict) gathers computed
     windows/embeddings per track so the caller can persist them.
+
+    meta["diarization_mode"] is the labelling contract for the UI:
+
+      "mic_fallback"  the online system track was silent, so the mic carried
+                      the whole call and was clustered like a room mic. The
+                      speaker keys are s1..sN and NONE of them is known to be
+                      the local user — we cannot tell which cluster is "you"
+                      and deliberately do not guess. The UI must not present
+                      any of these speakers as the user.
+      absent          every normal case, including in-person meetings and
+                      online meetings whose mic collapsed to a single voice.
+                      "you" means what it always meant.
+
+    The key is REMOVED (not left stale) whenever the fallback does not engage,
+    so reprocessing a meeting out of the fallback clears the marker.
+
+    The fallback is CORRECTABLE. Left to itself it accepts a second voice only
+    on the evidence described above, but a count the user chose by hand (see
+    _user_speaker_count) overrides that judgement in both directions: a total of
+    1 voice on the mic puts the meeting back on the ordinary "You" path and
+    clears the marker, a total of N > 1 forces N voices on the mic. _user_speaker
+    _count returns that TOTAL whichever way the control phrased the question, so
+    this branch never has to know which control the user saw. That is the escape
+    hatch for a wrong verdict, and it survives Reprocess because both the count
+    and its basis live in meeting.json.
     """
     mode = meta.get("mode", "online")
     threshold = float(cfg["diarization_threshold"])
     warnings = []
+    track_state = {}
 
     def diarize(key, n_speakers, prefix, name_fmt, start_index):
         """Cluster one track's voices; returns labelled segments + speaker map."""
@@ -508,7 +952,10 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
         if not segs:
             return [], {}
         track_file = meeting_dir / meta["tracks"][key]["file"]
-        state = {} if collect is not None else None
+        # Always collected: the mic-only fallback has to weigh the windows and
+        # embeddings this run used before it trusts a second voice, whether or
+        # not the caller asked for them to be persisted.
+        state = {}
         try:
             new_segs, n_found = diarization.diarize_track(
                 track_file,
@@ -520,11 +967,16 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 state=state,
             )
         except Exception as exc:
-            warnings.append(f"Diarization failed on {key} track ({exc}); using one label.")
+            warnings.append(
+                f"{DIARIZATION_WARNING_PREFIX} failed on {key} track ({exc}); "
+                "using one label."
+            )
             new_segs = [dict(s, speaker_idx=0) for s in segs]
             n_found = 1
-        if collect is not None and state and "embeddings" in state:
-            collect[key] = state
+        if state and "embeddings" in state:
+            track_state[key] = state
+            if collect is not None:
+                collect[key] = state
         speakers = {}
         for seg in new_segs:
             idx = seg.pop("speaker_idx")
@@ -540,18 +992,84 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
 
     labelled = []
     speakers = {}
+    mic_only = False
     if mode == "online":
         mic_segs = transcripts.get("mic") or []
-        if mic_segs:
+        sys_segs = transcripts.get("system") or []
+        # BlackHole missing or unrouted: the mic carries the whole call, so
+        # cluster it like an in-person room mic instead of calling it all "You".
+        mic_only = bool(mic_segs) and _system_track_lost(mic_segs, sys_segs)
+        if mic_only:
+            progress_cb("Identifying speakers…")
+            # TOTAL voices on the mic as the USER counted them, if they counted
+            # at all — see _user_speaker_count(), which converts whichever way
+            # the control asked the question into a total. A calendar-derived
+            # count is NOT usable here: it counts the people invited to the
+            # call, which under the fallback says nothing about how many voices
+            # reached this mic, and forcing it would manufacture exactly the
+            # phantom speakers this branch exists to avoid.
+            forced = _user_speaker_count(meta)
+            # Without one, ALWAYS the auto path (n_speakers=None). A forced
+            # count is a promise cluster() keeps too literally: its
+            # AgglomerativeClustering(n_clusters=N) branch applies neither
+            # _merge_tiny_clusters nor _fold_weak_clusters and returns exactly N
+            # clusters unconditionally — even when the mic holds one voice and
+            # two of four hundred windows happen to sit slightly apart. The auto
+            # path can legitimately collapse to a single cluster, which is the
+            # whole point: the detector only tells us the system track was
+            # silent, not that anyone else was actually on the mic.
+            fallback_segs, fallback_speakers = diarize(
+                "mic", forced, "s", "Speaker {}", 1
+            )
+            if forced:
+                # The user overrode the machine. Honour it literally, including
+                # a total of 1, which is how a false positive gets corrected:
+                # one voice on the mic means the mic was just you, so we fall
+                # through to the normal "You" labelling below.
+                second_voice = len(fallback_speakers) > 1
+            else:
+                # COUNTING CLUSTERS IS NOT EVIDENCE (see
+                # _mic_holds_a_second_voice): the auto path splits one voice in
+                # two often enough that len(...) > 1 would leave this valve
+                # permanently open, and an open valve costs the user their "You"
+                # label on a meeting that was never broken.
+                second_voice, evidence = _mic_holds_a_second_voice(
+                    track_state.get("mic"), threshold
+                )
+                log.info(
+                    "mic-only fallback: %d cluster(s), runner-up duration ratio "
+                    "%s / fragmentation %s -> %s",
+                    len(fallback_speakers), *(
+                        "%.3f" % v if v is not None else "n/a" for v in evidence
+                    ),
+                    "second voice" if second_voice else "just you",
+                )
+            if second_voice:
+                labelled.extend(fallback_segs)
+                speakers.update(fallback_speakers)
+                warnings.append(MIC_ONLY_WARNING)
+            else:
+                # One voice on the mic is the user talking, as usual. The
+                # fallback's output is dropped on the floor — diarize_track
+                # builds fresh dicts, so transcripts["mic"] is untouched and the
+                # "You" pass below labels it exactly as it always would.
+                mic_only = False
+        if not mic_only and mic_segs:
             speakers["you"] = "You"
             for seg in mic_segs:
                 seg["speaker"] = "you"
                 seg["track"] = "mic"
             labelled.extend(mic_segs)
-        if transcripts.get("system"):
+        if sys_segs:
+            # mic_only is necessarily False here: _system_track_lost() requires
+            # `not sys_segs`, so reaching this block at all means the system
+            # track transcribed something and the fallback cannot have engaged.
+            # An earlier revision branched on mic_only here to give the system
+            # track a "Remote 1..N" namespace, which no input could ever reach;
+            # it is gone rather than left to look like a supported path.
             progress_cb("Identifying speakers…")
-            sys_segs, sys_speakers = diarize("system", expected, "s", "Speaker {}", 1)
-            labelled.extend(sys_segs)
+            new_sys, sys_speakers = diarize("system", expected, "s", "Speaker {}", 1)
+            labelled.extend(new_sys)
             speakers.update(sys_speakers)
     else:  # in-person: everyone shares the mic
         if transcripts.get("mic"):
@@ -574,7 +1092,7 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
 
     # Preserve names the user set on a previous run — but only when the
     # speaker set is unchanged. After a re-cluster with a different count,
-    # key s1 can be a different *voice* than before, and carrying "Jess"
+    # key s1 can be a different *voice* than before, and carrying "Alex"
     # over to the wrong person is worse than asking for a rename.
     old_names = meta.get("speakers") or {}
     if set(speakers) == set(old_names):
@@ -585,65 +1103,344 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     meta["speakers"] = speakers
     meta["turns"] = turns
     meta["stats"] = meeting_stats
+    # Tell the UI whether "you" means anything on this meeting. See the
+    # docstring: under "mic_fallback" no speaker is known to be the local user,
+    # so the template must not claim one is. Cleared, never left stale.
+    if mic_only:
+        meta["diarization_mode"] = "mic_fallback"
+    else:
+        meta.pop("diarization_mode", None)
     return warnings
+
+
+def _carried_state_id(json_path, npz_path, transcripts):
+    """The token to stamp analysis.json with when this run writes no npz.
+
+    NOTHING IS EVER DELETED HERE. An existing analysis.npz is the only copy of
+    those embeddings: regenerating them costs an ECAPA load and a full pass over
+    the WAV, and for a meeting whose audio the user has since removed it cannot
+    be done at all. A run that collected no embeddings of its own therefore
+    leaves the file alone and only decides whether the pair it now forms with
+    the new analysis.json is honest:
+
+      transcripts unchanged  the cached windows still index these exact segments
+                             (diarization.build_windows is a pure function of
+                             them), so the existing token is carried over and the
+                             cache stays usable. This is the case that matters:
+                             a Reprocess whose diarization raised, one with too
+                             few windows to cluster, and one that never needed to
+                             diarize at all (an online meeting with no system
+                             track) all land here, and none of them is a reason
+                             to cost the user their instant re-cluster.
+      transcripts changed    the pair really is mismatched. A fresh token is
+                             minted so _load_analysis_cache REJECTS the npz —
+                             rejected until some later run has something better
+                             to write over it, never destroyed.
+
+    A pair written before the token existed has it in neither file; carrying
+    `None` over keeps it that way, which _load_analysis_cache reads as matching.
+    """
+    if not npz_path.exists():
+        return uuid.uuid4().hex
+    try:
+        old = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return uuid.uuid4().hex
+    if not isinstance(old, dict) or old.get("transcripts") != transcripts:
+        return uuid.uuid4().hex
+    return old.get(STATE_ID_KEY)
 
 
 def _save_analysis_state(meeting_dir, transcripts, collect):
     """Persist transcripts + voice embeddings so speakers can be re-clustered
     later in under a second. Best effort — recluster just stays unavailable."""
     try:
-        (meeting_dir / ANALYSIS_JSON).write_text(
-            json.dumps({"transcripts": transcripts}, ensure_ascii=False),
-            encoding="utf-8",
-        )
         arrays = {}
         for key, state in collect.items():
             arrays[f"{key}_windows"] = np.asarray(state["windows"], dtype=np.float64)
             arrays[f"{key}_embeddings"] = np.asarray(state["embeddings"], dtype=np.float32)
+        npz_path = meeting_dir / ANALYSIS_NPZ
+        json_path = meeting_dir / ANALYSIS_JSON
+        state_id = (uuid.uuid4().hex if arrays
+                    else _carried_state_id(json_path, npz_path, transcripts))
         if arrays:
-            np.savez_compressed(meeting_dir / ANALYSIS_NPZ, **arrays)
+            # Stamp the embedding behaviour that produced these arrays so a
+            # later build can tell whether they are still comparable to what it
+            # would compute, and the token that ties them to the transcripts
+            # written just below. Both are metadata only: separate entries that
+            # touch neither the window coordinates nor the embedding values.
+            arrays["embed_version"] = np.asarray(diarization.EMBED_VERSION, dtype=np.int32)
+            arrays[STATE_ID_KEY] = np.asarray(state_id)
+            # savez_compressed appends ".npz" to a *name* that lacks it, which
+            # would defeat the temp file, so it is handed an open handle.
+            def _write_npz(tmp, _arrays=arrays):
+                with open(tmp, "wb") as fh:
+                    np.savez_compressed(fh, **_arrays)
+            _atomic_write(npz_path, _write_npz)
+        # ...and when `arrays` is empty there is nothing better to write, so any
+        # existing analysis.npz is left exactly where it is; _carried_state_id
+        # above has already decided whether it still pairs with these
+        # transcripts. Deleting it here (which this used to do) threw away
+        # embeddings that only the audio can regenerate every time diarization
+        # merely had nothing new to contribute.
+        _atomic_write_text(
+            json_path,
+            json.dumps({"transcripts": transcripts, STATE_ID_KEY: state_id},
+                       ensure_ascii=False),
+        )
     except Exception as exc:
         log.warning("could not save analysis state for %s: %s", meeting_dir.name, exc)
+
+
+def _load_analysis_cache(npz_path, keys, json_state_id):
+    """{track: (windows, embeddings)} from analysis.npz, or {} if unusable.
+
+    Unusable means any of: the file is missing; it is corrupt (a truncated or
+    half-written archive from before the writes were made atomic, or a bad
+    disk); it was written by different embedding code; or it does not belong to
+    the transcripts alongside it. NEVER raises — every rejection just falls
+    through to re-embedding from the WAV, which is slower but always correct.
+    """
+    if not npz_path.exists():
+        return {}
+    try:
+        with np.load(npz_path) as npz:
+            # A cache is only reusable if it was produced by the embedding
+            # behaviour this build runs. Mixing them would let the recluster
+            # path answer from old embeddings while Reprocess answers from new
+            # ones. Caches predate the marker, and were written by EMBED_VERSION
+            # 1's behaviour, so a missing marker reads as 1 rather than as
+            # "unknown" — otherwise every existing meeting would needlessly
+            # re-embed on its next recluster.
+            cached_version = (
+                int(npz["embed_version"]) if "embed_version" in npz else 1
+            )
+            if cached_version != diarization.EMBED_VERSION:
+                log.info(
+                    "%s: analysis.npz is embed_version %s, code is %s — recomputing",
+                    npz_path.parent.name, cached_version, diarization.EMBED_VERSION,
+                )
+                return {}
+            # …and only if it is the cache written for THESE transcripts. Absent
+            # from both files means an old pair written together before the
+            # token existed, which is trusted exactly as it was before. Absent
+            # from one but not the other means the two were written by different
+            # saves — a crash landed between them — and the pair is broken.
+            npz_state_id = (
+                npz[STATE_ID_KEY].item() if STATE_ID_KEY in npz else None
+            )
+            if npz_state_id != json_state_id:
+                log.info(
+                    "%s: analysis.npz belongs to a different save than "
+                    "analysis.json — recomputing", npz_path.parent.name,
+                )
+                return {}
+            cache = {}
+            for key in keys:
+                if f"{key}_windows" in npz and f"{key}_embeddings" in npz:
+                    cache[key] = (npz[f"{key}_windows"], npz[f"{key}_embeddings"])
+            return cache
+    except (zipfile.BadZipFile, ValueError, KeyError, OSError, EOFError) as exc:
+        # A corrupt cache must never cost the user their transcript: the arrays
+        # are a speed optimisation and can always be recomputed from the WAV.
+        log.warning("%s: analysis.npz unreadable (%s) — recomputing",
+                    npz_path.parent.name, exc)
+        return {}
+
+
+# --- Publishing a run without reverting the edits made while it ran ------------
+# Both entry points below read meeting.json once, then spend anywhere from a
+# fraction of a second (recluster off a warm cache) to many minutes (a full
+# transcription; or a recluster that hits the mic-only fallback, which runs a
+# complete ECAPA embedding pass inside the request) computing a result FROM THAT
+# SNAPSHOT. app.py does not block its editing endpoints meanwhile: POST /title
+# and POST /speakers accept the change, return 200 and write meeting.json while
+# we are still working, and the sync push does the same.
+#
+# So the snapshot is never written back as a document. Only the keys the run
+# actually recomputed are merged into whatever is on disk AT THE MOMENT OF THE
+# WRITE — the discipline summarize._store_summary and tidy.tidy_meeting already
+# use. Everything else (title, summary, tidied, notes, sync state, calendar
+# data) is carried over from disk untouched, whether or not this build even
+# knows the key exists.
+#
+# ABSENCE IS A VALUE. A key the run deliberately REMOVED — "diarization_mode"
+# when the fallback does not engage, "error" once processing succeeds — has to
+# be removed from the on-disk document too, so the owned-key lists are applied
+# as "copy if present, delete if not" rather than dict.update().
+_LABELLING_KEYS = ("speakers", "turns", "stats", "diarization_mode")
+_RECLUSTER_KEYS = _LABELLING_KEYS + (
+    "expected_speakers", "speaker_count_source", "speaker_count_basis",
+    "warnings", "status",
+)
+_PROCESS_KEYS = _LABELLING_KEYS + (
+    "warnings", "status", "languages", "processing", "error",
+)
+
+
+def _live_meta(meta_path, meta):
+    """meeting.json as it stands on disk RIGHT NOW.
+
+    Falls back to our own snapshot when the file cannot be parsed: ours is a
+    complete, valid document that contains the transcript, so publishing it over
+    an unreadable one is the repair rather than the damage. A missing or
+    unreadable FILE is different — the meeting may have been deleted under us,
+    and inventing it again would resurrect a folder the user threw away.
+    """
+    try:
+        latest = json.loads(meta_path.read_text(encoding="utf-8"))
+    except ValueError:
+        log.warning("%s: meeting.json is not valid JSON — rewriting it",
+                    meta_path.parent.name)
+        return dict(meta)
+    except OSError as exc:
+        raise RuntimeError(f"Could not save the result: {exc}") from exc
+    if not isinstance(latest, dict):
+        log.warning("%s: meeting.json is not a JSON object — rewriting it",
+                    meta_path.parent.name)
+        return dict(meta)
+    return latest
+
+
+def _keep_live_renames(speakers, snapshot_speakers, live_speakers):
+    """Let a rename that landed WHILE we ran survive this run's speaker map.
+
+    _label_and_assemble builds `speakers` from the SNAPSHOT's names, so a rename
+    the user made mid-run is not in it and would be overwritten by the older
+    name. Restoring it is only safe where the label still points at the same
+    voice, and this run says which labels those are: exactly the ones whose name
+    it carried over from the snapshot unchanged. Where a re-cluster changed the
+    speaker set it reset the names on purpose — key "s1" may now be a different
+    person and moving "Alex" onto a stranger is worse than asking for a rename
+    (see _label_and_assemble) — so those labels are left as this run made them.
+    """
+    for label, name in list(speakers.items()):
+        prior = snapshot_speakers.get(label)
+        live = live_speakers.get(label)
+        if prior is None or live is None:
+            continue          # label is new this run: nothing was renamed under it
+        if name != prior:
+            continue          # this run reassigned the label: different voice
+        if live != prior:
+            speakers[label] = live
+
+
+def _commit_meta(meta_path, meta, latest, owned, snapshot_speakers):
+    """Merge the keys this run owns into `latest` and publish it atomically.
+
+    `latest` must come from _live_meta and should be read as late as possible:
+    everything written to meeting.json before that read survives, everything
+    after it is still lost. The remaining window is the microseconds between the
+    read and the os.replace, instead of the whole duration of the run.
+    """
+    if "speakers" in owned and isinstance(meta.get("speakers"), dict):
+        _keep_live_renames(meta["speakers"], snapshot_speakers or {},
+                           latest.get("speakers") or {})
+    for key in owned:
+        if key in meta:
+            latest[key] = meta[key]
+        else:
+            latest.pop(key, None)
+    # meeting.json holds the only copy of the transcript, and this write races
+    # app.py's own writer as well as every reader. See _atomic_write.
+    try:
+        _atomic_write_text(meta_path, json.dumps(latest, ensure_ascii=False, indent=1))
+    except OSError as exc:  # e.g. the meeting was deleted while we worked
+        raise RuntimeError(f"Could not save the result: {exc}") from exc
+    # Hand back what is actually on disk, so a caller that goes on to render the
+    # meeting (app.py writes transcript.md from this) uses the live title and
+    # names rather than our stale snapshot's.
+    return latest
 
 
 def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: None):
     """Re-run speaker clustering from saved analysis state — no transcription.
 
     expected_speakers: int forces the count (online mode: other speakers on
-    the call; in-person: total speakers), None re-runs auto-detection.
+    the call; in-person: total speakers; under the mic-only fallback: every
+    voice on the mic, the user included), None re-runs auto-detection.
     Takes well under a second for a typical meeting.
+
+    Because that number means "besides you" in one of those cases and "you
+    included" in the others, which one the caller meant is recorded alongside it
+    as meta["speaker_count_basis"] — see SPEAKER_COUNT_OTHERS. It is derived
+    from the diarization_mode ON DISK, i.e. the result the user was looking at
+    when they picked, not from whatever this run concludes.
     """
     meeting_dir = Path(meeting_dir)
     meta_path = meeting_dir / "meeting.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    # The names as they were when we started. _keep_live_renames compares
+    # against these to tell "the user renamed this speaker while we ran" from
+    # "this run assigned the label a different name".
+    snapshot_speakers = dict(meta.get("speakers") or {})
     analysis_path = meeting_dir / ANALYSIS_JSON
     if not analysis_path.exists():
         raise RuntimeError(
             "No saved voice analysis for this meeting — press Reprocess once, "
             "then the speaker count can be adjusted instantly."
         )
-    transcripts = json.loads(analysis_path.read_text(encoding="utf-8"))["transcripts"]
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    transcripts = analysis["transcripts"]
 
-    precomputed = {}
-    npz_path = meeting_dir / ANALYSIS_NPZ
-    if npz_path.exists():
-        with np.load(npz_path) as npz:
-            for key in list(transcripts):
-                if f"{key}_windows" in npz and f"{key}_embeddings" in npz:
-                    precomputed[key] = (npz[f"{key}_windows"], npz[f"{key}_embeddings"])
+    precomputed = _load_analysis_cache(
+        meeting_dir / ANALYSIS_NPZ, list(transcripts), analysis.get(STATE_ID_KEY)
+    )
 
     cfg = load_config()
+    # WHICH QUESTION WAS ON SCREEN decides what the number means, so the basis
+    # is read off the mode the user was looking at — meta as loaded, before
+    # _label_and_assemble below possibly changes diarization_mode under it.
+    basis = _speaker_count_basis(meta)
     meta["expected_speakers"] = expected_speakers
+    # This path is only ever reached from the speaker-count control, so the
+    # number (or its absence) is a human's judgement about the finished
+    # recording, not app.py's calendar guess. Record which, so the mic-only
+    # fallback knows whether it may act on it — and so the answer survives a
+    # later Reprocess, which reads expected_speakers back out of meeting.json.
+    if expected_speakers:
+        meta["speaker_count_source"] = SPEAKER_COUNT_USER
+        meta["speaker_count_basis"] = basis
+    else:
+        meta.pop("speaker_count_source", None)
+        meta.pop("speaker_count_basis", None)
     progress_cb("Re-clustering speakers…")
+    # Keep a pristine copy: _label_and_assemble mutates the segments it labels
+    # (it strips "words"), and those are the very dicts loaded from analysis.json.
+    saved_transcripts = json.loads(json.dumps(transcripts))
+    collect = {}
     label_warnings = _label_and_assemble(
         meeting_dir, meta, transcripts, cfg, expected_speakers, progress_cb,
-        precomputed=precomputed,
+        precomputed=precomputed, collect=collect,
     )
-    kept = [w for w in meta.get("warnings", []) if not w.startswith("Diarization")]
+    # Any track that had to be embedded here (the mic-only fallback hits a mic
+    # track that no earlier run ever cached) is persisted, so the next dropdown
+    # change reuses it instead of paying for an ECAPA load and a full WAV pass
+    # inside the request again.
+    if any(key not in precomputed for key in collect):
+        # Carry over cached tracks this run did not re-embed, so persisting the
+        # newly embedded one never impoverishes the npz.
+        merged = {
+            key: {"windows": win, "embeddings": emb}
+            for key, (win, emb) in precomputed.items()
+        }
+        merged.update(collect)
+        _save_analysis_state(meeting_dir, saved_transcripts, merged)
+    # Read meeting.json again, as late as possible: a rename or a retitle that
+    # app.py accepted while this run was working is in THIS document and not in
+    # the snapshot above. See _commit_meta.
+    latest = _live_meta(meta_path, meta)
+    # Only the labelling warnings, because only the labelling step just re-ran:
+    # the echo warning in PIPELINE_WARNING_PREFIXES is produced during
+    # transcription and would be lost, not refreshed, if it were dropped here.
+    # Filtered from the LIVE list so a warning added meanwhile is carried over.
+    kept = [
+        w for w in (latest.get("warnings") or [])
+        if not w.startswith(DIARIZATION_WARNING_PREFIX)
+    ]
     meta["warnings"] = kept + label_warnings
     meta["status"] = "done"
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    return meta
+    return _commit_meta(meta_path, meta, latest, _RECLUSTER_KEYS, snapshot_speakers)
 
 
 # "get hub" -> "GitHub" etc. Compiled once; word-boundary, case-insensitive.
@@ -686,12 +1483,13 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     started = time.time()
     mode = meta.get("mode", "online")
     expected = meta.get("expected_speakers") or None
-    # Recorder warnings persist; warnings this pipeline generates are rebuilt
-    # fresh each run so reprocessing doesn't stack duplicates.
-    warnings = [
-        w for w in meta.get("warnings", [])
-        if not w.startswith(("Diarization", "Removed "))
-    ]
+    # The names as they were when we started — see _keep_live_renames.
+    snapshot_speakers = dict(meta.get("speakers") or {})
+    # Warnings this pipeline generates itself, rebuilt from scratch on every
+    # run. The recorder's warnings are NOT carried in this list: they are merged
+    # from the on-disk document at the end (below), because a run that lasts
+    # minutes must not publish a minutes-old copy of anything it did not compute.
+    echo_warnings = []
 
     # --- 1. Transcribe each track -------------------------------------------------
     transcripts = {}
@@ -720,8 +1518,8 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
                 parts.append(f"removed {dropped} echo segment(s)")
             if trimmed:
                 parts.append(f"trimmed echoed words from {trimmed} segment(s)")
-            warnings.append(
-                "Mic audio contained speaker echo: " + " and ".join(parts)
+            echo_warnings.append(
+                f"{ECHO_WARNING_PREFIX}: " + " and ".join(parts)
                 + " (tip: headphones avoid this entirely)."
             )
 
@@ -735,10 +1533,22 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     )
     _save_analysis_state(meeting_dir, saved_transcripts, collect)
 
+    # Read meeting.json again, as late as possible. Transcription takes minutes,
+    # and the browser can retitle the meeting or rename a speaker throughout;
+    # those edits are in THIS document and not in the snapshot taken at the top.
+    # See _commit_meta.
+    latest = _live_meta(meta_path, meta)
+    # Recorder warnings persist — taken from the live document, so one written
+    # after we started is kept too. Ours are rebuilt fresh each run, so any
+    # earlier copy is dropped first and Reprocess cannot stack duplicates.
+    carried = [
+        w for w in (latest.get("warnings") or [])
+        if not w.startswith(PIPELINE_WARNING_PREFIXES)
+    ]
     meta.update(
         {
             "status": "done",
-            "warnings": warnings + label_warnings,
+            "warnings": carried + echo_warnings + label_warnings,
             "languages": languages,
             "processing": {
                 "model": resolve_model(cfg, pick_backend(cfg)),
@@ -748,6 +1558,5 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
             },
         }
     )
-    meta.pop("error", None)
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
-    return meta
+    meta.pop("error", None)  # absence is published too — see _PROCESS_KEYS
+    return _commit_meta(meta_path, meta, latest, _PROCESS_KEYS, snapshot_speakers)
