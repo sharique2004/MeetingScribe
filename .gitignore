@@ -2,6 +2,19 @@ venv/
 recordings/
 practice/
 models/
+
+# INTERIM: engineering docs currently quote real meeting titles and participant
+# names in their measurement tables. This repo is public. Ignored until the
+# names are replaced with stable pseudonyms, then this line should be removed
+# so the technical content is version-controlled again.
+docs/
+
+# Diarization eval fixtures derived from real recordings: meeting titles carry
+# participant names and analysis.npz holds ECAPA voice embeddings (biometric
+# speaker identifiers) for people who never agreed to have them published.
+# This repo is public — keep them local. Synthetic labelled fixtures are what
+# belongs in git; see docs/COUNT_ESTIMATION_DESIGN.md.
+test/fixtures/
 __pycache__/
 *.pyc
 .DS_Store
