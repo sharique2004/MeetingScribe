@@ -1,0 +1,175 @@
+{
+ "generated_by": "tools/make_synthetic_fixtures.py",
+ "embed_version": 1,
+ "parameters": {
+  "seed": 20260725,
+  "embedding_dim": 192,
+  "max_voices": 8,
+  "between_speaker_cosine_distance": 0.85,
+  "within_speaker_sigma": 0.35,
+  "within_speaker_pair_distance_expected": 0.109131,
+  "drift_degrees": 80.0,
+  "phantom_cosine_distance": 0.65,
+  "phantom_window_share": 0.12,
+  "turn_gap_seconds": 0.18,
+  "windowing": {
+   "source": "diarization.build_windows (the real one)",
+   "window_s": 2.0,
+   "hop_s": 1.0,
+   "min_window_s": 0.4
+  }
+ },
+ "fixtures": {
+  "synthetic-solo-one-voice-20200101-000001": {
+   "title": "Synthetic — one voice, long turns",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 1,
+   "windows": {
+    "mic": 60
+   },
+   "note": "The trivial positive control: one speaker, nothing to separate."
+  },
+  "synthetic-two-long-turns-20200101-000002": {
+   "title": "Synthetic — two voices, long turns",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {
+    "mic": 80
+   },
+   "note": "Two genuine speakers taking long turns — the easiest case for a coherence metric, and the shape the only pre-existing positive control had."
+  },
+  "synthetic-two-medium-turns-20200101-000009": {
+   "title": "Synthetic — two voices, five-second turns",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {
+    "mic": 64
+   },
+   "note": "Two genuine speakers at 5 s a turn — the middle of the bracket around the 0.30 fragmentation gate."
+  },
+  "synthetic-two-rapid-alternation-20200101-000003": {
+   "title": "Synthetic — two voices, rapid alternation",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {
+    "mic": 72
+   },
+   "note": "Two genuine speakers swapping every ~3 s. Named by docs/COUNT_ESTIMATION_DESIGN.md as the case the fragmentation rule was never tested against: a real speaker here produces many short runs, which is what the rule reads as a phantom. This fixture is the counter-example — its speaker count is KNOWN to be 2."
+  },
+  "synthetic-two-backchannel-20200101-000004": {
+   "title": "Synthetic — two voices, one only backchannels",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {
+    "mic": 88
+   },
+   "note": "A genuine second speaker who only ever says 'mm-hm' and 'right'. Low duration ratio, and the interjections are spread through the whole meeting — the quiet-but-real participant the duration gate is supposed to protect."
+  },
+  "synthetic-three-voices-20200101-000005": {
+   "title": "Synthetic — three voices",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 3,
+   "windows": {
+    "mic": 72
+   },
+   "note": "Three genuine speakers, medium turns."
+  },
+  "synthetic-four-voices-20200101-000006": {
+   "title": "Synthetic — four voices",
+   "mode": "inperson",
+   "embedding_mode": "clean",
+   "true_speaker_count": 4,
+   "windows": {
+    "mic": 80
+   },
+   "note": "Four genuine speakers — the counter-direction control: whatever folds phantoms must leave these four apart."
+  },
+  "synthetic-same-voice-drift-20200101-000007": {
+   "title": "Synthetic — one voice that drifts",
+   "mode": "inperson",
+   "embedding_mode": "drift",
+   "true_speaker_count": 1,
+   "windows": {
+    "mic": 60
+   },
+   "note": "ONE person whose embeddings rotate 80 degrees across the meeting. The ends are further apart than the clustering threshold, but the halves' centroids are close enough that _fold_weak_clusters merges them. Must not be two people."
+  },
+  "synthetic-same-voice-split-20200101-000008": {
+   "title": "Synthetic — one voice with a scattered second lobe",
+   "mode": "inperson",
+   "embedding_mode": "phantom",
+   "true_speaker_count": 1,
+   "windows": {
+    "mic": 80
+   },
+   "note": "ONE person, 12% of whose windows sit 0.65 away from their own centroid, scattered so they land in runs of one. Reproduces the real-corpus phantom: the split survives BOTH folds, so the auto path returns 2 clusters for 1 person. Anything that counts clusters gets this wrong."
+  },
+  "synthetic-same-voice-big-split-20200101-000015": {
+   "title": "Synthetic — one voice with a large scattered second lobe",
+   "mode": "inperson",
+   "embedding_mode": "phantom",
+   "true_speaker_count": 1,
+   "windows": {
+    "mic": 80
+   },
+   "note": "The same one person, but with a lobe big enough that the runner-up carries ~40% of the dominant cluster's speech. Still one person. Included because it is the case a duration test alone cannot reject — only the scatter distinguishes it."
+  },
+  "synthetic-call-clean-audio-20200101-000010": {
+   "title": "Synthetic — online call, call audio captured",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {},
+   "note": "System/mic speech ratio ~0.97. The fallback must never fire."
+  },
+  "synthetic-call-half-volume-20200101-000011": {
+   "title": "Synthetic — online call, far end talks half as much",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {},
+   "note": "System/mic ratio ~0.53."
+  },
+  "synthetic-call-third-volume-20200101-000012": {
+   "title": "Synthetic — online call, far end talks a third as much",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {},
+   "note": "System/mic ratio ~0.31."
+  },
+  "synthetic-call-brief-far-end-20200101-000013": {
+   "title": "Synthetic — online call, far end barely speaks",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {},
+   "note": "System/mic ratio ~0.11 — well under any plausible ratio gate, and still a call whose audio was captured perfectly."
+  },
+  "synthetic-call-quiet-far-end-20200101-000014": {
+   "title": "Synthetic — online call, quietest far end in the corpus",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 2,
+   "windows": {},
+   "note": "System/mic ratio ~0.03, and its shortest single segment is ~1 s against 96 s of mic. This is the fixture the absolute-vs-ratio check is aimed at: a ratio gate fires here, an absolute one cannot."
+  },
+  "synthetic-ask-demo-call-20200101-000020": {
+   "title": "Synthetic — processed call with colliding turn starts",
+   "mode": "online",
+   "embedding_mode": "clean",
+   "true_speaker_count": 3,
+   "windows": {
+    "mic": 8,
+    "system": 45
+   },
+   "note": "Already-labelled meeting used by the citation tests: two turns start at exactly 0.00 and two more pairs 0.30 s apart, so a cited timestamp cannot choose between them."
+  }
+ }
+}
