@@ -19,7 +19,10 @@ import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import local_llm
@@ -97,16 +100,36 @@ CONDENSE_INSTRUCTIONS = (
     "the most important points, all decisions, and all action items. " + _FAITHFUL
 )
 
-REDUCE_INSTRUCTIONS = (
+_REDUCE_FOR_LOCAL_USER = (
     "You are writing the final summary of a meeting for the local user, who is the "
     "speaker called \"You\". Write for that user: their action items matter most, and "
     "the follow-up email should be written as if they are sending it — a warm, "
     "specific, human email, never a list of bullet points. "
+)
+
+# Same defect as FULL_INSTRUCTIONS, same fix: under pipeline.py's "mic_fallback"
+# there is no speaker called "You", so the opening sentence is false. Only the
+# opening is swapped; the rest of the prompt is shared verbatim.
+_REDUCE_NO_LOCAL_USER = (
+    "You are writing the final summary of a meeting. The local user is NOT "
+    "identified: the call audio was never captured, so every voice — the local "
+    "user's included — was recorded on one microphone and no speaker is labelled "
+    "\"You\". Never claim a particular speaker is the local user and never "
+    "attribute a first-person action to one. Every action item's owner is a real "
+    "name or a speaker label, never \"You\". Write the follow-up email as a "
+    "neutral recap of the meeting that any attendee could send, ending with just "
+    "\"Best,\" and no name. "
+)
+
+_REDUCE_TAIL = (
     "Never repeat the same fact in more than one section: a committed task belongs "
     "only in action_items, a decision only in decisions. Omit vacuous items like "
     "'X learned a lot' or 'they discussed plans'. If no deadline was said, use an "
     "empty string — never write 'TBD'. " + _FAITHFUL
 )
+
+REDUCE_INSTRUCTIONS = _REDUCE_FOR_LOCAL_USER + _REDUCE_TAIL
+REDUCE_INSTRUCTIONS_NO_LOCAL_USER = _REDUCE_NO_LOCAL_USER + _REDUCE_TAIL
 
 
 def _strip(text, limit):
@@ -303,9 +326,36 @@ def _condense(blocks, title, progress_cb):
 
 # ------------------------------------------------------------------- main --
 
+def _is_mic_fallback(meta):
+    """pipeline.py's "mic_fallback" contract (see _label_and_assemble): the
+    online call-audio track came back silent, so the single microphone carried
+    BOTH sides and was clustered like a room mic. The speaker keys are s1..sN,
+    there is no "you" key at all, and which cluster is the local user is
+    genuinely unknown — the pipeline deliberately does not guess, and neither
+    may the summarizer. meta["mode"] is still "online" here, so it cannot be
+    used to tell this case apart.
+    """
+    return (meta or {}).get("diarization_mode") == "mic_fallback"
+
+
+_NO_LOCAL_USER_NOTE = (
+    'IMPORTANT: the local user is NOT identified in this transcript. The call '
+    'audio was never captured, so every voice — the local user\'s included — '
+    'was recorded on one microphone and split into unlabelled speakers. NO '
+    'speaker is labelled "You" and it is not known which speaker is the local '
+    'user. Do not guess, and do not attribute first-person actions to any '
+    'particular speaker.'
+)
+
+
 def _speaker_note(meta):
     names = ", ".join((meta.get("speakers") or {}).values())
-    return f"Participants: {names}." if names else ""
+    note = f"Participants: {names}." if names else ""
+    # Under the mic fallback the speaker list is real but "You" is not in it.
+    # Normal meetings are untouched: the note is appended only in that case.
+    if _is_mic_fallback(meta):
+        return f"{note} {_NO_LOCAL_USER_NOTE}".strip()
+    return note
 
 
 def _extractive_fallback(chunk):
@@ -373,6 +423,32 @@ Quality rules — these matter:
 - The transcript is auto-generated: expect misrecognized words and names; infer the intended meaning from context rather than quoting errors verbatim."""
 
 
+# The three WHO IS WHO bullets above all rest on a speaker labelled "You"
+# existing. Under pipeline.py's "mic_fallback" they are simply false, and the
+# JSON field descriptions that mention "You" (action_items owner, the
+# follow_up_email signature) go with them. Rather than keep a second full copy
+# of the prompt in sync by hand, derive the variant by substituting that one
+# block — everything else stays byte-for-byte identical, and the normal prompt
+# is the untouched literal above.
+_WHO_IS_WHO = '''- The speaker labelled "You" is the LOCAL USER: the person these notes are for and the person the follow-up email is FROM. A name in the meeting title usually belongs to the local user (their calendar), NOT to the other side.
+- Work out the other participants' identities from the conversation itself — introductions, how people address each other, whose company/role is being described. Use their real names once known.
+- If other people address the local user by name in the transcript, that is the local user's name; use it for the email signature. If it never appears, end the email with just "Best," and no name. NEVER write the literal word "You" as a signature.'''
+
+_WHO_IS_WHO_NO_LOCAL_USER = '''- The local user is NOT identified in this transcript, and this overrides every mention of "You" below. The call audio was never captured, so every voice — the local user's included — was recorded on a single microphone and split into unlabelled speakers. NO speaker is labelled "You", and which speaker is the local user is unknown.
+- Do NOT decide which speaker is the local user, do not say or imply that any speaker is "you", and never attribute a first-person action to a particular speaker. If something matters but its owner is genuinely unclear, say so plainly instead of guessing.
+- Work out the participants' identities from the conversation itself — introductions, how people address each other, whose company/role is being described. Use their real names once known, and the speaker labels otherwise.
+- Wherever a field below says "You", that speaker does not exist here: an action item's owner is always a real name or a speaker label, never the literal word "You". Write the follow-up email as a neutral recap of the meeting that any attendee could send, and end it with just "Best," and no name.'''
+
+FULL_INSTRUCTIONS_NO_LOCAL_USER = FULL_INSTRUCTIONS.replace(
+    _WHO_IS_WHO, _WHO_IS_WHO_NO_LOCAL_USER
+)
+if FULL_INSTRUCTIONS_NO_LOCAL_USER == FULL_INSTRUCTIONS:  # pragma: no cover
+    raise RuntimeError(
+        "FULL_INSTRUCTIONS drifted from _WHO_IS_WHO — the mic_fallback prompt "
+        "would silently claim a speaker labelled \"You\" exists"
+    )
+
+
 def _local_user_name():
     """The Mac account's full name — tells the model who "You" actually is,
     so a Calendly-style meeting title carrying the user's own name can't be
@@ -392,11 +468,16 @@ class NeedsClaudeError(RuntimeError):
 def _full_source(meta, lines):
     title = meta.get("title") or "Untitled meeting"
     notes = [f'Transcript of the meeting "{title}".', _speaker_note(meta)]
-    me = _local_user_name()
-    if me:
-        notes.append(f'IMPORTANT: the local user — the speaker labelled "You" — '
-                     f'is {me}. Anyone else in the conversation is a different '
-                     f'person; find their names in the dialogue.')
+    # Naming the Mac's account holder as the speaker labelled "You" is only
+    # true when such a speaker exists. Under the mic fallback it does not, and
+    # asserting it would invite the model to pin the local user on whichever
+    # voice happens to be Speaker 1. _speaker_note() has already said so.
+    if not _is_mic_fallback(meta):
+        me = _local_user_name()
+        if me:
+            notes.append(f'IMPORTANT: the local user — the speaker labelled "You" — '
+                         f'is {me}. Anyone else in the conversation is a different '
+                         f'person; find their names in the dialogue.')
     cal = meta.get("calendar_event") or {}
     if cal.get("names"):
         notes.append("Calendar attendees besides the local user: "
@@ -425,6 +506,51 @@ _CLAUDE_SETUP_HELP = (
     "@anthropic-ai/claude-code` — then run `claude` in Terminal once and "
     "sign in. After that, just press Summary again."
 )
+
+
+@contextmanager
+def claude_sandbox():
+    """Argv flags + a working directory that keep the `claude` CLI inert.
+
+    Everything we hand the CLI is attacker-influenceable: anyone in the meeting
+    can say anything, and a malicious calendar invite or a shared document read
+    aloud can seed the transcript. Run as-is, `claude -p` would answer that text
+    with the user's full tool set, their MCP servers, and whatever CLAUDE.md /
+    settings / hooks live in the working directory — so a prompt-injection line
+    in a transcript could read files or drive a connected tool. Three flags plus
+    an empty cwd remove all of it:
+
+      --tools ""            no built-in tools at all (Read/Bash/Edit/...)
+      --strict-mcp-config   ignore the user's own MCP servers
+      --mcp-config <file>   ...and use this {"mcpServers": {}} instead
+      cwd=<empty temp dir>  no project CLAUDE.md, settings or hooks to pick up
+
+    Yields (flags, cwd) and cleans both up on exit.
+
+    THE SAME SANDBOX IS BUILT TWICE, AND CAN DRIFT. This function is the only
+    caller-facing copy, but ask.py does NOT import it: ask.py:_sandbox() creates
+    its own empty cwd + {"mcpServers": {}} config and ask.py:_claude_argv()
+    re-types the same three flags as literals. That is deliberate — ask.py needs
+    a sandbox that outlives one call (it is built once per process, cached under
+    a lock and torn down at exit, because a question is answered per HTTP
+    request and streamed), whereas this contextmanager is scoped to a single
+    subprocess. The security property is currently identical, but nothing
+    enforces it: a flag added HERE does not reach ask.py. Change one, change
+    both, and grep for `--strict-mcp-config` to find every copy.
+
+    ORDERING TRAP: --tools and --mcp-config are both VARIADIC, so they swallow
+    every following non-flag argument. These flags must therefore come LAST in
+    argv, and the prompt must never be a positional argument after them or it is
+    eaten as another config path and the CLI exits 1 with empty stdout. Both
+    call sites pass the prompt on stdin, which sidesteps this entirely; keep it
+    that way, and assert on OUTPUT (never on timing) when testing this.
+    """
+    with tempfile.TemporaryDirectory(prefix="meetingscribe-claude-") as tmp:
+        cfg = Path(tmp) / "mcp.json"
+        cfg.write_text('{"mcpServers": {}}', encoding="utf-8")
+        cwd = Path(tmp) / "cwd"       # the config itself stays outside the cwd
+        cwd.mkdir()
+        yield ["--tools", "", "--strict-mcp-config", "--mcp-config", str(cfg)], str(cwd)
 
 
 def _extract_json(text):
@@ -464,13 +590,18 @@ def _summarize_claude(meta, lines, progress_cb):
     if exe is None:
         raise NeedsClaudeError(_CLAUDE_SETUP_HELP)
     source = _full_source(meta, lines)
+    instructions = (FULL_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta)
+                    else FULL_INSTRUCTIONS)
     progress_cb("Summarizing with your Claude account…")
     try:
-        proc = subprocess.run(
-            [exe, "-p", "--output-format", "json"],
-            input=FULL_INSTRUCTIONS + "\n\n" + source,
-            capture_output=True, text=True, timeout=900,
-        )
+        # The transcript is untrusted input — see claude_sandbox(). The prompt
+        # goes on stdin, never after the (variadic) flags.
+        with claude_sandbox() as (sandbox_flags, sandbox_cwd):
+            proc = subprocess.run(
+                [exe, "-p", "--output-format", "json"] + sandbox_flags,
+                input=instructions + "\n\n" + source,
+                capture_output=True, text=True, timeout=900, cwd=sandbox_cwd,
+            )
     except subprocess.TimeoutExpired:
         raise RuntimeError("Claude took too long to summarize — please try again.")
     if proc.returncode != 0:
@@ -544,8 +675,9 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         )
 
     try:
-        raw = local_llm.generate(REDUCE_INSTRUCTIONS, source, SUMMARY_SCHEMA,
-                                 max_tokens=1400)
+        raw = local_llm.generate(
+            REDUCE_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta) else REDUCE_INSTRUCTIONS,
+            source, SUMMARY_SCHEMA, max_tokens=1400)
     except local_llm.LocalLLMError as exc:
         if exc.code in ("guardrail", "refusal"):
             raise RuntimeError(
@@ -560,10 +692,78 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
     return _store_summary(meta, meta_path, meeting_dir, summary)
 
 
-def _store_summary(meta, meta_path, meeting_dir, summary):
-    meta["summary"] = summary
+def _umask_default_mode():
+    """The mode a plain open()/write_text() would give a new file here.
+
+    Read once at import, because querying the umask means setting it (there is
+    no read-only call) and doing that from a request thread would race every
+    other file this process creates in that window.
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
+_DEFAULT_FILE_MODE = _umask_default_mode()
+
+
+def _atomic_write_json(path, obj):
+    """Write JSON so a concurrent reader never sees a partial file.
+
+    Same tmp-file + os.replace dance app.py's _write_meeting uses (tidy.py has
+    the twin of this helper). The temp name is unique per call, so two writers
+    can never scribble into the same scratch file — os.replace then makes one of
+    them win whole, rather than leaving a torn meeting.json behind.
+
+    PERMISSIONS: os.replace carries the TEMP file's mode onto the destination,
+    and tempfile.mkstemp hardcodes 0600. Left alone, every rewrite would quietly
+    turn a 0644 meeting.json (app.py's _write_meeting creates it through the
+    umask) into an owner-only file the user never asked for. So the temp file is
+    chmod'ed to the target's existing mode first — via the fd, so nothing can
+    swap the path underneath us — and to the umask default when creating a new
+    file, which is exactly what a plain write would have produced.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except OSError:                       # new file (or unreadable target)
+            mode = _DEFAULT_FILE_MODE
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, ensure_ascii=False, indent=1))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _store_summary(meta, meta_path, meeting_dir, summary):
+    """Persist the summary WITHOUT reverting edits made while it was running.
+
+    summarize_meeting() reads meeting.json, then holds that dict across a model
+    call that can take minutes. app.py's rename-speaker and rename-title
+    endpoints are not blocked during a summary job and write the same file, so
+    writing our whole stale snapshot back would silently undo them. Only the one
+    key this operation owns — "summary" — is merged into whatever is on disk
+    now. The write is atomic (temp file + os.replace, both in the meeting
+    folder) so no reader can ever see a half-written meeting.json.
+    """
+    meta["summary"] = summary          # keep the caller's copy consistent
+    try:
+        latest = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(latest, dict):
+            raise ValueError("meeting.json is not a JSON object")
+    except ValueError:
+        latest = meta                  # unreadable on disk: ours is all we have
+    except OSError as exc:             # e.g. the meeting was deleted meanwhile
+        raise RuntimeError(f"Could not save the summary: {exc}") from exc
+    latest["summary"] = summary
+    try:
+        _atomic_write_json(meta_path, latest)
     except OSError as exc:  # e.g. the meeting was deleted while summarizing
         raise RuntimeError(f"Could not save the summary: {exc}") from exc
     log.info("summarized %s [%s]: %d action item(s)",

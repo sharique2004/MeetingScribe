@@ -13,7 +13,10 @@ be restored from the UI.
 
 import json
 import logging
+import os
 import re
+import stat
+import tempfile
 from pathlib import Path
 
 import local_llm
@@ -166,6 +169,57 @@ def apply_ops(meta, ops):
     return merged, new_speakers, summary
 
 
+def _umask_default_mode():
+    """The mode a plain open()/write_text() would give a new file here.
+
+    Read once at import, because querying the umask means setting it (there is
+    no read-only call) and doing that from a request thread would race every
+    other file this process creates in that window.
+    """
+    current = os.umask(0)
+    os.umask(current)
+    return 0o666 & ~current
+
+
+_DEFAULT_FILE_MODE = _umask_default_mode()
+
+
+def _atomic_write_json(path, obj):
+    """Write JSON so a concurrent reader never sees a partial file.
+
+    Twin of summarize.py's helper of the same name (kept local rather than
+    imported so tidy doesn't take a dependency on the summarizer). Same
+    tmp-file + os.replace dance app.py's _write_meeting uses; the temp name is
+    unique per call so two writers can never scribble into the same scratch
+    file and leave a torn meeting.json behind.
+
+    PERMISSIONS: os.replace carries the TEMP file's mode onto the destination,
+    and tempfile.mkstemp hardcodes 0600. Left alone, every clean-up would
+    quietly turn a 0644 meeting.json (app.py's _write_meeting creates it through
+    the umask) into an owner-only file the user never asked for. So the temp
+    file is chmod'ed to the target's existing mode first — via the fd, so
+    nothing can swap the path underneath us — and to the umask default when
+    creating a new file (meeting.pretidy.json), which is exactly what a plain
+    write would have produced.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        try:
+            mode = stat.S_IMODE(os.stat(path).st_mode)
+        except OSError:                       # new file (or unreadable target)
+            mode = _DEFAULT_FILE_MODE
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, ensure_ascii=False, indent=1))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 # ------------------------------------------------------------------ windows --
 
 def _windows(turns):
@@ -259,15 +313,52 @@ def tidy_meeting(meeting_dir, progress_cb=lambda msg: None):
     if not new_turns:
         raise RuntimeError("Clean-up would have removed the whole transcript; nothing applied.")
 
+    # meta above is a snapshot taken BEFORE a model pass that runs for minutes,
+    # and app.py's rename-speaker / rename-title endpoints (and the sync push
+    # they trigger) are not blocked meanwhile — they write this same file.
+    # Writing the whole snapshot back would silently revert them, so re-read and
+    # merge only the keys this operation actually owns.
+    try:
+        latest = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f"Could not save the clean-up: {exc}") from exc
+    if not isinstance(latest, dict):
+        raise RuntimeError("meeting.json is unreadable; nothing applied.")
+
+    # drop_turns/trim_turns are INDICES into the snapshot's turn list. If the
+    # transcript itself changed underneath us (a recluster, another tidy) those
+    # indices now address different turns, and the ops we just applied describe
+    # a transcript that no longer exists. Refuse rather than corrupt it.
+    if (latest.get("turns") or []) != turns:
+        raise RuntimeError(
+            "The transcript changed while it was being tidied; nothing applied. "
+            "Please try again.")
+
+    # Display names are only half ours. A label whose on-disk name still matches
+    # the snapshot was not touched while we ran, so our value stands (including
+    # a rename this run inferred). A label whose name CHANGED was renamed by the
+    # user mid-run, and a human typing a name beats a model guessing one — keep
+    # theirs. (A label merged away takes its name with it — unavoidable.)
+    live_names = latest.get("speakers") or {}
+    for label in new_speakers:
+        live = live_names.get(label)
+        if live is not None and live != speakers.get(label):
+            new_speakers[label] = live
+
     backup = meeting_dir / "meeting.pretidy.json"
     if not backup.exists():
-        backup.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+        # Back up what is on disk now, not the stale snapshot, so Undo restores
+        # the user's current title/names along with the untidied transcript.
+        _atomic_write_json(backup, latest)
 
-    meta["turns"] = new_turns
-    meta["speakers"] = new_speakers
-    meta["stats"] = stats_mod.compute(new_turns, new_speakers, meta.get("duration") or 0.0)
-    meta["tidied"] = summary
-    meta["status"] = "done"
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    latest["turns"] = new_turns
+    latest["speakers"] = new_speakers
+    latest["stats"] = stats_mod.compute(new_turns, new_speakers, latest.get("duration") or 0.0)
+    latest["tidied"] = summary
+    latest["status"] = "done"
+    try:
+        _atomic_write_json(meta_path, latest)
+    except OSError as exc:  # e.g. the meeting was deleted while tidying
+        raise RuntimeError(f"Could not save the clean-up: {exc}") from exc
     log.info("tidied %s: %s", meeting_dir.name, summary)
     return summary
