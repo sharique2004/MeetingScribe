@@ -92,13 +92,18 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-# Icon: drawn procedurally by tools/make_icon.py (needs numpy — available in
-# the build machine's venv). Ships pre-built inside the bundle.
-if [ -x "$VENV_PY" ] && "$VENV_PY" "$PROJECT/tools/make_icon.py" \
+# Icon: prefer the committed app icon (tools/appicon/MeetingScribe.icns,
+# rendered from the Icon Composer source tools/appicon/MeetingScribe.icon by
+# tools/appicon/render_icon.py). Fall back to the procedural tools/make_icon.py
+# only if that committed icns is missing.
+if [ -f "$PROJECT/tools/appicon/MeetingScribe.icns" ]; then
+    cp "$PROJECT/tools/appicon/MeetingScribe.icns" "$DEST/Contents/Resources/$APP_NAME.icns"
+    echo "installed the app icon (tools/appicon/MeetingScribe.icns)"
+elif [ -x "$VENV_PY" ] && "$VENV_PY" "$PROJECT/tools/make_icon.py" \
         "$DEST/Contents/Resources/$APP_NAME.icns" 2>/dev/null; then
-    echo "wrote the app icon"
+    echo "wrote the app icon (procedural fallback)"
 else
-    echo "(icon skipped — venv python or numpy unavailable)"
+    echo "(icon skipped — no committed icns and venv python/numpy unavailable)"
 fi
 
 # Ad-hoc signature: enough to run locally and to post notifications. A
