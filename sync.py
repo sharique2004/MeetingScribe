@@ -2,8 +2,49 @@
 
 A meeting is uploaded to the user's own InsForge row (RLS: owner-only)
 only after they toggle "View on phone" on that meeting. The row carries
-title, times, speakers, turns (speaker/start/end/text) and the summary —
-the WAVs never leave the Mac. Toggling off deletes the row.
+title, times, speakers, turns (speaker/start/end/text), the speaking
+stats and the summary — the WAVs never leave the Mac. Toggling off
+deletes the row.
+
+WHAT THIS DOES AND DOES NOT DO WITH THE USER'S PRIVATE WRITING
+--------------------------------------------------------------
+Read this before changing _payload, and do not shorten it into a promise
+it does not keep.
+
+NOT UPLOADED, and structurally so: meta["notes"] (what the user typed on a
+private panel during the meeting) and meta["cues"] (points they wrote for
+themselves before it). _payload builds the row from a fixed list of keys,
+so those arrays are absent by construction rather than by being stripped,
+and no note or cue reaches the row IN THE USER'S OWN WORDS — verified by
+the key list below and by SUMMARY_UPLOAD_KEYS.
+
+BUT THEIR SUBSTANCE DOES TRAVEL, inside the summary, BY DESIGN. This is
+the part an earlier version of this docstring got wrong, and it is the
+part that matters. summarize.py's NOTES_GUIDANCE instructs the model, in
+so many words, that a task/decision/name/deadline the user wrote down
+"MUST survive into the summary even when nobody said it out loud", and
+that "EVERY uncovered cue must appear in the summary — in open_questions
+if it is a question, in follow_ups if it is something to do". So for a
+meeting with notes, the uploaded summary is expected to contain what the
+user privately wrote, restated by the summarizer:
+
+    note  "I said I'd send the revised deck by Friday"
+      ->  action_items: [{"owner": "You", "task": "Send the revised deck",
+                          "due": "Friday"}]          <- uploaded
+    cue   "ask why the last hire left"
+      ->  open_questions: ["Why did the last hire leave?"]  <- uploaded
+
+That is not a leak to be patched — it IS the summary the user asked for,
+and stripping it would mean shipping the phone a summary that omits the
+commitments its owner cared enough to type. The honest statement of the
+boundary is therefore:
+
+    nothing the user typed leaves this Mac verbatim;
+    what the summarizer made of it does, because that is the summary.
+
+Anyone who wants the phone copy to be free of note-derived content wants
+a different summary, not a different filter here — that is a product
+decision, not something _payload can do without deleting content.
 
 Edits made after syncing (summary, tidy, renames, recluster) re-push
 automatically via push_if_synced(). Failures land in an offline queue
@@ -30,6 +71,75 @@ class SyncError(RuntimeError):
     pass
 
 
+# The summary keys that go on the wire. An ALLOWLIST, not a blocklist, and
+# that direction is the whole point: summarize.py owns meta["summary"] and can
+# grow a key at any time, and a blocklist would upload each new one by default
+# and only stop once somebody noticed. "unaddressed_cues" is what that hazard
+# looks like: a key added to the summary purely to draw tick marks on the Mac,
+# which a blocklist keeps off the wire only for as long as someone remembers it
+# is there. Listed here means somebody chose to publish it; anything unlisted
+# stays on this Mac until they do.
+#
+# This is today's summary shape exactly (summarize._coerce's fields, plus
+# "engine" and "notes_omitted"), so it uploads byte-for-byte what it uploaded
+# before, minus the one key below.
+SUMMARY_UPLOAD_KEYS = (
+    # summarize._coerce's fields, in the order it writes them...
+    "headline", "tldr", "key_points", "decisions", "action_items",
+    "follow_ups", "open_questions", "follow_up_email",
+    # ...then the two the engines add afterwards.
+    "engine",
+    # A count of the notes that did not fit the summary prompt — a number, no
+    # note text. It travels because a caveat about how a summary was built is
+    # worth least where the summary is not; see summarize._mark_notes_omitted.
+    "notes_omitted",
+)
+
+# Withheld on purpose, and already known about — so no warning is logged for
+# it. summarize.py stores "unaddressed_cues" as the VERBATIM text of the points
+# the user prepared and never got to raise ("push back on their pricing"). Cues
+# are written before the meeting, for the user's own eyes, and were never said
+# out loud to anybody; the field exists only to draw tick marks in the Mac
+# review UI (templates/index.html matches it against meta["cues"]) and no phone
+# client reads it. Excluding it keeps the user's own words off the wire and
+# changes nothing anyone can see. Default-exclude, no toggle — a switch that
+# offers to publish private text in exchange for nothing is not a choice worth
+# putting in front of someone.
+#
+# NOTE what this does NOT claim: the same cue, in the summarizer's words, is
+# still expected in open_questions and is still uploaded. See the module
+# docstring — this closes the verbatim channel, not the summary.
+SUMMARY_LOCAL_ONLY = ("unaddressed_cues",)
+
+
+def _summary_for_upload(summary):
+    """The summary reduced to the keys that may leave the Mac.
+
+    A copy, never an edit: the caller's meta is the live meeting dict, and
+    dropping a key from it here would delete the cue verdict from meeting.json
+    the next time anything wrote that dict back.
+
+    A key that is neither uploaded nor on the known-withheld list is a key
+    summarize.py grew since this list was written. Withholding it is the safe
+    default, but doing that silently is how a stale allowlist quietly stops
+    syncing something the phone needs — so it is logged, once per push, with
+    the name to add here if it should travel.
+
+    Filtered in the SUMMARY's key order, not the allowlist's, so the row a
+    given summary produces is byte-for-byte what it was before this filter
+    existed, less the withheld keys.
+    """
+    if not isinstance(summary, dict):
+        return summary
+    unknown = [k for k in summary
+               if k not in SUMMARY_UPLOAD_KEYS and k not in SUMMARY_LOCAL_ONLY]
+    if unknown:
+        log.warning("summary key(s) %s are not in SUMMARY_UPLOAD_KEYS and were "
+                    "kept on this Mac — add them there if the phone should see "
+                    "them", ", ".join(sorted(unknown)))
+    return {k: v for k, v in summary.items() if k in SUMMARY_UPLOAD_KEYS}
+
+
 def _payload(meta):
     turns = [
         {
@@ -48,7 +158,7 @@ def _payload(meta):
         "mode": meta.get("mode"),
         "speakers": meta.get("speakers") or {},
         "turns": turns,
-        "summary": meta.get("summary"),
+        "summary": _summary_for_upload(meta.get("summary")),
         "stats": meta.get("stats"),
     }
     return row

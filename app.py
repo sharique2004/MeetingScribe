@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import webbrowser
 from datetime import datetime
@@ -22,6 +23,7 @@ import ask
 import insforge_client
 import live_captions
 import local_llm
+import notes as notes_store
 import pipeline
 import summarize
 import sync
@@ -53,6 +55,19 @@ RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across reque
 JOB_LOCK = threading.Lock()  # makes "check job state then register" atomic
 SYNC_ALL = {}  # progress of a "sync all to phone" run
 LIVE = None  # live_captions.LiveSession for the current/last recording
+# The recording that stopped most recently: {"id": str, "at": monotonic float}.
+# A note the panel was still holding when the user pressed Stop has to land in
+# the meeting they were in, and by the time it arrives the recorder is idle and
+# no longer knows which one that was. Replaced wholesale, never mutated, so a
+# reader without RECORD_LOCK sees one consistent dict or the other.
+LAST_RECORDING = None
+# How long after a stop a note with no meeting_id is still filed under that
+# meeting. Long enough for the panel to flush a field the user was typing in
+# (and to retry a failed send); short enough that a note typed into a stale
+# panel much later is refused and left with the user rather than filed under a
+# meeting they have stopped thinking about. A client that knows the id sends it
+# and is not subject to this at all — see record_note.
+NOTE_GRACE_SECONDS = 600
 
 # One wording for "a recluster owns this meeting right now", used by every
 # route that has to stand aside for one. It was copied out five times and a
@@ -196,7 +211,17 @@ def _read_meeting(meeting_id):
     path = _meeting_dir(meeting_id) / "meeting.json"
     if not path.exists():
         abort(404, "meeting not found")
-    return json.loads(path.read_text(encoding="utf-8"))
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    # Notes live in their own append-only file while a meeting runs and are
+    # copied into meeting.json at stop. Anything that stops the app before that
+    # — a crash, a force-quit, /api/shutdown's os._exit — leaves them on disk
+    # and in no document, and a note that exists but is nowhere visible is the
+    # same as a lost one to the person who typed it. Union them in on every
+    # read, so no reader of a meeting can miss one however it was interrupted.
+    # In memory only: writing them back is _persist_notes, which the paths that
+    # may write meeting.json call explicitly.
+    notes_store.fold(_dir_for(meeting_id), meta)
+    return meta
 
 
 def _write_meeting(meta):
@@ -219,9 +244,13 @@ def _write_meeting(meta):
                                 json.dumps(meta, ensure_ascii=False, indent=1))
 
 
-def _read_meeting_safe(meeting_id):
-    """Like _read_meeting but returns None instead of aborting (for
-    background threads, where a Flask abort would be meaningless)."""
+def _raw_meeting(meeting_id):
+    """meeting.json exactly as it is on disk — nothing folded in, no abort.
+
+    The read behind a read-modify-write. _read_meeting and _read_meeting_safe
+    both merge the notes file into what they return, which is right for a
+    reader but wrong for a writer that wants to know what is actually stored.
+    """
     try:
         path = _dir_for(meeting_id) / "meeting.json"
         if not path.exists():
@@ -229,6 +258,63 @@ def _read_meeting_safe(meeting_id):
         return json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return None
+
+
+def _read_meeting_safe(meeting_id):
+    """Like _read_meeting but returns None instead of aborting (for
+    background threads, where a Flask abort would be meaningless)."""
+    meta = _raw_meeting(meeting_id)
+    if meta is not None:
+        notes_store.fold(_dir_for(meeting_id), meta)  # see _read_meeting
+    return meta
+
+
+def _persist_notes(meeting_id):
+    """Copy any notes.jsonl entries missing from meeting.json into it.
+
+    -> True if it wrote. Cheap and idempotent: notes.fold() reports whether the
+    document would actually change, and nothing is written when it would not.
+
+    Called from the paths where a note could otherwise stay invisible: opening a
+    meeting, starting a reprocess, startup after a crash, and a note that
+    arrives once the recording it belongs to has already stopped. Readers do not
+    depend on it — every read folds the notes in anyway — it is what makes the
+    stored document match, so the summary, the export and the phone copy (which
+    read meeting.json directly, not through here) see them too.
+
+    Stands aside while a background job owns the meeting. process, tidy,
+    recluster and summarize all publish meeting.json from a snapshot plus the
+    keys they own; a write squeezed in between one of those reads and its
+    os.replace is simply dropped, and could equally drop the job's result if the
+    ordering fell the other way. Nothing is lost by waiting — notes.jsonl still
+    holds the note, and the next read of the meeting folds it in. The claim is
+    checked under JOB_LOCK for the same reason _edit_meeting_json holds it: the
+    check and the write have to be one step, or a job claiming itself in the gap
+    puts us right back in the race.
+
+    THE INVARIANT THIS DEPENDS ON, stated once here because it is easy to break
+    from the other side: JOB_LOCK is held across the WHOLE read-modify-write of
+    meeting.json, by every route that does one. Standing aside for a claimed job
+    is not enough on its own — a route that reads, mutates and writes without the
+    lock and without a claim (record_stop was exactly that: it published the
+    duration, the tracks and status="processing") races this function directly,
+    and the loser's changes are silently overwritten by the winner's stale
+    snapshot. record_stop, reprocess, tidy, tidy/undo and _edit_meeting_json all
+    hold it now. A new writer of this file must too.
+    """
+    with JOB_LOCK:
+        for jobs in (JOBS, RECLUSTER_JOBS, SUMMARY_JOBS):
+            if jobs.get(meeting_id, {}).get("state") == "processing":
+                return False
+        meta = _raw_meeting(meeting_id)
+        if meta is None or not notes_store.fold(_dir_for(meeting_id), meta):
+            return False
+        try:
+            _write_meeting(meta)
+        except OSError as exc:  # read-only disk, meeting deleted mid-call…
+            app.logger.warning("could not save notes into %s: %s", meeting_id, exc)
+            return False
+    return True
 
 
 def _push_synced(meeting_id):
@@ -525,29 +611,300 @@ def _do_record_start(data):
             "start": event["start"],
             "names": event.get("names") or [],
         }
+    # Freeze the pre-meeting cues into this meeting and stamp them onto `meta`,
+    # so the single _write_meeting below carries them — a second write here
+    # would race the folder's other writers for nothing.
+    notes_store.begin_meeting(meeting_dir, meta)
     _write_meeting(meta)
     return jsonify(meta)
 
 
 @app.post("/api/record/stop")
 def record_stop():
+    global LAST_RECORDING
     with RECORD_LOCK:
         if not REC.is_recording:
             return jsonify({"error": "Not recording"}), 409
         meeting_id = REC.meeting_id
         result = REC.stop()
+        # Remember which meeting just ended BEFORE anything can fail below: a
+        # note still sitting in the panel's field is posted in the moments after
+        # this, when the recorder is idle and no longer knows the id. Set inside
+        # the lock so it cannot be overwritten by a start that follows.
+        LAST_RECORDING = {"id": meeting_id, "at": time.monotonic()}
         if LIVE is not None:
             LIVE.stop()  # helpers finalize; captions stay readable meanwhile
-    meta = _read_meeting(meeting_id)
-    for key, tr in result["tracks"].items():
-        meta["tracks"].setdefault(key, {}).update(tr)
-    meta["duration"] = result["duration"]
-    meta["warnings"] = meta.get("warnings", []) + result["warnings"]
-    meta["status"] = "processing"
-    _sync_folder_name(meta)  # folder picks up the title now the WAVs are closed
-    _write_meeting(meta)
-    _start_processing(meeting_id)
+    # Everything that touches meeting.json happens under JOB_LOCK, which is the
+    # lock this app serialises read-modify-writes of that file on (see
+    # _persist_notes and _edit_meeting_json). It has to be, because a note
+    # arriving right now is the single most likely thing to collide with this:
+    # the panel flushes the field the user was typing in the instant they press
+    # Stop, and _persist_notes then does its own read-modify-write of the same
+    # document. Unsynchronised, whichever of the two read first and wrote last
+    # published a snapshot missing the other's changes — and _persist_notes
+    # winning meant reverting status back to "recording" and dropping the
+    # duration and track results this route had just written, leaving a meeting
+    # that never processes and shows as still recording. Holding the lock across
+    # read → mutate → write makes one of them simply happen after the other, and
+    # the loser re-reads instead of overwriting.
+    #
+    # The claim on JOBS goes in the same block for the same reason: registered
+    # outside it, there is a gap between this write and _start_processing during
+    # which _persist_notes sees no job, and the race is back.
+    with JOB_LOCK:
+        meta = _read_meeting(meeting_id)  # fresh read, inside the lock
+        for key, tr in result["tracks"].items():
+            meta["tracks"].setdefault(key, {}).update(tr)
+        meta["duration"] = result["duration"]
+        meta["warnings"] = meta.get("warnings", []) + result["warnings"]
+        meta["status"] = "processing"
+        # Fold the live notes (and the cues this meeting froze) into the meeting
+        # so the review UI and the summary see them. notes.jsonl stays
+        # authoritative; this rides along on the write that was happening anyway.
+        notes_store.attach(_dir_for(meeting_id), meta)
+        # Before the claim below: _sync_folder_name stands aside for a job that
+        # owns the meeting, and claiming first would defer the rename it can do
+        # safely right now (the WAVs are closed and nothing else holds the path).
+        _sync_folder_name(meta)
+        _write_meeting(meta)
+        JOBS[meeting_id] = {"state": "processing", "message": "Loading model…"}
+    _start_processing(meeting_id, claimed=True)
     return jsonify(meta)
+
+
+@app.get("/api/record/status")
+def record_status():
+    """The recorder alone — what the floating HUD polls for the timer, the
+    waveform and speech-wake.
+
+    /api/status already carries this under "recorder", but it also walks JOBS,
+    SUMMARY_JOBS and RECLUSTER_JOBS behind JOB_LOCK. The HUD polls a few times
+    a second for the whole of a meeting and wants none of that, so this serves
+    the recorder snapshot on its own and leaves /api/status untouched for the
+    web UI.
+
+    "elapsed" and "levels" are always present, even idle: REC.status() returns
+    a bare {"recording": False} with no tracks, and a client that decodes into
+    a fixed shape would fail on the missing keys rather than simply draw a
+    stopped timer.
+    """
+    st = REC.status()
+    st.setdefault("elapsed", 0.0)
+    levels = st.setdefault("levels", {})
+    levels.setdefault("mic", 0.0)
+    levels.setdefault("system", 0.0)
+    return jsonify(st)
+
+
+# ------------------------------------------------------------ notes & cues ----
+# The floating note panel writes here while a meeting runs, and the cue list is
+# edited before one. Storage lives in notes.py; these routes only validate.
+
+def _recently_stopped():
+    """The meeting that stopped within the grace window, or None."""
+    last = LAST_RECORDING  # one read of the whole dict — see the global
+    if not last or time.monotonic() - last["at"] > NOTE_GRACE_SECONDS:
+        return None
+    return last["id"]
+
+
+@app.post("/api/record/note")
+def record_note():
+    """Append one timestamped note to a meeting.
+
+    THE CONTRACT (the note panel is the only client)
+    ------------------------------------------------
+    POST body: {"text": str, "t": float|null, "meeting_id": str|null}
+
+      meeting_id  The meeting the note belongs to, and the ONLY thing that
+                  decides where it is filed when it is present. The note goes
+                  there whatever the recorder is doing now — recording,
+                  stopping, processing, or finished long ago — with no time
+                  limit. A panel MUST send it: it knows the id it was recording
+                  under, and by the time a note flushed at Stop lands here the
+                  recorder is idle and no longer does.
+
+                  The id is never second-guessed against the live recording,
+                  and in particular a note whose meeting_id names a meeting
+                  OTHER than the one recording right now is filed under the id
+                  it names, not the live one. That is the whole point: the two
+                  disagreeing is the normal case at a handover (the panel
+                  flushes meeting A's last note while B has already started),
+                  and the client is the only party that knows which meeting the
+                  user was looking at when they typed. Overriding it with the
+                  live id is precisely how a note lands on the wrong meeting.
+
+                  An id we cannot honour is REFUSED, never redirected: a
+                  malformed one is 400 and an unknown one is 404. Nothing is
+                  written on either path, so the client still holds the text and
+                  can retry (the panel restores it into the field and drafts it
+                  to disk) — refusing costs a retry, guessing costs the truth
+                  about which meeting the user was in.
+
+                  When ABSENT (a legacy client): the active recording, or — if
+                  nothing is recording — the one that stopped in the last
+                  NOTE_GRACE_SECONDS, so a note posted in the moments around
+                  Stop still lands in the meeting the user was in and not in the
+                  next one they start. Outside that window there is no meeting
+                  we can honestly attribute it to, so it is refused with 409
+                  rather than filed somewhere plausible.
+      t           Seconds into the meeting, or null/absent. The panel timestamps
+                  its own notes (it knows when the user hit Return, not when the
+                  request arrived). Anything notes.seconds() cannot vouch for —
+                  absent, null, a string, NaN, an epoch stamp — falls back to
+                  the recorder's elapsed while that meeting is live, otherwise
+                  to the finished meeting's duration, which puts a note typed at
+                  the end at the end. If that is unavailable too, the note is
+                  stored UNTIMED (t: null), which is NOT the same as t: 0 —
+                  see the "t" contract in notes.py.
+
+    200 {"ok": true, "count": N, "meeting_id": id, "t": float|null,
+         "recording": bool, "committed": bool}
+        count      notes this meeting now has, the appended one included.
+        t          the offset actually stored, null if untimed. Echoed so the
+                   client can render its own copy the way the review UI will.
+        recording  this meeting is the one recording right now. False tells a
+                   panel its note was filed into a meeting that has ended —
+                   correct, and worth knowing.
+        committed  the note is in meeting.json as well as notes.jsonl. False
+                   while the meeting is still recording (stop folds them in) or
+                   if a background job owned the file just then — the note is
+                   durably stored either way and the next read folds it in.
+    400 {"error": "Empty note"} — nothing but whitespace.
+    400 {"error": "bad meeting id"} — malformed meeting_id.
+    404 {"error": "meeting not found"} — no such meeting folder.
+    409 {"error": "Not recording"} — no meeting_id, nothing recording and
+        nothing recently stopped. The note was not stored: the client must keep
+        the text (the panel leaves it in the field and drafts it to disk).
+    413 {"error": …, "limit": N, "length": M} — longer than notes.MAX_NOTE_CHARS.
+        NOTHING was stored. This route used to answer 200 {"ok": true} here and
+        quietly file the first 2000 characters, so a pasted note came back
+        shorter than it went in with nothing anywhere saying so. The limit is now
+        far above anything a person types and the answer is honest either way:
+        a note that fits is stored to the last character, and one that does not
+        is refused with the numbers, leaving the full text where the client can
+        still act on it.
+    500 {"error": "Could not save the note"} — the append failed.
+
+    Every response is JSON, including the failures: the panel decodes the body
+    to show why, and an escaping exception would hand it Flask's HTML error page
+    to parse instead.
+
+    NOTHING HERE EVER ANSWERS "SAVED" FOR TEXT IT DID NOT STORE IN FULL, and no
+    failure path throws the text away on the client's behalf: every non-200 is a
+    refusal that wrote nothing, which is what makes "keep it and retry" a
+    correct response to all of them.
+
+    Claims nothing and locks nothing on the recording path. The panel calls this
+    while the audio threads run, so it must not queue behind RECORD_LOCK (held
+    across the whole of REC.start, which opens device streams). The note append
+    itself never touches meeting.json; only the after-the-stop case does, and by
+    then there is no recording left to disturb.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "Empty note"}), 400
+
+    meeting_id = str(data.get("meeting_id") or "").strip() or None
+    if meeting_id and not MEETING_ID_RE.match(meeting_id):
+        return jsonify({"error": "bad meeting id"}), 400
+
+    # Read the recorder once: is_recording and meeting_id are two attributes,
+    # and a stop landing between them would file the note under None.
+    rec = REC.status()
+    live_id = rec.get("meeting_id") if rec.get("recording") else None
+    if meeting_id is None:
+        meeting_id = live_id or _recently_stopped()
+        if meeting_id is None:
+            return jsonify({"error": "Not recording"}), 409
+
+    meeting_dir = _dir_for(meeting_id)
+    if not meeting_dir.exists():
+        return jsonify({"error": "meeting not found"}), 404
+    recording_now = meeting_id == live_id
+
+    # notes.seconds() is the one judge of what counts as a usable offset, so the
+    # server, the review UI and the summarizer all agree on which notes have a
+    # place on the timeline. It returns None for anything it cannot vouch for;
+    # each fallback below is tried in turn and the note is stored UNTIMED if
+    # none of them produce a real one. Never 0.0 as a stand-in for "unknown" —
+    # that would put the note against the first words of the meeting.
+    t = notes_store.seconds(data.get("t"))
+    if t is None and recording_now:
+        t = notes_store.seconds(rec.get("elapsed"))
+    if t is None and not recording_now:
+        t = notes_store.seconds((_raw_meeting(meeting_id) or {}).get("duration"))
+
+    try:
+        count = notes_store.append_note(meeting_dir, text, t)
+    except notes_store.NoteTooLong as exc:
+        # Refused, not trimmed — the client still has every character. Say the
+        # numbers so it can tell the user exactly how much to cut.
+        return jsonify({"error": f"This note is {exc.length:,} characters — the "
+                                 f"limit is {exc.limit:,}. It has NOT been saved; "
+                                 "shorten it and try again.",
+                        "limit": exc.limit, "length": exc.length}), 413
+    except Exception as exc:
+        # Broad on purpose. Every response this route can produce has to be the
+        # JSON object the panel decodes; an escaping exception would become
+        # Flask's HTML 500 page and the panel would report a parse failure
+        # instead of "could not save", for a note the user just typed.
+        app.logger.warning("could not save note for %s: %s", meeting_id, exc)
+        return jsonify({"error": "Could not save the note"}), 500
+
+    # The note is durable now. Getting it into meeting.json as well is what
+    # makes it visible, and for a meeting that has already stopped nothing else
+    # will: attach() ran at stop, before this note existed. Best effort — a
+    # failure here costs visibility until the next read, never the note.
+    committed = False
+    if not recording_now:
+        try:
+            committed = _persist_notes(meeting_id)
+        except Exception as exc:  # noqa: BLE001 — the note is already saved
+            app.logger.warning("could not fold note into %s: %s", meeting_id, exc)
+    return jsonify({"ok": True, "count": count, "meeting_id": meeting_id,
+                    "t": t, "recording": recording_now, "committed": committed})
+
+
+@app.get("/api/cues")
+def cues_get():
+    return jsonify({"cues": notes_store.read_cues()})
+
+
+@app.put("/api/cues")
+def cues_put():
+    """Replace the pre-meeting cue list. Persists between meetings; a recording
+    that starts later takes its own frozen copy, so editing this never rewrites
+    a meeting that already happened."""
+    data = request.get_json(force=True, silent=True) or {}
+    cues = data.get("cues")
+    if not isinstance(cues, list):
+        return jsonify({"error": "cues must be a list"}), 400
+    try:
+        notes_store.write_cues(cues)
+    except Exception as exc:  # never an HTML 500 — the panel parses JSON only
+        app.logger.warning("could not save cues: %s", exc)
+        return jsonify({"error": "Could not save the cues"}), 500
+    return jsonify({"ok": True})
+
+
+@app.get("/api/meetings/<meeting_id>/notes")
+def meeting_notes(meeting_id):
+    """Notes and cues for one meeting, read live from the meeting folder.
+
+    Serves the review UI, and stays correct for a meeting that is recording
+    right now — meeting.json only picks the notes up at stop.
+    """
+    # Validated here rather than through _meeting_dir(), whose abort(400) would
+    # render Flask's HTML error page — this endpoint answers JSON or nothing.
+    if not MEETING_ID_RE.match(meeting_id):
+        return jsonify({"error": "bad meeting id"}), 400
+    meeting_dir = _dir_for(meeting_id)
+    if not meeting_dir.exists():
+        return jsonify({"error": "meeting not found"}), 404
+    return jsonify({"notes": notes_store.read_notes(meeting_dir),
+                    "cues": notes_store.read_meeting_cues(meeting_dir)})
 
 
 # -------------------------------------------------------- account & sync ----
@@ -765,7 +1122,13 @@ def meetings():
 
 @app.get("/api/meetings/<meeting_id>")
 def meeting_detail(meeting_id):
-    return jsonify(_read_meeting(meeting_id))
+    meta = _read_meeting(meeting_id)  # notes folded in for this response
+    # …and written back, so the readers that do not come through here — the
+    # summary, the export, the phone push — see them too. This is the path a
+    # meeting killed mid-recording is repaired on: the user opens it, and the
+    # notes it never got to fold in at stop become part of the document.
+    _persist_notes(meeting_id)
+    return jsonify(meta)
 
 
 @app.delete("/api/meetings/<meeting_id>")
@@ -897,8 +1260,21 @@ def reprocess(meeting_id):
                                   (RECLUSTER_JOBS, RECLUSTER_BUSY)])
     if denied:
         return jsonify(denied[0]), denied[1]
-    meta["status"] = "processing"
-    _write_meeting(meta)
+    # Re-read under JOB_LOCK rather than writing back the `meta` from above: the
+    # claim was taken after that read, so a note could have landed in between
+    # and this write would revert it out of meeting.json (it would survive in
+    # notes.jsonl, but "durable" is not the same as "visible"). Same lock, same
+    # reason, as record_stop — every read-modify-write of this file is ordered
+    # by JOB_LOCK or it is racing _persist_notes.
+    with JOB_LOCK:
+        # _read_meeting folds in any notes the meeting.json on disk was missing
+        # — a crashed recording's, typically, and Reprocess is exactly what the
+        # user presses on one of those. This write is the one that stores them.
+        # From here they are safe: "notes" is not a key the pipeline run claims,
+        # so it carries them over from disk when it publishes.
+        meta = _read_meeting(meeting_id)
+        meta["status"] = "processing"
+        _write_meeting(meta)
     _start_processing(meeting_id, claimed=True)
     return jsonify({"ok": True})
 
@@ -984,8 +1360,10 @@ def tidy_meeting(meeting_id):
                                   (RECLUSTER_JOBS, RECLUSTER_BUSY)])
     if denied:
         return jsonify(denied[0]), denied[1]
-    meta["status"] = "processing"
-    _write_meeting(meta)
+    with JOB_LOCK:  # re-read inside the lock — see reprocess() for why
+        meta = _read_meeting(meeting_id)
+        meta["status"] = "processing"
+        _write_meeting(meta)
 
     def run():
         try:
@@ -1022,7 +1400,18 @@ def tidy_undo(meeting_id):
     if RECLUSTER_JOBS.get(meeting_id, {}).get("state") == "processing":
         return jsonify({"error": RECLUSTER_BUSY}), 409
     meta = json.loads(backup.read_text(encoding="utf-8"))
-    _write_meeting(meta)
+    # The backup is a snapshot from before the tidy, and this publishes it
+    # WHOLE — so a note taken after that snapshot would be reverted out of
+    # meeting.json by an undo of something unrelated to it. Union the notes back
+    # in first. Undo is about the transcript; it was never meant to un-write
+    # what the user typed.
+    #
+    # Under JOB_LOCK because the fold and the write have to be one step: a note
+    # committed by _persist_notes in between is in neither the backup nor this
+    # fold, and the write would drop it straight back out of the document.
+    with JOB_LOCK:
+        notes_store.fold(_meeting_dir(meeting_id), meta)
+        _write_meeting(meta)
     _write_transcript_md(meta)
     backup.unlink()
     _push_synced(meeting_id)
@@ -1565,13 +1954,42 @@ def export(meeting_id):
 # ------------------------------------------------------------------- main ----
 
 def _recover_interrupted():
-    """Mark meetings left mid-flight by a previous crash so the UI offers Reprocess."""
+    """Mark meetings left mid-flight by a previous crash so the UI offers Reprocess.
+
+    And rescue what was typed into them. A recording that ends at a crash never
+    reaches the stop path, so the notes the user took during it are sitting in
+    notes.jsonl having never been folded into the meeting — the one part of that
+    meeting that cannot be recreated from the audio, invisible in the only
+    document anything reads. attach() folds in both those and the cues the
+    meeting froze at start; it is a union, so a meeting that did manage part of
+    the fold keeps what it had.
+    """
     for item in _list_meetings():
         if item["status"] in ("recording", "processing"):
             meta = _read_meeting(item["id"])
             meta["status"] = "error"
             meta["error"] = "Interrupted — press Reprocess to transcribe the saved audio."
+            notes_store.attach(_dir_for(item["id"]), meta)
             _write_meeting(meta)
+
+
+def _backfill_notes():
+    """Fold notes.jsonl into meeting.json wherever the two disagree.
+
+    The startup sweep behind "a note that reached the disk always surfaces".
+    _recover_interrupted covers the meeting a crash caught mid-flight; this
+    covers every other way the two files can come apart — a note that arrived
+    while the stop write was in flight, a meeting.json restored from an older
+    copy, a folder carried over from a build that stored notes and nothing else.
+
+    Writes only where something is genuinely missing (see _persist_notes), so
+    the usual cost is one small read per meeting and no writes at all.
+    """
+    for item in _list_meetings():
+        try:
+            _persist_notes(item["id"])
+        except Exception:  # noqa: BLE001 — never block startup on one meeting
+            pass
 
 
 def _backfill_transcripts():
@@ -1610,6 +2028,7 @@ if __name__ == "__main__":
     except Exception as _exc:  # never block startup on this
         app.logger.warning("installing pre-built helpers failed: %s", _exc)
     _recover_interrupted()
+    _backfill_notes()
     _backfill_transcripts()
     _backfill_folder_names()
     if macos_audio is not None:
