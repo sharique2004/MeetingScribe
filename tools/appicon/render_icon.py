@@ -1,3 +1,10 @@
+"""Render tools/appicon/MeetingScribe.icns from the Icon Composer source.
+
+Renders the DARK appearance defined in MeetingScribe.icon/icon.json (charcoal
+gradient + solid-aqua glyph) as a static icns. Regenerate with:
+  python tools/appicon/render_icon.py   (writes master_dark_1024.png; then
+  sips/iconutil produce the icns as in tools/build_mac_app.sh history)
+"""
 import struct, zlib, numpy as np
 def decode_png(path):
     d=open(path,'rb').read(); i=8; idat=b''; W=H=ct=None
@@ -35,27 +42,26 @@ def bilinear(img,nw,nh):
     Ia=img[y0][:,x0]; Ib=img[y0][:,x1]; Ic=img[y1][:,x0]; Id=img[y1][:,x1]
     return (Ia*(1-wx)*(1-wy)+Ib*wx*(1-wy)+Ic*(1-wx)*wy+Id*wx*wy)
 
+
+
 S=1024; canvas=np.zeros((S,S,4))
-# squircle superellipse mask, 880 content centered
 half=440.0; n=5.0; yy,xx=np.mgrid[0:S,0:S].astype(float)
 r=(np.abs((xx-511.5)/half)**n+np.abs((yy-511.5)/half)**n)**(1.0/n)
-mask=np.clip((1.0-r)*half*0.5,0,1)  # soft AA edge
-# aqua gradient (P3 values used as sRGB approx)
-top=np.array([27,192,152.]); bot=np.array([35,255,203.])
+mask=np.clip((1.0-r)*half*0.5,0,1)
+# DARK appearance per icon.json: display-p3 0.17035 gray -> extended-gray 0 (black)
+top=np.array([43.,43.,43.]); bot=np.array([0.,0.,0.])
 t=np.clip((yy-(511.5-half))/(2*half),0,1)[:,:,None]
-grad=top*(1-t)+bot*t
-canvas[:,:,:3]=grad; canvas[:,:,3]=mask*255
-# glyph: crop opaque bbox, scale to ~62% width *1.1, center + small nudge
+canvas[:,:,:3]=top*(1-t)+bot*t; canvas[:,:,3]=mask*255
+# glyph: alpha mask filled SOLID AQUA display-p3 (0.10941,0.77258,0.61076) -> ~(28,197,156)
 g=decode_png("glyph.png"); a=g[:,:,3]; ys,xs=np.where(a>10)
 y0,y1,x0,x1=ys.min(),ys.max(),xs.min(),xs.max(); crop=g[y0:y1+1,x0:x1+1]
 gh,gw=crop.shape[:2]
-target_w=int(2*half*0.62*1.1); target_h=int(target_w*gh/gw)
-rg=bilinear(crop,target_w,target_h)
-cx=int(511.5 - 13.6*(S/1024.)); cy=int(511.5 - 13.2*(S/1024.))  # translation (y up)
-ox=cx-target_w//2; oy=cy-target_h//2
+tw=int(2*half*0.62*1.1); th=int(tw*gh/gw)
+rg=bilinear(crop,tw,th)
+aqua=np.array([28.,197.,156.])
 ga=(rg[:,:,3]/255.0)[:,:,None]
-region=canvas[oy:oy+target_h, ox:ox+target_w, :3]
-canvas[oy:oy+target_h, ox:ox+target_w, :3]=rg[:,:,:3]*ga+region*(1-ga)
-# keep canvas alpha = squircle (glyph sits inside)
-write_png("master_1024.png", np.clip(canvas,0,255))
-print("wrote master_1024.png", canvas.shape, "glyph bbox", (y0,y1,x0,x1), "target", (target_w,target_h))
+cx=int(511.5-13.6); cy=int(511.5-13.2); ox=cx-tw//2; oy=cy-th//2
+region=canvas[oy:oy+th, ox:ox+tw, :3]
+canvas[oy:oy+th, ox:ox+tw, :3]=aqua*ga+region*(1-ga)
+write_png("master_dark_1024.png", np.clip(canvas,0,255))
+print("wrote master_dark_1024.png")
