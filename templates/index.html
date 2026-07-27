@@ -4,86 +4,106 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>MeetingScribe</title>
+<!-- Aurora type. Fully progressive: every family below has a system fallback in
+     its CSS stack, so the app is unchanged if these never load. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* MeetingScribe — Mac-native pro-tool: SF type, hairline borders, tight density.
    Theme via html[data-theme="teal"|"graphite"|"indigo"|"ember"|"light"].
    Every palette below defines the SAME token set, so no other rule in this file
    ever needs to know which one is active. The JS mirror of this table (THEMES,
    in the state section) only carries the three colours the swatches paint with. */
+@property --angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
 :root {
-  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Menlo", "JetBrains Mono", monospace;
-  --r-sm: 6px; --r-md: 9px; --r-lg: 13px;
+  /* Aurora skin: display / body / mono deliberately off the AI-convergent
+     Inter/Geist set. Google Fonts, each with a full system fallback so nothing
+     changes if the network is down. */
+  --font-ui: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque", "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Menlo", monospace;
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
   --sidebar-w: 264px;
+  /* Aurora signature tokens, theme-independent. */
+  --aqua: #5eead4; --aqua-2: #7dd3fc; --aqua-ink: #04211c;
+  --v-blue: #3b82f6; --v-blue2: #60a5fa; --v-lav: #a5b4fc; --v-vio: #c4b5fd;
+  --ease-out: cubic-bezier(0.22,1,0.32,1);
+  --ease-in-out: cubic-bezier(0.77,0,0.175,1);
+  --ease-drawer: cubic-bezier(0.32,0.72,0,1);
+  --ease: cubic-bezier(0.4,0,0.2,1);
+  --spring: cubic-bezier(0.34,1.28,0.64,1);
 }
+/* Teal is the Aurora default: night base, glass panels, hairline borders, and
+   the aqua/mint working accent (never AI-textbook purple). */
 html[data-theme="teal"] {
   color-scheme: dark;
-  --bg: #101014; --bg-sidebar: #16161b;
-  --panel: #1b1b21; --panel-2: #212128; --panel-3: #2a2a33;
-  --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.11);
-  --bg-hover: rgba(255,255,255,.055);
-  --text: #f0f0f4; --text-dim: #9a9aa6; --text-faint: #63636e;
-  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
-  --ok: #3fbe89; --warn: #d9a13c; --danger: #e0524d;
-  --mark-bg: rgba(217,161,60,.28);
-  --accent: #35c2dd; --accent-ink: #04262d;
-  --spk-a: #8b8af5; --spk-b: #3fbe89; --spk-c: #e8920f;
-  --avatar-ink: #0b0b12;
+  --bg: #0a0a12; --bg-sidebar: #0b0b14;
+  --panel: rgba(255,255,255,.03); --panel-2: rgba(255,255,255,.055); --panel-3: rgba(255,255,255,.09);
+  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.14);
+  --bg-hover: rgba(255,255,255,.045);
+  --text: #e7e9f2; --text-dim: rgba(231,233,242,.62); --text-faint: rgba(231,233,242,.40);
+  --shadow-pop: 0 18px 48px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #2fbf87; --warn: #e0b341; --danger: #f0616a;
+  --mark-bg: rgba(94,234,212,.22);
+  --accent: #5eead4; --accent-ink: #04211c;
+  --spk-a: #c07af6; --spk-b: #2fbf87; --spk-c: #7dd3fc;
+  --avatar-ink: #04120f;
 }
 html[data-theme="graphite"] {
   color-scheme: dark;
-  --bg: #1c1c1e; --bg-sidebar: #232325;
-  --panel: #2c2c2e; --panel-2: #3a3a3c; --panel-3: #48484a;
-  --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.14);
-  --bg-hover: rgba(255,255,255,.07);
-  --text: #f5f5f7; --text-dim: #98989d; --text-faint: #6c6c70;
-  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
-  --ok: #30d158; --warn: #ff9f0a; --danger: #ff453a;
-  --mark-bg: rgba(255,214,10,.28);
-  --accent: #0a84ff; --accent-ink: #ffffff;
-  --spk-a: #bf5af2; --spk-b: #30d158; --spk-c: #ff9f0a;
-  --avatar-ink: #ffffff;
+  --bg: #0b0d12; --bg-sidebar: #0d0f15;
+  --panel: rgba(255,255,255,.035); --panel-2: rgba(255,255,255,.06); --panel-3: rgba(255,255,255,.10);
+  --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.15);
+  --bg-hover: rgba(255,255,255,.05);
+  --text: #eef1f7; --text-dim: rgba(238,241,247,.62); --text-faint: rgba(238,241,247,.40);
+  --shadow-pop: 0 18px 48px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #2fbf87; --warn: #e0b341; --danger: #f0616a;
+  --mark-bg: rgba(125,211,252,.24);
+  --accent: #7dd3fc; --accent-ink: #04222e;
+  --spk-a: #c07af6; --spk-b: #2fbf87; --spk-c: #5b8cff;
+  --avatar-ink: #04120f;
 }
 html[data-theme="indigo"] {
   color-scheme: dark;
-  --bg: #111120; --bg-sidebar: #16162a;
-  --panel: #1b1b30; --panel-2: #23233c; --panel-3: #2c2c48;
-  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.13);
-  --bg-hover: rgba(255,255,255,.06);
-  --text: #f0f0f8; --text-dim: #9797ad; --text-faint: #66667d;
-  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
-  --ok: #30d158; --warn: #ff9f0a; --danger: #ff453a;
-  --mark-bg: rgba(255,214,10,.26);
-  --accent: #5e5ce6; --accent-ink: #ffffff;
-  --spk-a: #64d2ff; --spk-b: #30d158; --spk-c: #ff9f0a;
-  --avatar-ink: #04202b;
+  --bg: #0c0c1a; --bg-sidebar: #0e0e20;
+  --panel: rgba(255,255,255,.035); --panel-2: rgba(255,255,255,.06); --panel-3: rgba(255,255,255,.10);
+  --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.15);
+  --bg-hover: rgba(255,255,255,.05);
+  --text: #ecedfa; --text-dim: rgba(236,237,250,.62); --text-faint: rgba(236,237,250,.40);
+  --shadow-pop: 0 18px 48px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #2fbf87; --warn: #e0b341; --danger: #f0616a;
+  --mark-bg: rgba(165,180,252,.26);
+  --accent: #a5b4fc; --accent-ink: #0b1030;
+  --spk-a: #7dd3fc; --spk-b: #2fbf87; --spk-c: #c07af6;
+  --avatar-ink: #0b1030;
 }
 html[data-theme="ember"] {
   color-scheme: dark;
-  --bg: #17161a; --bg-sidebar: #1d1c21;
-  --panel: #232127; --panel-2: #2b2930; --panel-3: #35323b;
-  --border: rgba(255,255,255,.08); --border-strong: rgba(255,255,255,.13);
-  --bg-hover: rgba(255,255,255,.06);
-  --text: #f4f2f0; --text-dim: #a09b9c; --text-faint: #6f6a6d;
-  --shadow-pop: 0 8px 28px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
-  --ok: #30d158; --warn: #ffd60a; --danger: #ff453a;
-  --mark-bg: rgba(255,214,10,.26);
-  --accent: #ff9f0a; --accent-ink: #2a1600;
-  --spk-a: #64d2ff; --spk-b: #30d158; --spk-c: #bf5af2;
-  --avatar-ink: #04202b;
+  --bg: #12100c; --bg-sidebar: #14110d;
+  --panel: rgba(255,255,255,.035); --panel-2: rgba(255,255,255,.06); --panel-3: rgba(255,255,255,.10);
+  --border: rgba(255,255,255,.09); --border-strong: rgba(255,255,255,.15);
+  --bg-hover: rgba(255,255,255,.05);
+  --text: #f4f0ea; --text-dim: rgba(244,240,234,.62); --text-faint: rgba(244,240,234,.40);
+  --shadow-pop: 0 18px 48px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06);
+  --ok: #2fbf87; --warn: #f0b441; --danger: #f0616a;
+  --mark-bg: rgba(246,165,79,.26);
+  --accent: #f6a54f; --accent-ink: #2a1600;
+  --spk-a: #7dd3fc; --spk-b: #2fbf87; --spk-c: #c07af6;
+  --avatar-ink: #2a1600;
 }
 html[data-theme="light"] {
   color-scheme: light;
-  --bg: #f1f1f4; --bg-sidebar: #e8e8ee;
-  --panel: #ffffff; --panel-2: #f5f5f8; --panel-3: #eaeaef;
-  --border: rgba(20,20,28,.1); --border-strong: rgba(20,20,28,.16);
-  --bg-hover: rgba(20,20,28,.05);
-  --text: #1b1b20; --text-dim: #62626d; --text-faint: #95959f;
-  --shadow-pop: 0 8px 28px rgba(20,20,40,.16), 0 0 0 1px rgba(20,20,28,.06);
-  --ok: #1f8a5b; --warn: #a3700a; --danger: #c2362f;
-  --mark-bg: rgba(217,161,60,.35);
-  --accent: #0c7186; --accent-ink: #ffffff;
-  --spk-a: #5957d8; --spk-b: #1f8a5b; --spk-c: #b06f02;
+  --bg: #f4f5f8; --bg-sidebar: #eceef3;
+  --panel: rgba(18,20,40,.03); --panel-2: rgba(18,20,40,.05); --panel-3: rgba(18,20,40,.08);
+  --border: rgba(18,20,40,.10); --border-strong: rgba(18,20,40,.17);
+  --bg-hover: rgba(18,20,40,.05);
+  --text: #14161f; --text-dim: rgba(20,22,31,.62); --text-faint: rgba(20,22,31,.42);
+  --shadow-pop: 0 18px 48px rgba(20,22,55,.16), 0 0 0 1px rgba(18,20,40,.06);
+  --ok: #0f8a5f; --warn: #a3700a; --danger: #d0453c;
+  --mark-bg: rgba(13,148,136,.26);
+  --accent: #0d9488; --accent-ink: #ffffff;
+  --spk-a: #7c3aed; --spk-b: #0d9488; --spk-c: #2563eb;
   --avatar-ink: #ffffff;
 }
 * { box-sizing: border-box; }
@@ -678,9 +698,181 @@ button.tr-note-time:hover { color: var(--accent); }
 ::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--text) 16%, transparent); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: color-mix(in oklab, var(--text) 28%, transparent); border: 3px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================================================================
+   AURORA SKIN — appended, additive. Everything below layers the Aurora look
+   over the existing components WITHOUT renaming any selector the JS reads.
+   The palette remap above already carries most of the skin (glass panels,
+   hairlines, aqua accent, night base); these rules add the display type, the
+   signature border-beam / shimmer / reading-focus, the aurora wash, and the
+   command palette.
+   ========================================================================== */
+
+/* --- Display type on the surfaces that carry the meeting's identity. -------- */
+.sb-title, .rv-title, .brief h2, .brief-cta-text h2, .rec-h1, .rec-timer,
+.brief-signals strong, .rec-kicker { font-family: var(--font-display); }
+.rv-title { letter-spacing: -0.028em; }
+
+/* --- Focus + selection ------------------------------------------------------ */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: color-mix(in oklab, var(--accent) 30%, transparent); }
+.tr-text mark, .tr-note-body mark { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 28%, transparent); }
+@media (hover: hover) and (pointer: fine) { button:active { transform: scale(.985); } }
+
+/* --- Aurora wash: a fixed, low-opacity aurora behind the shell, masked to the
+   top third so it never reaches the transcript's reading column. Purely
+   decorative; hidden entirely in the light theme and under reduced motion. --- */
+.ms-aurora { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; }
+.ms-aurora .ms-blob { position: absolute; border-radius: 50%; filter: blur(90px); mix-blend-mode: screen; will-change: transform; }
+.ms-b1 { width: 52vw; height: 52vw; left: 1vw; top: -30vh; background: radial-gradient(circle at 42% 42%, var(--v-blue), transparent 62%); opacity: .30; animation: ms-drift1 66s var(--ease-in-out) infinite; }
+.ms-b2 { width: 42vw; height: 42vw; right: -6vw; top: -26vh; background: radial-gradient(circle at 50% 50%, var(--v-lav), transparent 60%); opacity: .28; animation: ms-drift2 78s var(--ease-in-out) infinite; }
+.ms-b3 { width: 44vw; height: 44vw; left: 32vw; top: -24vh; background: radial-gradient(circle at 50% 50%, var(--v-vio), transparent 60%); opacity: .18; animation: ms-drift3 92s var(--ease-in-out) infinite; }
+.ms-b4 { width: 30vw; height: 30vw; right: 4vw; top: -12vh; background: radial-gradient(circle at 50% 50%, var(--aqua), transparent 64%); opacity: .12; animation: ms-drift1 104s var(--ease-in-out) infinite reverse; }
+.ms-aurora::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, transparent 0%, color-mix(in oklab, var(--bg) 55%, transparent) 32%, var(--bg) 58%); }
+@keyframes ms-drift1 { 0%,100% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(5vw,3vw,0) scale(1.1); } }
+@keyframes ms-drift2 { 0%,100% { transform: translate3d(0,0,0) scale(1.04); } 50% { transform: translate3d(-4vw,4vw,0) scale(.95); } }
+@keyframes ms-drift3 { 0%,100% { transform: translate3d(0,0,0) scale(1); } 50% { transform: translate3d(3vw,-2vw,0) scale(1.08); } }
+html[data-theme="light"] .ms-aurora { display: none; }
+
+/* Shell sits above the wash; sidebar is translucent so the wash glows behind
+   the meetings list, while main keeps a near-solid base so the transcript is
+   always read on near-black (the wash never fights legibility). */
+.app { position: relative; z-index: 1; }
+.sidebar { background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 26%), color-mix(in oklab, var(--bg-sidebar) 80%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.main { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 6%, transparent), transparent 240px), var(--bg); }
+html[data-theme="light"] .sidebar { background: var(--bg-sidebar); backdrop-filter: none; -webkit-backdrop-filter: none; }
+html[data-theme="light"] .main { background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 5%, transparent), transparent 220px), var(--bg); }
+.sb-logo { background: linear-gradient(150deg, var(--accent), color-mix(in oklab, var(--accent) 60%, #000)); box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 0 16px color-mix(in oklab, var(--accent) 30%, transparent); }
+
+/* --- Overlays: the panel token is now translucent glass, which is right for
+   cards but too faint for floating menus over content. Give them an opaque,
+   theme-aware base + blur so they stay legible. ------------------------------ */
+.menu, #toast { background: color-mix(in oklab, var(--bg) 88%, var(--text) 6%); border: 1px solid var(--border-strong); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+.am-overlay { backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+.am-card { background: color-mix(in oklab, var(--bg) 90%, var(--text) 5%); border: 1px solid var(--border-strong); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+
+/* --- Aqua action buttons: soft vertical gradient + diffused glow. They already
+   paint var(--accent); this just gives them the Aurora depth. ---------------- */
+.btn.primary, .sb-new, .rec-start {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 88%, #fff 16%), var(--accent));
+  box-shadow: 0 0 18px color-mix(in oklab, var(--accent) 22%, transparent), inset 0 1px 0 rgba(255,255,255,.26);
+}
+.btn.primary:hover, .sb-new:hover, .rec-start:hover {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent) 82%, #fff 22%), var(--accent));
+  box-shadow: 0 0 24px color-mix(in oklab, var(--accent) 34%, transparent), inset 0 1px 0 rgba(255,255,255,.3);
+}
+.ask-send, .tp-play { box-shadow: 0 0 16px color-mix(in oklab, var(--accent) 26%, transparent); }
+
+/* --- The border-beam signature: a conic ring traced around the primary Summary
+   button, reused as the halo on the currently-playing transcript line. One
+   effect, appearing in exactly two places, per the brief. ------------------- */
+#sumBtn { position: relative; overflow: hidden; isolation: isolate; }
+#sumBtn::after, .tr-group.is-playing::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.4px;
+  background: conic-gradient(from var(--angle), transparent 0 68%, var(--accent) 80%, #eafffb 88%, var(--aqua-2) 94%, transparent 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: ms-beam 7s linear infinite; pointer-events: none; z-index: 2;
+}
+#sumBtn:disabled::after { animation: none; opacity: .4; }
+@keyframes ms-beam { to { --angle: 360deg; } }
+
+/* --- Restrained shimmer on the meeting title only: a white light-sweep over
+   solid text (not rainbow gradient text). Reverts to a plain caret-able field
+   the instant it is focused for editing. ------------------------------------ */
+.rv-title {
+  background: linear-gradient(105deg, color-mix(in oklab, var(--text) 74%, transparent) 0 40%, #ffffff 50%, color-mix(in oklab, var(--text) 74%, transparent) 60% 100%);
+  background-size: 230% 100%;
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  caret-color: var(--accent);
+  animation: ms-title-shimmer 7s linear infinite;
+}
+.rv-title:focus { -webkit-text-fill-color: var(--text); background: none; animation: none; }
+@keyframes ms-title-shimmer { to { background-position: -230% 0; } }
+
+/* --- Reading focus: the transcript's centre band reads at full contrast while
+   turns above and below dim back, so the eye lands where it is reading. The
+   .ms-rf class is added by JS ONLY when it is safe (IntersectionObserver
+   present, motion allowed); with JS off, or while searching, every turn stays
+   at full contrast. Notes (.tr-note) are never dimmed — they are the user's
+   own words. --------------------------------------------------------------- */
+.tr-group { position: relative; }
+.tr-scroll.ms-rf .tr-group { opacity: .5; transition: opacity .34s var(--ease-out); }
+.tr-scroll.ms-rf .tr-group.ms-focus,
+.tr-scroll.ms-rf .tr-group.is-playing,
+.tr-scroll.ms-rf.ms-searching .tr-group { opacity: 1; }
+.tr-group.is-playing { background: color-mix(in oklab, var(--accent) 7%, transparent); box-shadow: 0 0 22px color-mix(in oklab, var(--accent) 12%, transparent); }
+
+/* --- Progressive-blur edge fade so the transcript melts into the night at the
+   bottom, just above the transport. ---------------------------------------- */
+.tr-wrap { position: relative; }
+.tr-wrap::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; z-index: 3; pointer-events: none;
+  background: linear-gradient(to top, var(--bg) 8%, transparent);
+  -webkit-mask: linear-gradient(to top, #000 42%, transparent); mask: linear-gradient(to top, #000 42%, transparent);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+}
+
+/* --- Aurora-styled tabs: the segmented pill picks up a soft aqua glow. ------ */
+.rv-seg-pill { background: color-mix(in oklab, var(--accent) 16%, var(--panel-3)); box-shadow: 0 0 16px color-mix(in oklab, var(--accent) 16%, transparent), inset 0 0 0 1px color-mix(in oklab, var(--accent) 26%, transparent); }
+.rv-tab.on { color: var(--text); }
+
+/* ============================== COMMAND PALETTE ============================= */
+.ms-cmdk-launch {
+  display: flex; align-items: center; gap: 8px; width: calc(100% - 16px); margin: 4px 8px 2px; padding: 8px 10px;
+  font-size: 11.5px; color: var(--text-dim); border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--panel); transition: border-color .14s var(--ease), background .14s var(--ease), color .14s var(--ease);
+}
+.ms-cmdk-launch:hover { color: var(--text); border-color: var(--border-strong); background: var(--panel-2); }
+.ms-cmdk-launch .lbl { flex: 1; text-align: left; }
+.ms-cmdk-launch kbd { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; }
+
+.ms-cmdk-overlay {
+  position: fixed; inset: 0; z-index: 150; display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh;
+  background: color-mix(in oklab, var(--bg) 55%, transparent); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  opacity: 0; pointer-events: none; transition: opacity .12s var(--ease-out);
+}
+.ms-cmdk-overlay.open { opacity: 1; pointer-events: auto; }
+.ms-cmdk {
+  width: min(600px, 92vw); max-height: 64vh; display: flex; flex-direction: column;
+  background: color-mix(in oklab, var(--bg) 90%, var(--text) 5%); border: 1px solid var(--border-strong);
+  border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden;
+  transform: scale(.97); opacity: 0; transform-origin: center;
+  transition: transform .12s var(--ease-out), opacity .12s var(--ease-out);
+}
+.ms-cmdk-overlay.open .ms-cmdk { transform: none; opacity: 1; }
+.ms-cmdk-top { display: flex; align-items: center; gap: 11px; padding: 15px 16px; border-bottom: 1px solid var(--border); }
+.ms-cmdk-top svg { color: var(--text-dim); flex: none; }
+.ms-cmdk-top input { flex: 1; background: none; border: none; outline: none; font-family: var(--font-ui); font-size: 15px; color: var(--text); }
+.ms-cmdk-top input::placeholder { color: var(--text-faint); }
+.ms-cmdk-top .esc { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; }
+.ms-cmdk-list { overflow-y: auto; padding: 8px; flex: 1; }
+.ms-cmdk-group { font-size: 9.5px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--text-faint); padding: 9px 9px 5px; }
+.ms-cmdk-item { display: flex; align-items: center; gap: 11px; width: 100%; padding: 9px 10px; border-radius: 10px; font-size: 13.5px; color: var(--text); text-align: left; }
+.ms-cmdk-item svg { color: var(--text-dim); flex: none; }
+.ms-cmdk-item .av { width: 20px; height: 20px; flex: none; border-radius: 6px; display: grid; place-items: center; font-size: 9px; font-weight: 700; color: var(--avatar-ink); }
+.ms-cmdk-item.sel { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.ms-cmdk-item.sel svg { color: var(--accent); }
+.ms-cmdk-item .hint { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.ms-cmdk-item.danger, .ms-cmdk-item.danger svg { color: var(--danger); }
+.ms-cmdk-empty { padding: 26px; text-align: center; color: var(--text-faint); font-size: 13px; }
+
+/* ============================== REDUCED MOTION ============================= */
+@media (prefers-reduced-motion: reduce) {
+  .ms-aurora .ms-blob { animation: none; }
+  .rv-title { animation: none; -webkit-text-fill-color: var(--text); background: none; }
+  #sumBtn::after, .tr-group.is-playing::after { animation: none; background: conic-gradient(from 130deg, transparent 0 70%, var(--accent) 82%, transparent 100%); }
+  .tr-scroll.ms-rf .tr-group { opacity: 1 !important; transition: none; }
+  .ms-cmdk-overlay, .ms-cmdk { transition: opacity .12s var(--ease); }
+  .ms-cmdk { transform: none; }
+  button:active { transform: none; }
+}
 </style>
 </head>
 <body>
+<div class="ms-aurora" aria-hidden="true">
+  <div class="ms-blob ms-b1"></div><div class="ms-blob ms-b2"></div><div class="ms-blob ms-b3"></div><div class="ms-blob ms-b4"></div>
+</div>
 <div class="app">
   <aside class="sidebar" id="sidebar"></aside>
   <main class="main" id="main"></main>
@@ -688,6 +880,22 @@ button.tr-note-time:hover { color: var(--accent); }
 <div id="toast"></div>
 <div id="modal"></div>
 
+<!-- Command palette (Cmd-K). Static shell; contents + wiring live in the
+     additive layer at the end of the main script, pointed at the REAL app functions. -->
+<div class="ms-cmdk-overlay" id="msCmdkOverlay">
+  <div class="ms-cmdk" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="ms-cmdk-top">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="16.6" y1="16.6" x2="21" y2="21"/></svg>
+      <input id="msCmdkInput" type="text" placeholder="Search transcript, jump to a speaker, or run a command…" autocomplete="off" spellcheck="false">
+      <span class="esc">esc</span>
+    </div>
+    <div class="ms-cmdk-list" id="msCmdkList"></div>
+  </div>
+</div>
+
+<!-- Lenis smooth scroll (optional). Feature-detected in the additive script; if
+     it fails to load the transcript keeps its native scrolling. -->
+<script src="https://cdn.jsdelivr.net/npm/lenis@1.3.25/dist/lenis.min.js"></script>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
@@ -793,11 +1001,11 @@ function dateLabel(iso) {
    the one that is active, so it cannot read the CSS variables. `name` is the
    label under the row; the id is what lands in localStorage and on <html>. */
 const THEMES = [
-  {id: "teal",     name: "Teal",     bg: "#101014", accent: "#35c2dd", spk: "#8b8af5"},
-  {id: "graphite", name: "Graphite", bg: "#1c1c1e", accent: "#0a84ff", spk: "#bf5af2"},
-  {id: "indigo",   name: "Indigo",   bg: "#111120", accent: "#5e5ce6", spk: "#64d2ff"},
-  {id: "ember",    name: "Ember",    bg: "#17161a", accent: "#ff9f0a", spk: "#64d2ff"},
-  {id: "light",    name: "Daylight", bg: "#f1f1f4", accent: "#0c7186", spk: "#5957d8"},
+  {id: "teal",     name: "Aurora",   bg: "#0a0a12", accent: "#5eead4", spk: "#c07af6"},
+  {id: "graphite", name: "Graphite", bg: "#0b0d12", accent: "#7dd3fc", spk: "#c07af6"},
+  {id: "indigo",   name: "Indigo",   bg: "#0c0c1a", accent: "#a5b4fc", spk: "#7dd3fc"},
+  {id: "ember",    name: "Ember",    bg: "#12100c", accent: "#f6a54f", spk: "#7dd3fc"},
+  {id: "light",    name: "Daylight", bg: "#f4f5f8", accent: "#0d9488", spk: "#7c3aed"},
 ];
 /* Stored themes predate the palettes: the old toggle wrote "dark" or "light".
    "light" still exists, "dark" became "teal"; anything else falls back. */
@@ -1136,6 +1344,8 @@ function renderSidebar() {
              ${S.syncAllBusy ? `<span class="spinner"></span>${esc(S.syncAllMsg || "Syncing…")}` : `${icon("cloud", 13)} Sync all to phone`}</button>`
         : `<button class="sb-account as-btn" onclick="openAuth('signin')" title="Sign in to read transcripts and summaries on your phone">
              ${icon("phone", 12)}<span class="val">Sign in for phone sync</span></button>`}
+      <button class="ms-cmdk-launch" onclick="msOpenPalette()" title="Search & run commands">
+        ${icon("search", 12)}<span class="lbl">Search &amp; commands</span><kbd>⌘K</kbd></button>
       <div class="sb-foot-row">
         <button class="sb-quit" onclick="quitApp()">Quit MeetingScribe</button>
       </div>
@@ -2080,7 +2290,7 @@ function transcriptHTML(meta) {
     if (it.note) { html += transcriptNoteHTML(it.note, ql, seekable); continue; }
     const c = speakerColor(meta, it.spk);
     const name = meta.speakers[it.spk] || it.spk;
-    html += `<div class="tr-group">
+    html += `<div class="tr-group" data-t="${it.t}">
       <div class="tr-ava"><i style="background:${c}">${esc(initials(name))}</i></div>
       <div class="tr-head">
         <span class="tr-spk" style="color:${c}">${esc(name)}</span>
@@ -3323,6 +3533,289 @@ async function pollCalendar() {
   pollLive();
   refreshAuth();
   setInterval(pollCalendar, 300000);
+})();
+
+/* ============================================================================
+   AURORA ADDITIVE LAYER — command palette, transcript reading-focus, the
+   playing-line halo, and (optional) lenis smooth scroll. Everything here READS
+   the real state object S and CALLS the real app functions; it never owns app
+   data and never redefines an existing global. Scoped in its own IIFE, exposing
+   only window.msOpenPalette (referenced by the sidebar launcher's onclick).
+   ========================================================================== */
+(function auroraLayer() {
+  const RM = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  /* ------------------------------------------- transcript reading focus -- */
+  let io = null, lenisInst = null, lenisRAF = 0, lastScrollEl = null;
+  function teardownIO() { if (io) { io.disconnect(); io = null; } }
+  function teardownLenis() {
+    if (lenisRAF) { cancelAnimationFrame(lenisRAF); lenisRAF = 0; }
+    if (lenisInst) { try { lenisInst.destroy(); } catch (e) {} lenisInst = null; }
+    lastScrollEl = null;
+  }
+  function wireTranscript() {
+    const scroll = document.querySelector(".tr-scroll");
+    const inner = document.getElementById("trInner");
+    if (!scroll || !inner) { teardownIO(); teardownLenis(); return; }
+    scroll.classList.toggle("ms-searching", !!(S.tq && S.tq.trim()));
+
+    // Centre-band reading focus. Only engaged when it can degrade cleanly: with
+    // no IntersectionObserver or under reduced motion the class is absent and
+    // every turn stays at full contrast (the CSS fallback).
+    teardownIO();
+    const groups = inner.querySelectorAll(".tr-group");
+    if (!RM && ("IntersectionObserver" in window) && groups.length) {
+      scroll.classList.add("ms-rf");
+      let cur = groups[0] || null;
+      if (cur) cur.classList.add("ms-focus");
+      io = new IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting || en.target === cur) return;
+          if (cur) cur.classList.remove("ms-focus");
+          en.target.classList.add("ms-focus");
+          cur = en.target;
+        });
+      }, { root: scroll, rootMargin: "-45% 0px -45% 0px", threshold: 0 });
+      groups.forEach((g) => io.observe(g));
+    } else {
+      scroll.classList.remove("ms-rf");
+    }
+
+    // lenis smooth wheel on the transcript. Reuse the instance when only the
+    // inner content changed (a search rebuild keeps the same scroller node),
+    // recreate when the scroller itself is new. All guarded; native scroll is
+    // the fallback if lenis is missing, throws, or reduced motion is set.
+    if (window.Lenis && !RM) {
+      if (scroll === lastScrollEl && lenisInst) {
+        try { lenisInst.resize(); } catch (e) {}
+      } else {
+        teardownLenis();
+        try {
+          lenisInst = new Lenis({ wrapper: scroll, content: inner, duration: 1.05, smoothWheel: true });
+          lastScrollEl = scroll;
+          const raf = (t) => { if (!lenisInst) return; try { lenisInst.raf(t); } catch (e) { teardownLenis(); return; } lenisRAF = requestAnimationFrame(raf); };
+          lenisRAF = requestAnimationFrame(raf);
+        } catch (e) { teardownLenis(); }
+      }
+    } else {
+      teardownLenis();
+    }
+  }
+  // Re-wire whenever the main pane re-renders (renderMain replaces #main; a
+  // search replaces only #trInner). Coalesced to once per frame.
+  const mainEl = document.getElementById("main");
+  if (mainEl && "MutationObserver" in window) {
+    let pending = false;
+    new MutationObserver(() => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => { pending = false; wireTranscript(); });
+    }).observe(mainEl, { childList: true, subtree: true });
+  }
+  wireTranscript();
+
+  /* -------------------------------------------------- playing-line halo -- */
+  // While audio plays, mark the turn under the playhead so the border-beam halo
+  // traces it. Reads transportTime() + the data-t on each group. A cheap poll,
+  // not a rAF, and a no-op whenever nothing is playing or the tab isn't open.
+  setInterval(() => {
+    if (!AU || !AU.playing) return;
+    const scroll = document.querySelector(".tr-scroll");
+    if (!scroll) return;
+    const groups = scroll.querySelectorAll(".tr-group[data-t]");
+    if (!groups.length) return;
+    const t = (typeof transportTime === "function") ? transportTime() : 0;
+    let active = null;
+    for (let i = 0; i < groups.length; i++) {
+      if (parseFloat(groups[i].getAttribute("data-t")) <= t + 0.001) active = groups[i];
+      else break;
+    }
+    for (let j = 0; j < groups.length; j++) groups[j].classList.toggle("is-playing", groups[j] === active);
+  }, 250);
+
+  /* ----------------------------------------------------- command palette -- */
+  const overlay = document.getElementById("msCmdkOverlay");
+  const input = document.getElementById("msCmdkInput");
+  const listEl = document.getElementById("msCmdkList");
+  let flat = [], sel = 0, isOpen = false;
+  const ic = (name) => icon(name, 16, 1.7);
+
+  function fuzzy(q, s) {
+    q = q.toLowerCase(); s = s.toLowerCase();
+    if (s.indexOf(q) >= 0) return true;
+    let i = 0;
+    for (let j = 0; j < s.length && i < q.length; j++) if (s[j] === q[i]) i++;
+    return i === q.length;
+  }
+
+  function paletteSearch(q) {
+    closePalette();
+    const m = S.detail;
+    if (!m || !(m.turns || []).length) return;
+    if (S.tab !== "transcript") setTab("transcript");   // renders synchronously
+    const el = document.getElementById("trSearch");
+    if (el) el.value = q;
+    if (typeof trSearch === "function") trSearch(q);
+    if (el) { el.focus(); try { el.setSelectionRange(q.length, q.length); } catch (e) {} }
+  }
+  function jumpToSpeaker(key, name) {
+    closePalette();
+    const m = S.detail; if (!m) return;
+    if (S.tab !== "transcript") setTab("transcript");
+    const scroll = document.querySelector(".tr-scroll");
+    const groups = scroll ? scroll.querySelectorAll(".tr-group") : [];
+    for (let i = 0; i < groups.length; i++) {
+      const spk = groups[i].querySelector(".tr-spk");
+      if (spk && spk.textContent.trim() === String(name).trim()) {
+        groups[i].scrollIntoView({ block: "center", behavior: RM ? "auto" : "smooth" });
+        break;
+      }
+    }
+  }
+  function jumpTranscript(toEnd) {
+    closePalette();
+    if (S.tab !== "transcript" && S.detail) setTab("transcript");
+    const scroll = document.querySelector(".tr-scroll");
+    if (scroll) scroll.scrollTo({ top: toEnd ? scroll.scrollHeight : 0, behavior: RM ? "auto" : "smooth" });
+  }
+
+  function buildGroups() {
+    const q = input.value.trim();
+    const m = S.detail;
+    const hasTurns = !!(m && (m.turns || []).length);
+    const open = !!(m && S.view === "meeting" && m.status !== "processing");
+    const tabbed = open && m.status !== "error";
+    const out = [];
+    const push = (name, items) => { items = items.filter(Boolean); if (items.length) out.push({ name, items }); };
+
+    if (q && hasTurns) {
+      const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig");
+      const hits = (m.turns || []).reduce((a, t) => a + ((t.text || "").match(rx) || []).length, 0);
+      push("Search", [{ label: 'Search transcript for "' + q + '"', icon: "search",
+        hint: hits + (hits === 1 ? " hit" : " hits"), run: () => paletteSearch(q) }]);
+    }
+
+    push("Suggested", [
+      hasTurns ? { label: m.summary ? "Re-summarize meeting" : "Summarize meeting", icon: "sparkle",
+        primary: true, run: () => summarizeMeeting(m.id) } : null,
+    ]);
+
+    const nav = [];
+    if (tabbed) {
+      nav.push({ label: "Go to Overview", icon: "list", run: () => setTab("overview") });
+      if (hasTurns) {
+        nav.push({ label: "Go to Transcript", icon: "wave", run: () => setTab("transcript") });
+        nav.push({ label: "Go to Insights", icon: "wave", run: () => setTab("insights") });
+        nav.push({ label: "Ask this meeting", icon: "chat", run: () => setTab("chat") });
+        nav.push({ label: "Jump to start of transcript", icon: "list", run: () => jumpTranscript(false) });
+        nav.push({ label: "Jump to end of transcript", icon: "list", run: () => jumpTranscript(true) });
+      }
+    }
+    if (hasTurns) {
+      Object.keys(m.speakers || {}).forEach((key) => {
+        const name = m.speakers[key] || key;
+        nav.push({ label: "Jump to " + name, spk: key, spkName: name, run: () => jumpToSpeaker(key, name) });
+      });
+    }
+    push("Navigate", nav);
+
+    if (hasTurns) {
+      const email = (m.summary || {}).follow_up_email || {};
+      push("Actions", [
+        { label: "Tidy transcript", icon: "wave", run: () => tidyMeeting(m.id) },
+        { label: "Sync to phone", icon: "phone", run: () => toggleSync(m.id, true) },
+        { label: "Copy transcript", icon: "copy", run: () => copyTranscript(m.id) },
+        email.body ? { label: "Copy follow-up email", icon: "copy", run: () => copySummaryEmail(m.id) } : null,
+        { label: "Save as Markdown", icon: "doc", run: () => { location.href = "/api/meetings/" + m.id + "/export?fmt=md"; } },
+        { label: "Save as plain text", icon: "textT", run: () => { location.href = "/api/meetings/" + m.id + "/export?fmt=txt"; } },
+        { label: "Reveal folder in Finder", icon: "folder", run: () => revealMd(m.id) },
+        m.tidied ? { label: "Undo tidy", icon: "undo", run: () => undoTidy(m.id) } : null,
+        { label: "Reprocess audio", icon: "refresh", run: () => reprocess(m.id) },
+        { label: "Delete recording…", icon: "trash", danger: true, run: () => delMeeting(m.id) },
+      ]);
+    }
+
+    push("App", [
+      { label: "New recording", icon: "plus", run: () => goNew() },
+      (S.auth && S.auth.signed_in) ? { label: "Sync all to phone", icon: "cloud", run: () => syncAll() } : null,
+      hasTurns ? { label: "Increase transcript text size", icon: "textT", keepOpen: true, run: () => setTrSize(0.5) } : null,
+      hasTurns ? { label: "Decrease transcript text size", icon: "textT", keepOpen: true, run: () => setTrSize(-0.5) } : null,
+    ]);
+
+    push("Appearance", THEMES.map((t) => ({ label: "Theme: " + t.name, theme: t, run: () => setTheme(t.id) })));
+
+    return { q, groups: out };
+  }
+
+  function render() {
+    const built = buildGroups();
+    const q = built.q;
+    listEl.innerHTML = ""; flat = [];
+    const shown = [];
+    built.groups.forEach((gr) => {
+      const items = gr.name === "Search" ? gr.items : gr.items.filter((it) => !q || fuzzy(q, it.label));
+      if (items.length) shown.push({ name: gr.name, items });
+    });
+    if (!shown.length) { listEl.innerHTML = '<div class="ms-cmdk-empty">No commands match.</div>'; return; }
+    shown.forEach((gr) => {
+      const gl = document.createElement("div");
+      gl.className = "ms-cmdk-group"; gl.textContent = gr.name;
+      listEl.appendChild(gl);
+      gr.items.forEach((it) => {
+        const idx = flat.length;
+        const b = document.createElement("button");
+        b.className = "ms-cmdk-item" + (it.danger ? " danger" : "");
+        let lead;
+        if (it.spk) lead = '<span class="av" style="background:' + speakerColor(S.detail, it.spk) + '">' + esc(initials(it.spkName)) + '</span>';
+        else if (it.theme) lead = '<span class="av" style="background:' + it.theme.accent + '"></span>';
+        else lead = ic(it.icon || "list");
+        const hint = it.hint ? '<span class="hint">' + esc(it.hint) + '</span>' : (it.primary ? '<span class="hint">⏎</span>' : '');
+        b.innerHTML = lead + "<span>" + esc(it.label) + "</span>" + hint;
+        b.addEventListener("mousemove", () => setSel(idx));
+        b.addEventListener("click", () => runItem(idx));
+        listEl.appendChild(b);
+        flat.push({ el: b, run: it.run, keepOpen: !!it.keepOpen });
+      });
+    });
+    setSel(0);
+  }
+  function setSel(i) {
+    if (!flat.length) return;
+    sel = Math.max(0, Math.min(flat.length - 1, i));
+    flat.forEach((c, j) => c.el.classList.toggle("sel", j === sel));
+    const el = flat[sel].el, lr = el.getBoundingClientRect(), pr = listEl.getBoundingClientRect();
+    if (lr.bottom > pr.bottom) listEl.scrollTop += lr.bottom - pr.bottom + 8;
+    else if (lr.top < pr.top) listEl.scrollTop -= pr.top - lr.top + 8;
+  }
+  function runItem(i) {
+    const c = flat[i]; if (!c) return;
+    try { c.run(); } catch (e) {}
+    if (!c.keepOpen) closePalette();
+  }
+  function openPalette() {
+    if (!overlay) return;
+    isOpen = true;
+    overlay.classList.add("open");
+    input.value = ""; render();
+    setTimeout(() => input.focus(), 20);
+  }
+  function closePalette() { isOpen = false; if (overlay) overlay.classList.remove("open"); }
+  window.msOpenPalette = openPalette;
+
+  if (overlay && input && listEl) {
+    input.addEventListener("input", render);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") { setSel(sel + 1); e.preventDefault(); }
+      else if (e.key === "ArrowUp") { setSel(sel - 1); e.preventDefault(); }
+      else if (e.key === "Enter") { runItem(sel); e.preventDefault(); }
+      else if (e.key === "Escape") { closePalette(); }
+    });
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) closePalette(); });
+    document.addEventListener("keydown", (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); isOpen ? closePalette() : openPalette(); }
+      else if (e.key === "Escape" && isOpen) closePalette();
+    });
+  }
 })();
 </script>
 </body>
