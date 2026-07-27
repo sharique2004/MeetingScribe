@@ -119,13 +119,16 @@ private enum Aurora {
     }
 
     // Surfaces — deep night glass. A #0A0A12 base frosts the GlassBox; a
-    // translucent #10101C panel is painted over it so the slab reads as dark
-    // frosted glass rather than the default warm grey.
+    // near-opaque #0A0A12 sheet is painted over it so the slab reads as
+    // near-black frosted glass rather than the default warm grey.
     static let base         = hex(0x0A0A12)
     static let glassTint    = hex(0x0A0A12, 0.40)             // frosts the GlassBox, cool + dark
-    static let panelOverlay = hex(0x10101C, 0.66)            // painted over the glass surface
+    static let panelOverlay = hex(0x0A0A12, 0.80)            // painted over the glass surface
     static let inputFill    = NSColor.white.withAlphaComponent(0.05)   // a raised sheet of glass
-    static let chipFill     = NSColor.white.withAlphaComponent(0.035)  // quieter still
+    static let chipFill     = NSColor.white.withAlphaComponent(0.03)   // quieter still
+    static let cardFill      = NSColor.white.withAlphaComponent(0.035) // a note at rest
+    static let cardFillHover = NSColor.white.withAlphaComponent(0.065) // …under the pointer
+    static let rowHover      = NSColor.white.withAlphaComponent(0.045) // the disclosure row
 
     // Hairlines — ~8% white, a touch stronger where focus lands.
     static let border      = NSColor.white.withAlphaComponent(0.08)   // #FFFFFF14
@@ -137,14 +140,16 @@ private enum Aurora {
     static let textFaint = hex(0x6B7079)   // timestamps, hints
 
     // Accent — aqua/mint, with a sky-blue second. Spent sparingly: the focus
-    // ring and the title dot, never a wall of colour (a wall of it shouts).
-    static let accent    = hex(0x5EEAD4)
-    static let accent2   = hex(0x7DD3FC)
+    // ring, the title dot and the time pills, never a wall of colour.
+    static let accent     = hex(0x5EEAD4)
+    static let accent2    = hex(0x7DD3FC)
+    static let accentSoft = hex(0x5EEAD4, 0.11)   // time-pill fill
+    static let accentDim  = hex(0x5EEAD4, 0.80)   // pill text: aqua, kept quiet
 
     // Radii — one consistent family of corners.
-    static let rPanel: CGFloat = 14
-    static let rCard:  CGFloat = 12
-    static let rInput: CGFloat = 10
+    static let rPanel: CGFloat = 16
+    static let rCard:  CGFloat = 10
+    static let rInput: CGFloat = 12
     static let rChip:  CGFloat = 7
 
     /// A label in Aurora's voice: SF Pro, one of the three text colours.
@@ -157,31 +162,6 @@ private enum Aurora {
         return field
     }
 
-    /// A small, faint, tracked-out section label — the web UI's `.sb-group`,
-    /// tuned faint for Aurora.
-    static func sectionHeaderText(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text.uppercased(),
-                           attributes: [.font: MS.ui(9.5, .semibold),
-                                        .foregroundColor: textFaint,
-                                        .kern: 1.0])
-    }
-
-    static func sectionHeader(_ text: String) -> NSTextField {
-        let field = NSTextField(labelWithString: "")
-        field.attributedStringValue = sectionHeaderText(text)
-        return field
-    }
-
-    /// The bold panel title, with slightly tight tracking.
-    static func title(_ text: String) -> NSTextField {
-        let field = NSTextField(labelWithString: "")
-        field.attributedStringValue = NSAttributedString(
-            string: text,
-            attributes: [.font: MS.ui(15, .bold),
-                         .foregroundColor: Aurora.text,
-                         .kern: -0.2])
-        return field
-    }
 }
 
 final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
@@ -191,12 +171,26 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private let box = GlassBox(corner: .radius(Aurora.rPanel), tint: Aurora.glassTint)
 
     private let cuesView = ReadingTextView()
-    private let notesView = ReadingTextView()
     private let input = NoteField()
     private let statusLabel = NSTextField.msLabel("", size: 11, color: MS.danger)
-    private let hintLabel = Aurora.label("Return saves · Esc gives the keyboard back",
+    private var statusRow: NSStackView!
+    private let hintLabel = Aurora.label("Return saves · Esc returns keyboard",
                                          size: 10.5, color: Aurora.textFaint)
-    private let notesHeader = Aurora.sectionHeader("Notes this meeting")
+    /// The header's second line of truth: which meeting is being filed against,
+    /// derived from `meetingID` (presentation only — no new data flows).
+    private let meetingLabel = NSTextField(labelWithString: "")
+    /// The notes list — one quiet card per committed note, newest first.
+    private let notesStack = FlippedStackView()
+    private var notesScroll: NSScrollView!
+    private var emptyState: NSStackView!
+    /// Talking points, collapsed by default behind a one-row disclosure.
+    private var cuesExpanded = false
+    private let cuesChevron = NSImageView()
+    private let cuesCountLabel = NSTextField(labelWithString: "")
+    /// The mono chip inside the field's right edge: the meeting-clock reading
+    /// captured when typing started (`fieldStartedElapsed`, surfaced).
+    private let startChip = PassthroughView()
+    private let startChipLabel = NSTextField(labelWithString: "")
 
     /// Seconds into the meeting, supplied by the HUD's interpolated clock.
     var currentElapsed: (() -> TimeInterval)?
@@ -272,7 +266,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     init(baseURL: URL) {
         self.baseURL = baseURL
-        panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 460),
+        panel = FloatingPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 520),
                               chrome: true, resizable: true)
         super.init()
 
@@ -282,7 +276,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
         panel.title = "Notes"
         panel.delegate = self
-        panel.minSize = NSSize(width: 300, height: 280)
+        panel.minSize = NSSize(width: 300, height: 300)
         panel.isMovableByWindowBackground = true
 
         buildContent()
@@ -321,34 +315,46 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     // MARK: - Content
 
     private func buildContent() {
-        let title = Aurora.title("Notes")
-        // A single mint dot beside the title — the one spot of accent in the
-        // header, matching the web Aurora mark.
+        // ── Header: one quiet row — dot · Notes · meeting · privacy ────────
         let dot = NSView()
         dot.wantsLayer = true
         dot.layer?.backgroundColor = Aurora.accent.cgColor
         dot.layer?.cornerRadius = 3
+        dot.layer?.shadowColor = Aurora.accent.cgColor
+        dot.layer?.shadowOpacity = 0.5
+        dot.layer?.shadowRadius = 3
+        dot.layer?.shadowOffset = .zero
         dot.translatesAutoresizingMaskIntoConstraints = false
         dot.widthAnchor.constraint(equalToConstant: 6).isActive = true
         dot.heightAnchor.constraint(equalToConstant: 6).isActive = true
-        let titleRow = NSStackView(views: [dot, title])
-        titleRow.orientation = .horizontal
-        titleRow.alignment = .centerY
-        titleRow.spacing = 7
 
-        // A quiet reassurance that this is the point of the panel — a faint
-        // chip, so it reads as metadata rather than a control.
+        let title = NSTextField(labelWithString: "")
+        title.attributedStringValue = NSAttributedString(
+            string: "Notes",
+            attributes: [.font: MS.ui(13, .semibold),
+                         .foregroundColor: Aurora.text,
+                         .kern: -0.1])
+
+        meetingLabel.font = MS.ui(11)
+        meetingLabel.textColor = Aurora.textFaint
+        meetingLabel.lineBreakMode = .byTruncatingTail
+        meetingLabel.setContentHuggingPriority(.init(1), for: .horizontal)
+        meetingLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        // A quiet reassurance that this is the point of the panel — a tiny
+        // faint chip, metadata rather than a control.
         let shield = NSImageView()
         shield.image = NSImage(systemSymbolName: "eye.slash",
-                               accessibilityDescription: nil)
+                               accessibilityDescription: "Hidden from screen share")
         shield.contentTintColor = Aurora.textFaint
-        shield.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 9, weight: .medium)
-        let privacy = Aurora.label("Hidden from screen share", size: 10, color: Aurora.textFaint)
+        shield.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8.5, weight: .medium)
+        let privacy = Aurora.label("Hidden from share", size: 9.5, color: Aurora.textFaint)
         let privacyInner = NSStackView(views: [shield, privacy])
         privacyInner.spacing = 4
         privacyInner.alignment = .centerY
         privacyInner.translatesAutoresizingMaskIntoConstraints = false
         let privacyChip = NSView()
+        privacyChip.toolTip = "Hidden from screen share"
         privacyChip.wantsLayer = true
         privacyChip.layer?.backgroundColor = Aurora.chipFill.cgColor
         privacyChip.layer?.cornerRadius = Aurora.rChip
@@ -356,90 +362,184 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         privacyChip.layer?.borderColor = Aurora.border.cgColor
         privacyChip.addSubview(privacyInner)
         NSLayoutConstraint.activate([
-            privacyInner.leadingAnchor.constraint(equalTo: privacyChip.leadingAnchor, constant: 8),
-            privacyInner.trailingAnchor.constraint(equalTo: privacyChip.trailingAnchor, constant: -8),
-            privacyInner.topAnchor.constraint(equalTo: privacyChip.topAnchor, constant: 4),
-            privacyInner.bottomAnchor.constraint(equalTo: privacyChip.bottomAnchor, constant: -4),
+            privacyInner.leadingAnchor.constraint(equalTo: privacyChip.leadingAnchor, constant: 7),
+            privacyInner.trailingAnchor.constraint(equalTo: privacyChip.trailingAnchor, constant: -7),
+            privacyInner.topAnchor.constraint(equalTo: privacyChip.topAnchor, constant: 3),
+            privacyInner.bottomAnchor.constraint(equalTo: privacyChip.bottomAnchor, constant: -3),
         ])
 
-        let header = NSStackView(views: [titleRow, NSView(), privacyChip])
+        let header = NSStackView(views: [dot, title, meetingLabel, privacyChip])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.distribution = .fill
+        header.spacing = 7
+        header.setCustomSpacing(8, after: title)
+        header.setCustomSpacing(8, after: meetingLabel)
+        // The row sits beside the transparent title bar's close button, so its
+        // content starts clear of it.
+        header.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 0)
 
-        let cuesHeader = Aurora.sectionHeader("Talking points")
-        let cuesScroll = Self.makeScroll(cuesView)
-        cuesScroll.translatesAutoresizingMaskIntoConstraints = false
-        // A scroll view has no intrinsic height, so the talking points would
-        // otherwise always claim their maximum and leave a hole above the
-        // divider. Measure the text instead and cap it at 150.
-        cuesHeight = cuesScroll.heightAnchor.constraint(equalToConstant: 46)
-        cuesHeight.isActive = true
-        self.cuesScroll = cuesScroll
-
-        let rule = Hairline(color: Aurora.border)
-
+        // ── Input first: the primary action, right under the header ───────
         buildInput()
+
         statusLabel.isHidden = true
         statusLabel.lineBreakMode = .byWordWrapping
         statusLabel.maximumNumberOfLines = 2
+        statusRow = Self.indentedRow(statusLabel, left: 12)
+        statusRow.isHidden = true
 
-        let notesScroll = Self.makeScroll(notesView)
-        notesScroll.translatesAutoresizingMaskIntoConstraints = false
-        notesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 70).isActive = true
+        // ── Talking points: one row, expandable, never dominant ────────────
+        let cuesRow = TapControl()
+        cuesRow.wantsLayer = true
+        cuesRow.layer?.cornerRadius = 8
+        cuesRow.onTap = { [weak self] in
+            guard let self else { return }
+            self.setCuesExpanded(!self.cuesExpanded)
+        }
+        cuesRow.onHover = { [weak cuesRow] inside in
+            cuesRow?.layer?.backgroundColor = inside ? Aurora.rowHover.cgColor : nil
+        }
+        cuesChevron.contentTintColor = Aurora.textFaint
+        cuesChevron.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+        cuesChevron.image = NSImage(systemSymbolName: "chevron.right",
+                                    accessibilityDescription: "Show talking points")
+        let cuesTitle = Aurora.label("Talking points", size: 11.5, weight: .medium,
+                                     color: Aurora.textDim)
+        cuesCountLabel.font = MS.ui(11.5)
+        cuesCountLabel.textColor = Aurora.textFaint
+        let cuesRowStack = NSStackView(views: [cuesChevron, cuesTitle, cuesCountLabel])
+        cuesRowStack.orientation = .horizontal
+        cuesRowStack.alignment = .centerY
+        cuesRowStack.spacing = 6
+        cuesRowStack.translatesAutoresizingMaskIntoConstraints = false
+        cuesRow.addSubview(cuesRowStack)
+        cuesRow.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            cuesRow.heightAnchor.constraint(equalToConstant: 26),
+            cuesRowStack.leadingAnchor.constraint(equalTo: cuesRow.leadingAnchor, constant: 8),
+            cuesRowStack.centerYAnchor.constraint(equalTo: cuesRow.centerYAnchor),
+        ])
+
+        let cuesScroll = Self.makeScroll(cuesView)
+        cuesScroll.translatesAutoresizingMaskIntoConstraints = false
+        // A scroll view has no intrinsic height, so the talking points would
+        // otherwise always claim their maximum. Measure the text instead and
+        // cap it — the cues must never dominate the panel.
+        cuesHeight = cuesScroll.heightAnchor.constraint(equalToConstant: 46)
+        cuesHeight.isActive = true
+        self.cuesScroll = cuesScroll
+        cuesScroll.isHidden = true                     // collapsed by default
+
+        // ── The notes list: quiet cards, newest first, fills the rest ──────
+        notesStack.orientation = .vertical
+        notesStack.alignment = .leading
+        notesStack.spacing = 8
+        notesStack.edgeInsets = NSEdgeInsets(top: 2, left: 0, bottom: 8, right: 0)
+        notesStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let listScroll = NSScrollView()
+        listScroll.drawsBackground = false
+        listScroll.borderType = .noBorder
+        listScroll.hasVerticalScroller = true
+        listScroll.autohidesScrollers = true
+        listScroll.scrollerStyle = .overlay            // no scrollbar chrome
+        listScroll.verticalScrollElasticity = .allowed
+        listScroll.documentView = notesStack
+        listScroll.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            notesStack.leadingAnchor.constraint(equalTo: listScroll.contentView.leadingAnchor),
+            notesStack.trailingAnchor.constraint(equalTo: listScroll.contentView.trailingAnchor),
+            notesStack.topAnchor.constraint(equalTo: listScroll.contentView.topAnchor),
+            notesStack.widthAnchor.constraint(equalTo: listScroll.contentView.widthAnchor),
+            // The document always fills the clip, so a click below the last
+            // card still lands on a view that focuses the field.
+            notesStack.heightAnchor.constraint(
+                greaterThanOrEqualTo: listScroll.contentView.heightAnchor),
+        ])
+        notesScroll = listScroll
+        notesScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 90).isActive = true
         notesScroll.setContentHuggingPriority(.init(1), for: .vertical)
 
-        let column = NSStackView(views: [header, cuesHeader, cuesScroll, rule,
-                                         input, hintLabel, statusLabel,
-                                         notesHeader, notesScroll])
+        // Empty state, centred in the list area.
+        let emptyTitle = Aurora.label("No notes yet", size: 12.5, weight: .medium,
+                                      color: Aurora.textDim)
+        let emptyHint = Aurora.label("Press ⌥⌘N and just start typing",
+                                     size: 11, color: Aurora.textFaint)
+        emptyState = NSStackView(views: [emptyTitle, emptyHint])
+        emptyState.orientation = .vertical
+        emptyState.alignment = .centerX
+        emptyState.spacing = 5
+        emptyState.translatesAutoresizingMaskIntoConstraints = false
+
+        let listArea = NSView()
+        listArea.translatesAutoresizingMaskIntoConstraints = false
+        listArea.addSubview(listScroll)
+        listArea.addSubview(emptyState)
+        NSLayoutConstraint.activate([
+            listScroll.leadingAnchor.constraint(equalTo: listArea.leadingAnchor),
+            listScroll.trailingAnchor.constraint(equalTo: listArea.trailingAnchor),
+            listScroll.topAnchor.constraint(equalTo: listArea.topAnchor),
+            listScroll.bottomAnchor.constraint(equalTo: listArea.bottomAnchor),
+            emptyState.centerXAnchor.constraint(equalTo: listArea.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: listArea.centerYAnchor, constant: -8),
+        ])
+        listArea.setContentHuggingPriority(.init(1), for: .vertical)
+        // The list area is the ONE thing that absorbs spare height — a weak
+        // "grow" pull keeps the rows above at their natural sizes instead of
+        // letting the solver park slack in the middle of the panel.
+        let grow = listArea.heightAnchor.constraint(equalToConstant: 10_000)
+        grow.priority = .init(50)
+        grow.isActive = true
+
+        // ── The column, on an 8-grid ───────────────────────────────────────
+        let hintRow = Self.indentedRow(hintLabel, left: 12)
+        let column = NSStackView(views: [header, input, hintRow, statusRow,
+                                         cuesRow, cuesScroll, listArea])
         column.orientation = .vertical
         column.alignment = .leading
-        // Generous, varied spacing on an ~8px rhythm — room to breathe between
-        // sections, tight where a label belongs to what follows it.
         column.spacing = 8
-        column.setCustomSpacing(16, after: header)
-        column.setCustomSpacing(6, after: cuesHeader)
-        column.setCustomSpacing(16, after: cuesScroll)
-        column.setCustomSpacing(16, after: rule)
-        column.setCustomSpacing(8, after: input)
-        column.setCustomSpacing(16, after: hintLabel)
-        column.setCustomSpacing(6, after: notesHeader)
+        column.setCustomSpacing(14, after: header)
+        column.setCustomSpacing(6, after: input)
+        column.setCustomSpacing(16, after: hintRow)
+        column.setCustomSpacing(4, after: cuesRow)
+        column.setCustomSpacing(8, after: cuesScroll)
         column.translatesAutoresizingMaskIntoConstraints = false
 
         // Clicking anywhere that is not a control means "I want to write a
         // note" — see the focus contract at the top of the file.
         let content = PanelBodyView()
         content.onClick = { [weak self] in self?.focusInput() }
-        // The deep-night panel, painted over the frosted GlassBox so the slab
-        // reads as dark frosted glass. Rounded to the panel radius so the fill
+        // The deep-night sheet, painted over the frosted GlassBox so the slab
+        // reads as near-black glass. Rounded to the panel radius so the fill
         // follows the glass corners.
         content.wantsLayer = true
         content.layer?.backgroundColor = Aurora.panelOverlay.cgColor
         content.layer?.cornerRadius = Aurora.rPanel
         content.layer?.masksToBounds = true
         content.addSubview(column)
-        // Top inset clears the transparent title bar's close button.
+        // Top inset keeps the header beside the transparent title bar's close
+        // button rather than below it — one quiet row, no dead band above.
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
-            column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            column.topAnchor.constraint(equalTo: content.topAnchor, constant: 30),
-            column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -18),
+            column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
+            column.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            column.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            column.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -8),
             header.widthAnchor.constraint(equalTo: column.widthAnchor),
-            cuesScroll.widthAnchor.constraint(equalTo: column.widthAnchor),
-            rule.widthAnchor.constraint(equalTo: column.widthAnchor),
             input.widthAnchor.constraint(equalTo: column.widthAnchor),
-            statusLabel.widthAnchor.constraint(equalTo: column.widthAnchor),
-            notesScroll.widthAnchor.constraint(equalTo: column.widthAnchor),
+            statusRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            cuesRow.widthAnchor.constraint(equalTo: column.widthAnchor),
+            cuesScroll.widthAnchor.constraint(equalTo: column.widthAnchor),
+            listArea.widthAnchor.constraint(equalTo: column.widthAnchor),
         ])
 
-        // A keystroke that lands in a reading pane is a note the owner meant to
-        // type, not a lost one: send it on to the field.
-        for pane in [cuesView, notesView] {
-            pane.onTypedInto = { [weak self] event in
-                guard let self else { return }
-                self.focusInput()
-                NSApp.postEvent(event, atStart: true)
-            }
+        // A keystroke that lands in the cues pane is a note the owner meant to
+        // type, not a lost one: send it on to the field. (The notes list is
+        // made of plain cards that can't take first responder, so its
+        // keystrokes already fall through to the field via the panel.)
+        cuesView.onTypedInto = { [weak self] event in
+            guard let self else { return }
+            self.focusInput()
+            NSApp.postEvent(event, atStart: true)
         }
 
         box.frame = NSRect(origin: .zero, size: panel.frame.size)
@@ -449,6 +549,18 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
         renderCues()
         renderNotes()
+        updateMeetingLabel()
+        updateStartChip()
+    }
+
+    /// A one-view row with the content nudged in from the column edge, so hint
+    /// and status text align with the text inside the field above them.
+    private static func indentedRow(_ view: NSView, left: CGFloat) -> NSStackView {
+        let row = NSStackView(views: [view])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 0, left: left, bottom: 0, right: left)
+        return row
     }
 
     private func buildInput() {
@@ -485,8 +597,8 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         input.textColor = Aurora.text
         input.delegate = self
         input.wantsLayer = true
-        // A raised sheet of glass with an ~8% hairline and a 10pt radius — the
-        // Aurora note input.
+        // A comfortable sheet of glass with an ~8% hairline and a 12pt radius —
+        // the Aurora note input, the panel's primary control.
         input.layer?.backgroundColor = Aurora.inputFill.cgColor
         input.layer?.cornerRadius = Aurora.rInput
         input.layer?.borderWidth = 1
@@ -495,20 +607,95 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
             string: "Add a note…",
             attributes: [.foregroundColor: Aurora.textFaint, .font: MS.ui(13)])
         input.translatesAutoresizingMaskIntoConstraints = false
-        // Room to type: a taller field than the default.
-        input.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        // Room to type: a 44pt field, comfortable rather than cramped.
+        input.heightAnchor.constraint(equalToConstant: 44).isActive = true
+
+        // The start-time chip, inside the field's right edge: the meeting-clock
+        // reading captured the instant typing started. Purely a readout of
+        // `fieldStartedElapsed` — the capture itself is unchanged. It ignores
+        // clicks, so the whole field stays clickable.
+        startChip.wantsLayer = true
+        startChip.layer?.backgroundColor = Aurora.accentSoft.cgColor
+        startChip.layer?.cornerRadius = 6
+        startChip.translatesAutoresizingMaskIntoConstraints = false
+        startChipLabel.font = MS.mono(10.5, .medium)
+        startChipLabel.textColor = Aurora.accentDim
+        startChipLabel.translatesAutoresizingMaskIntoConstraints = false
+        startChip.addSubview(startChipLabel)
+        input.addSubview(startChip)
+        NSLayoutConstraint.activate([
+            startChipLabel.leadingAnchor.constraint(equalTo: startChip.leadingAnchor, constant: 6),
+            startChipLabel.trailingAnchor.constraint(equalTo: startChip.trailingAnchor, constant: -6),
+            startChipLabel.topAnchor.constraint(equalTo: startChip.topAnchor, constant: 3),
+            startChipLabel.bottomAnchor.constraint(equalTo: startChip.bottomAnchor, constant: -3),
+            startChip.trailingAnchor.constraint(equalTo: input.trailingAnchor, constant: -8),
+            startChip.centerYAnchor.constraint(equalTo: input.centerYAnchor),
+        ])
+        startChip.isHidden = true
     }
 
     /// The field borrows the accent while it holds the keyboard — the web UI's
     /// `input:focus { border-color: … accent … }`, and the one place the accent
-    /// is spent on this panel.
+    /// is spent at full strength on this panel.
     private func setInputFocused(_ focused: Bool) {
-        // A mint focus ring while the field holds the keyboard; a plain ~8%
-        // hairline otherwise.
+        // An aqua focus ring with a whisper of glow while the field holds the
+        // keyboard; a plain ~8% hairline otherwise.
         input.layer?.borderColor = focused
-            ? Aurora.accent.withAlphaComponent(0.9).cgColor
+            ? Aurora.accent.withAlphaComponent(0.85).cgColor
             : Aurora.border.cgColor
+        input.layer?.shadowColor = Aurora.accent.cgColor
+        input.layer?.shadowOpacity = focused ? 0.14 : 0
+        input.layer?.shadowRadius = 6
+        input.layer?.shadowOffset = .zero
         hintLabel.textColor = focused ? Aurora.textDim : Aurora.textFaint
+    }
+
+    /// Show the captured start time inside the field whenever one is on record.
+    /// A readout only: every path that sets or clears `fieldStartedElapsed`
+    /// calls this after doing exactly what it always did.
+    private func updateStartChip() {
+        if fieldStartedLive, let started = fieldStartedElapsed {
+            startChipLabel.stringValue = Self.clock(started)
+            startChip.isHidden = false
+        } else {
+            startChip.isHidden = true
+        }
+    }
+
+    /// The meeting line beside the title — presentation of `meetingID` only.
+    private func updateMeetingLabel() {
+        guard let id = meetingID, let date = Self.meetingDate(from: id) else {
+            meetingLabel.stringValue = ""
+            return
+        }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.dateFormat = "d MMM · HH:mm"
+        meetingLabel.stringValue = format.string(from: date)
+    }
+
+    /// A meeting id is its start time (`YYYYMMDD-HHMMSS`); read it back so the
+    /// header can name the meeting without any new data flow.
+    static func meetingDate(from id: String) -> Date? {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = .current
+        parser.dateFormat = "yyyyMMdd-HHmmss"
+        return parser.date(from: id)
+    }
+
+    /// Collapse or expand the talking points. Visibility only — the cues and
+    /// how they load are untouched.
+    private func setCuesExpanded(_ expanded: Bool) {
+        cuesExpanded = expanded
+        cuesChevron.image = NSImage(
+            systemSymbolName: expanded ? "chevron.down" : "chevron.right",
+            accessibilityDescription: expanded ? "Hide talking points" : "Show talking points")
+        cuesScroll.isHidden = !expanded
+        if expanded {
+            box.layoutSubtreeIfNeeded()
+            updateCuesHeight()
+        }
     }
 
     private static func makeScroll(_ text: NSTextView) -> NSScrollView {
@@ -517,6 +704,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay        // no scrollbar chrome
         scroll.verticalScrollElasticity = .allowed
 
         text.drawsBackground = false
@@ -650,6 +838,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         // ordering: a note typed in A and flushed as B started went to A with
         // B's five-second elapsed on it.
         meetingID = id
+        updateMeetingLabel()
         // "Notes this meeting" means this meeting. A's notes must not still be
         // on screen while B records.
         notes.removeAll()
@@ -696,6 +885,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     }
 
     private func renderCues() {
+        cuesCountLabel.stringValue = cues.isEmpty ? "" : "· \(cues.count)"
         let out = NSMutableAttributedString()
         if cues.isEmpty {
             out.append(NSAttributedString(
@@ -703,18 +893,22 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                 attributes: Self.attrs(size: 12, color: Aurora.textFaint)))
         } else {
             let para = NSMutableParagraphStyle()
-            para.paragraphSpacing = 6
-            para.lineHeightMultiple = 1.1
-            para.headIndent = 13
-            for cue in cues {
+            para.paragraphSpacing = 7
+            para.lineHeightMultiple = 1.15
+            para.headIndent = 15
+            for (index, cue) in cues.enumerated() {
+                // A small aqua mark per cue — quiet, not a wall of accent.
                 let bullet = NSMutableAttributedString(
                     string: "•  ",
-                    attributes: [.font: MS.ui(12.5),
-                                 .foregroundColor: Aurora.textFaint,
+                    attributes: [.font: MS.ui(12),
+                                 .foregroundColor: Aurora.accentDim,
                                  .paragraphStyle: para])
-                var body = Self.attrs(size: 12.5, color: Aurora.textDim)
+                var body = Self.attrs(size: 12, color: Aurora.textDim)
                 body[.paragraphStyle] = para
-                bullet.append(NSAttributedString(string: "\(cue)\n", attributes: body))
+                // Newlines BETWEEN cues only: a trailing one measures as an
+                // extra empty line and leaves dead air under the list.
+                let tail = index == cues.count - 1 ? "" : "\n"
+                bullet.append(NSAttributedString(string: cue + tail, attributes: body))
                 out.append(bullet)
             }
         }
@@ -725,10 +919,12 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
 
     /// Size the talking-points box to its text (capped), so it hugs instead of
     /// leaving dead space. Measured off the attributed string rather than the
-    /// layout manager, which is nil under TextKit 2.
+    /// layout manager, which is nil under TextKit 2. Collapsed, there is
+    /// nothing to size.
     private func updateCuesHeight() {
-        guard cuesHeight != nil else { return }
-        let width = max(1, cuesScroll.contentSize.width)
+        guard cuesHeight != nil, cuesExpanded else { return }
+        let width = max(1, cuesScroll.contentSize.width,
+                        panel.frame.width - 32)
         let measured = cuesText.boundingRect(
             with: NSSize(width: width, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]).height
@@ -743,32 +939,63 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     // MARK: - Notes
 
     private func renderNotes() {
-        notesHeader.attributedStringValue = Aurora.sectionHeaderText(
-            notes.isEmpty ? "Notes this meeting" : "Notes this meeting (\(notes.count))")
-        let out = NSMutableAttributedString()
-        if notes.isEmpty {
-            out.append(NSAttributedString(string: "Nothing yet.",
-                                          attributes: Self.attrs(size: 12, color: Aurora.textFaint)))
+        // Same data, new clothes: one quiet card per note, newest first.
+        for view in notesStack.views { notesStack.removeView(view) }
+        for note in notes {
+            let card = makeNoteCard(t: note.t, text: note.text)
+            notesStack.addView(card, in: .top)
+            card.widthAnchor.constraint(equalTo: notesStack.widthAnchor).isActive = true
         }
+        emptyState.isHidden = !notes.isEmpty
+        notesScroll?.contentView.scroll(to: .zero)     // newest is at the top
+        if let notesScroll { notesScroll.reflectScrolledClipView(notesScroll.contentView) }
+    }
+
+    /// A committed note: mono aqua time pill + the note text on a card that
+    /// brightens under the pointer. Labels never intercept clicks, so a click
+    /// on a card still means "let me type".
+    private func makeNoteCard(t: TimeInterval, text: String) -> NSView {
+        let card = HoverCardView()
+
+        let pill = PassthroughView()
+        pill.wantsLayer = true
+        pill.layer?.backgroundColor = Aurora.accentSoft.cgColor
+        pill.layer?.cornerRadius = 5
+        pill.translatesAutoresizingMaskIntoConstraints = false
+        let stamp = StaticText(labelWithString: Self.clock(t))
+        stamp.font = MS.mono(10, .semibold)
+        stamp.textColor = Aurora.accentDim
+        stamp.alignment = .center
+        stamp.translatesAutoresizingMaskIntoConstraints = false
+        pill.addSubview(stamp)
+
         let para = NSMutableParagraphStyle()
-        para.paragraphSpacing = 8
-        para.lineHeightMultiple = 1.12      // comfortable line-height for note text
-        para.headIndent = 46
-        for note in notes {                       // newest first
-            // Timestamps are monospaced and faint, like .note-time in the web
-            // UI — never the accent, or every line would shout.
-            let stamp = NSMutableAttributedString(
-                string: Self.clock(note.t) + "   ",
-                attributes: [.font: MS.mono(11, .semibold),
-                             .foregroundColor: Aurora.textFaint,
-                             .paragraphStyle: para])
-            var body = Self.attrs(size: 12.5, color: Aurora.text)
-            body[.paragraphStyle] = para
-            stamp.append(NSAttributedString(string: note.text + "\n", attributes: body))
-            out.append(stamp)
-        }
-        notesView.textStorage?.setAttributedString(out)
-        notesView.scroll(.zero)                   // newest is at the top
+        para.lineHeightMultiple = 1.22
+        let body = StaticText(wrappingLabelWithString: "")
+        body.isSelectable = false
+        body.attributedStringValue = NSAttributedString(
+            string: text,
+            attributes: [.font: MS.ui(12.5), .foregroundColor: Aurora.text,
+                         .paragraphStyle: para])
+        body.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        body.translatesAutoresizingMaskIntoConstraints = false
+
+        card.addSubview(pill)
+        card.addSubview(body)
+        NSLayoutConstraint.activate([
+            stamp.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 6),
+            stamp.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -6),
+            stamp.topAnchor.constraint(equalTo: pill.topAnchor, constant: 2.5),
+            stamp.bottomAnchor.constraint(equalTo: pill.bottomAnchor, constant: -2.5),
+            pill.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            pill.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 10),
+            pill.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            body.leadingAnchor.constraint(equalTo: pill.trailingAnchor, constant: 10),
+            body.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            body.firstBaselineAnchor.constraint(equalTo: stamp.firstBaselineAnchor),
+            body.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+        ])
+        return card
     }
 
     private static func clock(_ t: TimeInterval) -> String {
@@ -867,9 +1094,13 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     /// from both the keystroke path and `bindFieldIfNeeded`, and a no-op once a
     /// start is already on record.
     private func captureStartIfNeeded() {
-        guard fieldStartedElapsed == nil, !fieldText.isEmpty else { return }
+        guard fieldStartedElapsed == nil, !fieldText.isEmpty else {
+            updateStartChip()
+            return
+        }
         fieldStartedLive = clockIsLive?() ?? false
         fieldStartedElapsed = currentElapsed?()
+        updateStartChip()
     }
 
     // MARK: - Screen-share safety for the text input
@@ -1136,6 +1367,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         statusLabel.stringValue = message ?? ""
         statusLabel.textColor = warning ? MS.warn : MS.danger
         statusLabel.isHidden = (message == nil)
+        statusRow.isHidden = (message == nil)
     }
 
     // MARK: - The text in the field
@@ -1198,6 +1430,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
         draftSavedAt = .distantPast
         fieldStartedElapsed = nil
         fieldStartedLive = false
+        updateStartChip()
     }
 
     /// Bounded staleness, not a debounce.
@@ -1278,6 +1511,7 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private func adoptCapturedStart(_ t: TimeInterval?) {
         fieldStartedElapsed = t
         fieldStartedLive = (t != nil)
+        updateStartChip()
     }
 
     /// File every note left over from a meeting that is no longer in front of
@@ -1313,6 +1547,40 @@ final class NotesPanel: NSObject, NSWindowDelegate, NSTextFieldDelegate {
                 self.drafts.forget(item)
             }
         }
+    }
+
+    // MARK: - Offscreen render seam (design harness only)
+
+    /// Populate the panel with fixture state and hand back its content view
+    /// for an offscreen render. Presentation only: it drives exactly the
+    /// render paths the live panel uses, touches no network and no draft
+    /// files, and is never called by the app itself.
+    func fixtureContentView(size: NSSize,
+                            meetingID fixtureMeeting: String,
+                            cues fixtureCues: [String],
+                            noteRows: [(t: TimeInterval, text: String)],
+                            draft: String,
+                            draftStartedAt: TimeInterval?,
+                            cuesExpanded expanded: Bool = false) -> NSView {
+        panel.setFrame(NSRect(origin: .zero, size: size), display: false)
+        meetingID = fixtureMeeting
+        updateMeetingLabel()
+        cues = fixtureCues
+        renderCues()
+        notes = noteRows
+        renderNotes()
+        if !draft.isEmpty {
+            input.stringValue = draft          // no delegate fires: no draft write
+            fieldStartedElapsed = draftStartedAt
+            fieldStartedLive = draftStartedAt != nil
+        }
+        updateStartChip()
+        setInputFocused(!draft.isEmpty)
+        setCuesExpanded(expanded)
+        box.layoutSubtreeIfNeeded()
+        updateCuesHeight()
+        box.layoutSubtreeIfNeeded()
+        return box
     }
 
     // MARK: - Placement
@@ -1655,6 +1923,59 @@ final class PanelBodyView: NSView {
     }
 }
 
+/// The notes list's document view: flipped so the newest card sits at the top
+/// of the scroll view, and focus-through so a click between cards still means
+/// "let me type" (the event falls through to PanelBodyView).
+final class FlippedStackView: NSStackView {
+    override var isFlipped: Bool { true }
+    override var needsPanelToBecomeKey: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// A note card. Purely presentational: it brightens under the pointer and lets
+/// every click fall through to the panel body (which focuses the note field).
+final class HoverCardView: NSView {
+    override var needsPanelToBecomeKey: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.backgroundColor = HoverCardView.rest
+        layer?.cornerRadius = 10
+        translatesAutoresizingMaskIntoConstraints = false
+    }
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    private static let rest = Aurora.cardFill.cgColor
+    private static let hover = Aurora.cardFillHover.cgColor
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { layer?.backgroundColor = Self.hover }
+    override func mouseExited(with event: NSEvent) { layer?.backgroundColor = Self.rest }
+}
+
+/// A label that never intercepts the mouse, so clicking a note's text still
+/// focuses the field via the panel body. (An ordinary label would swallow the
+/// click without doing anything with it.)
+final class StaticText: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// A decorative view the mouse passes straight through — the time pills and
+/// the in-field start chip.
+final class PassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 // MARK: - The reading panes
 
 /// The talking points and the notes-so-far list: selectable so they can be
@@ -1708,23 +2029,42 @@ final class NoteField: NSTextField {
 // MARK: - Padded text field
 
 /// NSTextField draws its text hard against the left edge; the note field needs
-/// breathing room inside its rounded fill.
+/// breathing room inside its rounded fill — and the right inset stays clear of
+/// the start-time chip that lives inside the field's right edge. The inset is
+/// fixed rather than chip-dependent so the field editor's geometry never
+/// changes mid-edit.
 final class PaddedTextFieldCell: NSTextFieldCell {
-    private let padding = NSSize(width: 12, height: 0)
+    private let leftInset: CGFloat = 12
+    private let rightInset: CGFloat = 60
+
+    /// Inset horizontally, and centre the single text line vertically — a
+    /// 44pt field otherwise draws its text pinned to the top.
+    private func padded(_ rect: NSRect) -> NSRect {
+        var r = NSRect(x: rect.minX + leftInset, y: rect.minY,
+                       width: max(0, rect.width - leftInset - rightInset),
+                       height: rect.height)
+        let line = ceil(NSLayoutManager().defaultLineHeight(
+            for: font ?? .systemFont(ofSize: 13)))
+        if r.height > line {
+            r.origin.y += floor((r.height - line) / 2)
+            r.size.height = line
+        }
+        return r
+    }
 
     override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        super.drawingRect(forBounds: rect.insetBy(dx: padding.width, dy: padding.height))
+        super.drawingRect(forBounds: padded(rect))
     }
 
     override func edit(withFrame rect: NSRect, in view: NSView, editor: NSText,
                        delegate: Any?, event: NSEvent?) {
-        super.edit(withFrame: rect.insetBy(dx: padding.width, dy: padding.height),
+        super.edit(withFrame: padded(rect),
                    in: view, editor: editor, delegate: delegate, event: event)
     }
 
     override func select(withFrame rect: NSRect, in view: NSView, editor: NSText,
                          delegate: Any?, start: Int, length: Int) {
-        super.select(withFrame: rect.insetBy(dx: padding.width, dy: padding.height),
+        super.select(withFrame: padded(rect),
                      in: view, editor: editor, delegate: delegate,
                      start: start, length: length)
     }
