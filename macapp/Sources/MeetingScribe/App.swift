@@ -11,17 +11,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: MainWindow!
     private var statusItem: StatusItem!
     private var recordingPanel: RecordingPanel!
+    private var notesPanel: NotesPanel!
     private var notifications: Notifications!
     private var statusPoller: StatusPoller!
     private var nudgePoller: NudgePoller!
     private var setupWindow: SetupWindow?
-    private var lastRecorder = RecorderState()
+    private var notesMenuItem: NSMenuItem?
+    private var router: RecorderRouter!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         backend = BackendManager()
         mainWindow = MainWindow(baseURL: backend.baseURL)
         statusItem = StatusItem(baseURL: backend.baseURL)
         recordingPanel = RecordingPanel(baseURL: backend.baseURL)
+        notesPanel = NotesPanel(baseURL: backend.baseURL)
         notifications = Notifications(baseURL: backend.baseURL)
         statusPoller = StatusPoller(baseURL: backend.baseURL)
         nudgePoller = NudgePoller(baseURL: backend.baseURL, notifications: notifications)
@@ -30,6 +33,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.onOpenApp = openApp
         recordingPanel.onOpenApp = openApp
         notifications.onOpenApp = openApp
+
+        // The note-taker stamps each note with the HUD's interpolated clock, so
+        // both panels agree on how far into the meeting we are — and asks
+        // whether that clock is still running, because a reading taken after
+        // Stop is a frozen one and must not be sent as a live timestamp.
+        notesPanel.currentElapsed = { [weak self] in self?.recordingPanel.currentElapsed ?? 0 }
+        notesPanel.clockIsLive = { [weak self] in self?.recordingPanel.isLive ?? false }
+        notesPanel.onVisibilityChange = { [weak self] visible in
+            self?.statusItem.setNotesVisible(visible)
+            self?.notesMenuItem?.state = visible ? .on : .off
+        }
+        // Asking for the note-taker by name means you want to type in it, so
+        // this path takes the keyboard deliberately (Escape hands it back).
+        statusItem.onToggleNotes = { [weak self] in self?.notesPanel.toggleFromUserGesture() }
 
         backend.onHealthChange = { [weak self] healthy in
             if healthy {
@@ -57,31 +74,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 })
         }
 
+        // Which meeting the note-taker files against, and whether its panel is
+        // on screen, are two different decisions taken from one snapshot —
+        // RecorderRouter is where that split lives and why it has to exist.
+        router = RecorderRouter(sinks: RecorderRouter.Sinks(
+            menuBarRecording: { [weak self] on in self?.statusItem.setRecording(on) },
+            hudUpdate: { [weak self] state in
+                self?.recordingPanel.update(elapsed: state.elapsed, title: nil)
+            },
+            hudShow: { [weak self] in self?.recordingPanel.show() },
+            hudHide: { [weak self] in self?.recordingPanel.hide() },
+            meetingChanged: { [weak self] id in self?.notesPanel.meetingChanged(to: id) },
+            showNotes: { [weak self] in self?.notesPanel.show() },
+            recordingStopped: { [weak self] in self?.notesPanel.recordingStopped() },
+            hideMainWindow: { [weak self] in self?.mainWindow.hide() },
+            showMainWindow: { [weak self] in self?.mainWindow.show() }))
+
         statusPoller.onRecorderChange = { [weak self] state in
-            guard let self else { return }
-            self.statusItem.setRecording(state.recording)
-            if state.recording {
-                self.recordingPanel.update(elapsed: state.elapsed, title: nil)
-                self.recordingPanel.show()
-                // Stealth: on the start transition only, tuck the main window
-                // away so just the small floating panel is on screen. The Dock
-                // icon or menu bar can still bring it back mid-recording.
-                if !self.lastRecorder.recording {
-                    self.mainWindow.hide()
-                }
-            } else {
-                self.recordingPanel.hide()
-                // Recording ended: bring the app back so the user sees the
-                // processing state and, soon after, the transcript.
-                if self.lastRecorder.recording {
-                    self.mainWindow.show()
-                }
-            }
-            self.lastRecorder = state
+            self?.router.apply(state)
         }
         statusPoller.onRecorderTick = { [weak self] state, title in
-            self?.lastRecorder = state
+            self?.router.tick(state)
             self?.recordingPanel.update(elapsed: state.elapsed, title: title)
+        }
+        // The fast identity route: the HUD polls the recorder five times a
+        // second for its clock, and that response carries the meeting id. Same
+        // sample, so `t` and `meeting_id` can never disagree, and the handover
+        // is noticed in ~200 ms rather than up to 2 s.
+        recordingPanel.onLiveMeetingID = { [weak self] id in
+            self?.router.liveMeetingID(id)
         }
         statusPoller.onJobFinished = { [weak self] kind, meetingID, ok, message in
             self?.notifications.postJobDone(kind: kind, meetingID: meetingID, ok: ok, message: message)
@@ -103,7 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationReplied = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if lastRecorder.recording {
+        // `router` is built in applicationDidFinishLaunching; a quit that beats
+        // it there has nothing to lose, so treat "no router yet" as not
+        // recording rather than trapping on the way out.
+        if router?.last.recording == true {
             let alert = NSAlert()
             alert.messageText = "A recording is still running"
             alert.informativeText = "Quitting now abandons the recording in progress. "
@@ -180,6 +204,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let reload = NSMenuItem(title: "Reload", action: #selector(reloadPage), keyEquivalent: "r")
         reload.target = self
         viewMenu.addItem(reload)
+        let notes = NSMenuItem(title: "Notes Panel", action: #selector(toggleNotesPanel),
+                               keyEquivalent: "")
+        notes.target = self
+        // ⌥⌘N is normally claimed system-wide by the Carbon hotkey so it works
+        // mid-call while another app is frontmost. Only put it on the menu item
+        // when that registration failed, or both would fire and cancel out.
+        if !notesPanel.hotkeyRegistered {
+            notes.keyEquivalent = "n"
+            notes.keyEquivalentModifierMask = [.command, .option]
+        }
+        notes.state = notesPanel.isVisible ? .on : .off
+        notesMenuItem = notes
+        viewMenu.addItem(notes)
         let viewItem = NSMenuItem()
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
@@ -197,6 +234,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func reloadPage() {
         mainWindow.reload()
+    }
+
+    @objc private func toggleNotesPanel() {
+        notesPanel.toggleFromUserGesture()
     }
 }
 

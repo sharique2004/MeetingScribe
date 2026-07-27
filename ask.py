@@ -836,6 +836,14 @@ def _sandbox():
         return _SANDBOX
 
 
+def _ask_model():
+    """The model Ask runs on. Left unset, the CLI inherits the user's default
+    (which may be Opus in 1M-context mode — slow for a bounded transcript Q&A).
+    Pin a fast model instead: Haiku answers this kind of grounded question in a
+    fraction of the time. Overridable via config "ask_model"."""
+    return str(summarize.load_config().get("ask_model") or "haiku")
+
+
 def _claude_argv(exe, config):
     """NOTE: `--tools` and `--mcp-config` are VARIADIC — a positional prompt
     placed after them is swallowed as another value and the CLI exits 1 with
@@ -844,6 +852,7 @@ def _claude_argv(exe, config):
     return [exe, "-p",
             "--output-format", "stream-json", "--verbose",
             "--include-partial-messages",
+            "--model", _ask_model(),
             "--tools", "", "--strict-mcp-config", "--mcp-config", config]
 
 

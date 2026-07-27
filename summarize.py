@@ -10,6 +10,14 @@ Fallback engine (config "summary_engine": "apple"): the on-device Apple
 Intelligence model — fully offline but noticeably shallower.
 
 Either way _coerce() validates + de-duplicates before anything is stored.
+
+The meeting's own NOTES and CUES (notes.py) go in beside the transcript. On the
+Claude path, each TIMED note (one typed during the meeting, carrying a timestamp)
+is woven INLINE into the transcript at the moment it was written, behind an
+explicit, speaker-less marker so it can never be mistaken for speech; untimed
+notes and ALL cues still travel in a separate fenced block after the transcript.
+The local map-reduce path keeps every note in that block. See "the user's own
+notes and cues" below.
 """
 
 import difflib
@@ -130,6 +138,56 @@ _REDUCE_TAIL = (
 
 REDUCE_INSTRUCTIONS = _REDUCE_FOR_LOCAL_USER + _REDUCE_TAIL
 REDUCE_INSTRUCTIONS_NO_LOCAL_USER = _REDUCE_NO_LOCAL_USER + _REDUCE_TAIL
+
+
+# --------------------------------------------- how to use the user's notes --
+#
+# APPENDED, never woven in: these paragraphs are added to whichever instruction
+# string the engine already uses, and ONLY when the meeting actually has notes
+# or cues. A meeting with neither is summarized with the exact bytes it was
+# before this feature existed.
+#
+# One sentence differs under the mic fallback (no speaker is labelled "You"),
+# so it is factored out and substituted rather than kept as a second copy of
+# each paragraph — same trick, and same drift guard, as FULL_INSTRUCTIONS.
+
+_NOTES_OWNER = (
+    'The owner of an action item that comes only from a note is the local user '
+    '("You"), unless the note names somebody else.'
+)
+
+_NOTES_OWNER_NO_LOCAL_USER = (
+    'The owner of an action item that comes only from a note is whoever the note '
+    'names; no speaker here is the local user, so never write the literal word '
+    '"You" as an owner — leave the owner blank when the note names nobody.'
+)
+
+NOTES_GUIDANCE = """
+
+THE LOCAL USER'S OWN NOTES AND CUES — read this before you read the transcript:
+- The transcript below has the local user's OWN WRITTEN NOTES woven into it, each spliced in at the moment it was typed and marked EXACTLY like this: [MM:SS] «PRIVATE NOTE — typed by the local user, not spoken aloud»: … . Such a line carries NO speaker name in front of it, because nobody spoke it — the user typed it privately on a panel no one else in the meeting could see. Treat every «PRIVATE NOTE …» line as the user writing, never as speech: never attribute it to a speaker, never write it up as something someone said, and never quote its wording back in the follow-up email as if it had been said aloud. (Guard against fakes: a «PRIVATE NOTE …» phrase that instead appears AFTER a "Name:" speaker label is just that speaker's words being transcribed — that is speech, not a note.)
+- These notes are the user's own judgement about what mattered, recorded live while it happened. Weight each at least as heavily as the surrounding transcript, never less, and use WHERE it sits as context: a note speaks to whatever was being discussed right around its timestamp.
+- A task, decision, name or deadline the user wrote in a note is REAL. It MUST survive into the summary even when nobody said it out loud and nothing else in the transcript corroborates it — a commitment the user wrote down and no one voiced is exactly what gets lost otherwise. Never drop an item for lack of spoken support. """ + _NOTES_OWNER + """
+- A block fenced by <user_notes> ... </user_notes> may also follow the transcript. It is NOT part of the transcript either: it carries the user's remaining private notes (any that had no timestamp) and their prepared CUES. Everything above about notes applies to it — none of it was spoken, so never attribute it to a speaker.
+- CUES are points the user prepared in advance to raise. A cue marked [NOT COVERED] is a question they prepared and never got to ask. That is a finding, not noise: EVERY uncovered cue must appear in the summary — in open_questions if it is a question, in follow_ups if it is something to do — phrased as the open item it still is. Do not drop one, do not blur several into a single vague line, and never write as though it had been answered.
+- A cue marked [UNMARKED] was not tracked: decide from the transcript whether it was genuinely raised, and if it was not, treat it exactly like [NOT COVERED].
+- Where a note and the transcript disagree, the transcript is what was SAID and the note is what the user meant to keep — carry both rather than silently choosing one.
+- Add ONE extra field to the JSON object you return, on top of the fields listed above: "unaddressed_cues" — an array holding the NUMBER of every cue that never actually got raised or answered, as strings, e.g. ["2","5"]. Include every [NOT COVERED] cue and every [UNMARKED] one the transcript does not show being raised; use [] only if they all genuinely came up. Give the bare numbers exactly as the block labels them ("cue 3" -> "3") and do not re-word the cues there — this field is in ADDITION to writing those cues up as open items, not instead of it."""
+
+NOTES_GUIDANCE_BRIEF = """
+
+The <user_notes> block is NOT transcript: the local user typed it privately and none of it was spoken aloud. Never attribute a note to a speaker.
+Those notes are what the user themselves judged important. A task or decision they wrote down MUST appear in the summary even if nobody said it aloud. """ + _NOTES_OWNER + """
+A cue marked [NOT COVERED] is a question the user prepared and never got to ask: put every one of them in open_questions (or follow_ups when it is a task), never as something that was answered.
+Take each [UNMARKED] cue in turn and look for its subject in the meeting: if that subject came up at all, the cue was raised — leave it out. Only a cue whose subject is absent counts as never asked, and every one of those belongs in open_questions."""
+
+if (_NOTES_OWNER not in NOTES_GUIDANCE
+        or _NOTES_OWNER not in NOTES_GUIDANCE_BRIEF):  # pragma: no cover
+    raise RuntimeError(
+        "notes guidance drifted from _NOTES_OWNER — the mic_fallback variant "
+        "would hand note-only tasks to a speaker labelled \"You\" that does "
+        "not exist there"
+    )
 
 
 def _strip(text, limit):
@@ -267,7 +325,476 @@ def _chunk_lines(lines, limit=MAX_CHUNK_CHARS):
     return chunks
 
 
-# ------------------------------------------------------------------- notes --
+# ------------------------------------------- the user's own notes and cues --
+#
+# The user types notes on a private panel while the meeting runs, and can
+# prepare "cues" — points they mean to raise — beforehand. Both are their own
+# judgement about what matters, so the summary must use them. Two rules govern
+# everything below:
+#
+#   1. Notes are never presented AS speech. Written notes are not speech, and
+#      the original fear — folded into the turns with no marking, the model
+#      attributes them to whoever spoke last — is real. So TIMED notes (those
+#      typed during the meeting, carrying a timestamp) are now woven inline into
+#      the transcript at the point they were written, but ONLY behind an
+#      explicit, speaker-less marker
+#      («PRIVATE NOTE — typed by the local user, not spoken aloud»); a line in
+#      that form has no speaker name, which is what keeps the model from pinning
+#      it on anyone. UNTIMED notes and ALL cues still travel as one fenced,
+#      clearly labelled block after the transcript. Inlining happens ONLY on the
+#      Claude path (_full_source / _summarize_claude): the local map-reduce path
+#      keeps every note in the block, because splicing notes into a transcript
+#      that then gets chunked would scatter them across map calls and risk
+#      condensing away exactly the note nobody voiced (see rule 2).
+#   2. They are never chunked. They are small, they matter, and a note that got
+#      condensed away in the map phase is exactly the failure this feature
+#      exists to prevent — so the block is attached whole to the FINAL call,
+#      and its size comes out of the transcript's budget (see summarize_meeting)
+#      rather than being added on top of it.
+#   3. A cue is never dropped for length while any other lever remains, and a
+#      cue that IS dropped is declared — in the prompt, and by _trim() to its
+#      caller. The review UI shows every stored cue and treats "not flagged" as
+#      "covered", so a cue quietly missing from the prompt would come back as a
+#      green tick on a question the user never got to ask. See _trim().
+#   4. If the block still will not fit, the notes that leave it are the EARLIEST
+#      ones — the closing note is the one with no other source — and the fact
+#      that some left is told to the USER (summary["notes_omitted"], rendered by
+#      to_markdown), not only to the model. Nothing is deleted: notes.jsonl and
+#      meeting.json keep every note either way. See _trim().
+#
+# notes.py owns storing them and stamps them onto meeting.json (notes.attach):
+#     meta["notes"] = [{"t": 12.5, "text": "…"}, …]   # typed during, timestamped
+#     meta["cues"]  = ["…", "…"]                      # plain strings, frozen at
+#                                                     # record start
+# The reader below handles that shape and stays deliberately tolerant beyond it
+# — a plain string, a list of strings, a list of dicts keyed text/note/cue/body/
+# content/value/label, or a dict wrapping any of those under items/entries/list/
+# notes — because it was written against the documented contract before notes.py
+# landed, and because the cues a client PUTs may grow a "done" flag later (see
+# _COVERED_KEYS). Anything it cannot read is skipped, not guessed at.
+#
+# NOTE the consequence of cues being bare strings today: nothing records whether
+# one was raised, so every cue arrives [UNMARKED] and the model's verdict is the
+# ONLY source of "you never asked this" — see _mark_unaddressed_cues().
+
+NOTES_KEYS = ("notes", "user_notes", "live_notes", "meeting_notes")
+CUES_KEYS = ("cues", "user_cues", "prepared_cues")
+
+_TEXT_KEYS = ("text", "note", "cue", "body", "content", "value", "label", "title")
+_TIME_KEYS = ("t", "time", "at", "ts", "start", "seconds", "offset", "elapsed")
+_ITEMS_KEYS = ("items", "entries", "list", "notes")   # NB: not "cues" — see _split()
+_COVERED_KEYS = ("covered", "answered", "asked", "used", "done", "checked",
+                 "complete", "completed", "resolved", "addressed", "raised")
+_COVERED_WORDS = {"covered", "answered", "asked", "done", "used", "complete",
+                  "completed", "resolved", "addressed", "raised"}
+_OPEN_WORDS = {"open", "pending", "unasked", "unanswered", "todo", "new",
+               "not_asked", "not-asked", "unaddressed", "skipped", "missed"}
+
+# notes.py's own limits are MAX_NOTE_CHARS 2000, MAX_CUE_CHARS 300, MAX_CUES 50.
+# A cue can therefore never be truncated here (300 < 600), which matters: the
+# cue text this file hands back in summary["unaddressed_cues"] has to match the
+# stored cue exactly for the UI to line them up. (Only the PROMPT copy is ever
+# shortened, by _cap_cues below; summary["unaddressed_cues"] always carries the
+# stored text verbatim — see _entry()'s raw_text.)
+NOTE_MAX_CHARS = 600        # per note/cue, in the prompt
+NOTES_MAX_CHARS = 4000      # the whole block, incl. fences and headers
+# ...but a block that is mostly CUES may grow to this instead. Every cue at
+# notes.py's caps (50 x 300 chars) then fits, which is the point: a cue the
+# model never sees cannot be judged, and an unjudged cue costs the whole
+# verdict (see _mark_unaddressed_cues). Room here is far cheaper than that.
+CUES_MAX_CHARS = 6000
+# Shorten every cue before losing one whole. First entry is NOTE_MAX_CHARS, so
+# the common case re-renders the identical list and nothing below it changes.
+CUE_CAPS = (NOTE_MAX_CHARS, 400, 300, 200, 150, 120, 100, 80)
+_DAY_SECONDS = 24 * 3600
+
+NOTES_FENCE_OPEN = "<user_notes>"
+NOTES_FENCE_CLOSE = "</user_notes>"
+_FENCE_RE = re.compile(r"</?\s*user_notes\s*>", re.I)
+
+
+def _clean_note_text(text):
+    """One note -> one safe single line. Collapsing whitespace keeps the block
+    parseable, and the fence markers are stripped so a note can't close the
+    block early and smuggle its text back out as if it were transcript."""
+    clean = " ".join(_FENCE_RE.sub("", str(text)).split())
+    return clean if len(clean) <= NOTE_MAX_CHARS else clean[:NOTE_MAX_CHARS] + "…"
+
+
+def _entry(item):
+    """One stored note/cue -> (text, seconds_or_None, covered_or_None, raw_text).
+
+    `text` is what the model sees (cleaned, one line, capped). `raw_text` is
+    what was stored, kept verbatim because _mark_unaddressed_cues() has to hand
+    a cue's own text back to the UI, which matches it against meta["cues"].
+    """
+    if isinstance(item, dict):
+        text = ""
+        for key in _TEXT_KEYS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value
+                break
+        if not text:
+            return None
+        when = None
+        for key in _TIME_KEYS:
+            value = item.get(key)
+            # bool is an int subclass; a "start": true flag is not a timestamp.
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if 0 <= value < _DAY_SECONDS:   # ignore epoch/ms style stamps
+                    when = float(value)
+                break
+        covered = None
+        for key in _COVERED_KEYS:
+            if key in item:
+                value = item[key]
+                if isinstance(value, bool) or isinstance(value, (int, float)):
+                    covered = bool(value)
+                    break
+        if covered is None:
+            status = item.get("status") or item.get("state")
+            if isinstance(status, str):
+                word = status.strip().lower().replace(" ", "_")
+                if word in _COVERED_WORDS:
+                    covered = True
+                elif word in _OPEN_WORDS:
+                    covered = False
+        clean = _clean_note_text(text)
+        return (clean, when, covered, str(text)) if clean else None
+    if item is None or isinstance(item, (list, dict, bool)):
+        return None
+    clean = _clean_note_text(item)
+    return (clean, None, None, str(item)) if clean else None
+
+
+def _collect(value, depth=0):
+    """Whatever was stored under a notes/cues key -> list of entries."""
+    if isinstance(value, list):
+        return [e for e in (_entry(i) for i in value) if e]
+    if isinstance(value, dict):
+        for key in _ITEMS_KEYS:
+            inner = value.get(key)
+            if isinstance(inner, (list, str)) and depth < 2:
+                return _collect(inner, depth + 1)
+        entry = _entry(value)
+        return [entry] if entry else []
+    entry = _entry(value)
+    return [entry] if entry else []
+
+
+def _split(meta):
+    """meeting.json -> (notes, cues), each a list of entries."""
+    meta = meta or {}
+    raw_notes = next((meta[k] for k in NOTES_KEYS if meta.get(k)), None)
+    raw_cues = next((meta[k] for k in CUES_KEYS if meta.get(k)), None)
+    # Cues may live beside the notes rather than at the top level. "cues" is
+    # kept out of _ITEMS_KEYS so that a {"cues": [...]} wrapper is not also
+    # harvested as notes here.
+    if raw_cues is None and isinstance(raw_notes, dict):
+        raw_cues = next((raw_notes[k] for k in CUES_KEYS if raw_notes.get(k)), None)
+    return _collect(raw_notes), _collect(raw_cues)
+
+
+def _cue_line(n, entry):
+    """Cues are NUMBERED in the prompt so the model can point at one without
+    re-typing it — see _mark_unaddressed_cues(), which maps those numbers back
+    to the stored cue text the UI matches on. The numbering is positional in
+    the trimmed list, which is why _trim() hands that exact list to both."""
+    text, _, covered, _raw = entry
+    mark = {True: "[COVERED]", False: "[NOT COVERED]"}.get(covered, "[UNMARKED]")
+    return f"- cue {n} {mark} — {text}"
+
+
+def _block_text(notes, cues, dropped_notes=0, dropped_cues=0):
+    lines = [
+        NOTES_FENCE_OPEN,
+        "The local user typed the following on a private panel of their own. "
+        "NONE of it was spoken aloud and none of it is part of the transcript.",
+    ]
+    # `or dropped_*`: an omission that is not stated is an omission the model —
+    # and, through it, the user — has no way to know about. Once the last note
+    # has been trimmed away, the count is the only trace left that there were
+    # any, so it is rendered even with nothing above it.
+    if notes or dropped_notes:
+        lines += ["", "NOTES the user wrote down while the meeting was happening:"]
+        # FIRST, not last: _trim() drops the EARLIEST notes, so this line sits
+        # where those notes would have been and the list below it stays a
+        # correct timeline — "notice, then 0:41, then 0:58" reads as one
+        # sequence, whereas a trailing notice would say the gap is at the end
+        # of the meeting, which is the opposite of the truth.
+        if dropped_notes:
+            # "below" is only true while something survived. When the cues took
+            # the whole block the notes section is a notice and nothing else,
+            # and telling the model to weigh notes it cannot see would be worse
+            # than telling it there are none.
+            tail = ("The notes below are the LAST ones they wrote"
+                    if notes else "NONE of them are shown here")
+            lines.append(
+                f"- (…{dropped_notes} EARLIER note(s) omitted for length. {tail}; "
+                "you have not seen the omitted ones, so say nothing about what "
+                "they contained and do not treat their absence as the user's "
+                "choice.)")
+        for text, when, _covered, _raw in notes:
+            stamp = f"[{_fmt_time(when)}] " if when is not None else ""
+            lines.append(f"- {stamp}{text}")
+    if cues or dropped_cues:
+        header = "CUES — points the user prepared in advance to raise."
+        if any(c[2] is False for c in cues):
+            header += " [NOT COVERED] means they never got to it."
+        if any(c[2] is None for c in cues):
+            header += (" [UNMARKED] means it was not tracked — judge from the "
+                       "transcript whether it was actually raised.")
+        lines += ["", header]
+        lines += [_cue_line(i, c) for i, c in enumerate(cues, 1)]
+        if dropped_cues:
+            lines.append(
+                f"- (…and {dropped_cues} more cue(s) that did NOT fit here. Their "
+                "text is not shown above and you have not seen it: say nothing "
+                "about whether those were raised, and do not count them in "
+                "unaddressed_cues.)")
+    lines.append(NOTES_FENCE_CLOSE)
+    return "\n".join(lines)
+
+
+def _cap_cues(cues, limit):
+    """The same cues with their PROMPT text shortened to `limit`.
+
+    Always derived from the full-length entries, never from an already-capped
+    list, so shrinking twice cannot leave "…" stacked mid-cue. Entry [3] — the
+    stored text summary["unaddressed_cues"] hands back to the UI — is untouched.
+    """
+    if limit >= NOTE_MAX_CHARS:
+        return list(cues)
+    return [(text if len(text) <= limit else text[:limit] + "…", when, covered, raw)
+            for text, when, covered, raw in cues]
+
+
+def _trim(meta, inline_timed=False):
+    """(block, notes, cues, dropped_cues, dropped_notes) — the rendered block,
+    the exact lists it shows, and what could not be shown at all.
+
+    inline_timed=True drops TIMED notes from the block: on the Claude path they
+    are spliced into the transcript itself (see _interleave_timed_notes), so
+    only untimed notes and the cues remain here. Default False keeps every note
+    in the block, so the local map-reduce path and the cue/omission bookkeeping
+    (_mark_unaddressed_cues, _mark_notes_omitted) stay byte-for-byte unchanged.
+
+    Worst-first, and cues are the last thing to suffer:
+      1. plain notes go first, EARLIEST dropped, newest kept (see below);
+      2. then the block is allowed to grow to CUES_MAX_CHARS if it is the cues
+         that need the room;
+      3. then every cue's text is shortened (CUE_CAPS) — a cue listed short is
+         still a cue the model can judge;
+      4. only then is a whole cue dropped, covered ones first, because an
+         uncovered cue — a question the user prepared and never got to ask — is
+         the single most valuable thing in here.
+
+    Step 4 is unreachable for anything notes.py can store (50 cues x 300 chars
+    all fit at the smallest cap). It is kept for hand-edited meeting.json, and
+    what it drops is RETURNED rather than swallowed: _block_text says so in the
+    prompt, and _mark_unaddressed_cues refuses to publish a verdict that would
+    silently green-tick a cue nothing ever looked at.
+
+    WHICH END OF THE NOTES GOES — the earliest, deliberately.
+    Notes arrive in time order and the two ends are not interchangeable. What
+    someone types in the first minutes is mostly context they are about to be
+    told anyway: the agenda, who is on the call, a restatement of why they are
+    meeting. What they type at the end is the part that has no other source —
+    the decision, the number that was agreed, "I said I'd send the deck by
+    Friday". The transcript already covers the early material (it is a
+    paraphrase of what was said, and the model is reading it), while a note is
+    the ONLY record of a commitment nobody voiced. Dropping the newest, as this
+    did before, therefore threw away the notes least recoverable from anything
+    else, and did it precisely when the block was full — a long meeting, which
+    is when the closing commitments matter most.
+
+    Nothing is deleted here: notes.jsonl and meeting.json keep every note, and
+    the review UI still shows all of them. This is only about which notes fit
+    into ONE model prompt. But it is still an omission the user did not ask for,
+    so it is not hidden: it is stated in the block (above, not below, the notes
+    that survived), returned to the caller as `dropped_notes`, logged, and
+    published on the summary as "notes_omitted" — see _mark_notes_omitted().
+    """
+    notes, all_cues = _split(meta)
+    if inline_timed:
+        # Timed notes live in the transcript now; only untimed ones stay here.
+        notes = [e for e in notes if e[1] is None]
+    if not notes and not all_cues:
+        return "", [], [], [], 0
+    # Cues get headroom of their own, so a long cue list does not start losing
+    # cues at a limit that exists to bound NOTES. The headroom is measured on
+    # the whole block, not the cue section alone: once cues have entitled this
+    # block to grow, evicting a note to squeeze back under the smaller cap
+    # would throw away writing for room the block already has. A meeting with
+    # no cues is bounded by NOTES_MAX_CHARS exactly as before.
+    cap = NOTES_MAX_CHARS
+    if all_cues:
+        cap = max(cap, min(len(_block_text(notes, all_cues)), CUES_MAX_CHARS))
+    kept, dropped_cues, level, dropped_notes = list(all_cues), [], 0, 0
+    while True:
+        cues = _cap_cues(kept, CUE_CAPS[level])
+        block = _block_text(notes, cues, dropped_notes, len(dropped_cues))
+        if len(block) <= cap:
+            if dropped_notes:
+                log.warning(
+                    "%d of %d note(s) did not fit the summary prompt; the "
+                    "earliest were left out and the summary says so "
+                    "(notes_omitted). Every note is still stored.",
+                    dropped_notes, dropped_notes + len(notes))
+            return block, notes, cues, dropped_cues, dropped_notes
+        if notes:
+            notes = notes[1:]   # oldest first — see the docstring
+            dropped_notes += 1
+        elif level + 1 < len(CUE_CAPS):
+            level += 1
+        elif len(kept) > 1:
+            covered = [i for i, c in enumerate(kept) if c[2] is True]
+            dropped_cues.append(kept.pop(max(covered) if covered else len(kept) - 1))
+        else:  # unreachable at the current caps; never leave the fence unclosed
+            return (block[:cap] + "\n" + NOTES_FENCE_CLOSE,
+                    notes, cues, dropped_cues, dropped_notes)
+
+
+def _notes_block(meta, inline_timed=False):
+    """The fenced notes+cues block for this meeting, or "" if there are none.
+
+    "" is the whole no-regression story: every caller appends nothing and
+    changes no instructions when this is empty, so a meeting without notes
+    produces byte-identical prompts — and therefore an identical summary — to
+    before this feature existed.
+
+    inline_timed=True (the Claude path) excludes timed notes, which are spliced
+    into the transcript instead; "" then also means "no untimed notes and no
+    cues", so a meeting whose notes are all timed appends no empty block.
+    """
+    return _trim(meta, inline_timed=inline_timed)[0]
+
+
+def _cue_indexes(value, cues):
+    """The model's unaddressed_cues answer -> 0-based indexes into `cues`.
+
+    It is asked for numbers precisely so it never has to re-type a cue (any
+    paraphrase would break the UI's exact-text match), but small models
+    sometimes echo the text anyway — so both are accepted, text via the same
+    near-match used for de-duplication.
+    """
+    picked = set()
+    for item in value if isinstance(value, list) else []:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            if 1 <= int(item) <= len(cues):
+                picked.add(int(item) - 1)
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        number = re.match(r"^\D{0,6}(\d{1,3})\D{0,2}$", text)   # "3", "cue 3", "#3."
+        if number and 1 <= int(number.group(1)) <= len(cues):
+            picked.add(int(number.group(1)) - 1)
+            continue
+        key = _norm_key(text)
+        for i, cue in enumerate(cues):
+            if key and _similar(key, _norm_key(cue[0])):
+                picked.add(i)
+                break
+    return picked
+
+
+def _mark_unaddressed_cues(summary, raw, meta, model_judged=False):
+    """Record which prepared cues never got raised, as summary["unaddressed_cues"].
+
+    The value is the cues' OWN stored text, because that is what the review UI
+    matches on (templates/index.html: meetingCues() lowercases both sides and
+    compares) — the model's numbers are translated back here so a paraphrase
+    can never silently un-flag a missed cue.
+
+    Half an answer is worse than none: that UI reads any cue absent from a
+    non-empty list as "addressed", so an incomplete list would put a green tick
+    on a question the user never asked. If some cue's fate is genuinely unknown
+    — it carried no flag and no engine we trust judged it — the field is left
+    off entirely and the UI shows the cues unjudged, which is the truth.
+
+    `model_judged` is False for the on-device engine ON PURPOSE. Asked to name
+    the cues that never came up, it reliably over-names them: measured on a
+    10-turn meeting whose transcript answers cue 2 outright, it flagged cue 2 as
+    unasked in 3 runs out of 3 (the frontier engine got it right). Since a cue
+    missing from a non-empty list renders as a green tick, one over-flag is two
+    false claims at once, so that engine's verdict is not stored — it still
+    writes the uncovered cues up as open questions, which is where their value
+    is. Explicit flags from the note store are deterministic and are always used.
+
+    A cue _trim() could not fit in the block is judged by NOBODY: the model
+    never saw it, so the same rule applies to it and it is louder there. The UI
+    lists every cue from meta["cues"], including that one, and reads its absence
+    from a non-empty verdict as "covered" — so publishing a verdict here would
+    put a green tick on a cue no engine ever looked at, which is precisely the
+    false claim this function exists to avoid. Its own stored flag still counts
+    (that is data, not judgement); anything less certain and the whole field is
+    withheld and every cue renders unjudged, which is the truth.
+
+    No cues at all -> the key is never added, and the stored summary keeps
+    exactly the shape it had before this feature.
+    """
+    _block, _notes, cues, dropped, _dropped_notes = _trim(meta)
+    if not cues and not dropped:
+        return summary
+    unseen = [c for c in dropped if c[2] is None]
+    if unseen:
+        log.warning("%d prepared cue(s) did not fit the summary prompt and were "
+                    "judged by nothing — leaving all %d cue(s) unjudged rather "
+                    "than implying they were covered",
+                    len(unseen), len(cues) + len(dropped))
+        return summary
+    answer = (raw.get("unaddressed_cues")
+              if model_judged and isinstance(raw, dict) else None)
+    if any(c[2] is None for c in cues) and not isinstance(answer, list):
+        return summary
+    judged = _cue_indexes(answer, cues)
+    open_cues = [c for i, c in enumerate(cues)
+                 # an explicit flag from the note store beats the model's guess
+                 if c[2] is False or (c[2] is None and i in judged)]
+    # Dropped cues never reach here unflagged (see `unseen` above), so these are
+    # ones the note store itself called open — the UI matches on text, so which
+    # end of the list they land on carries no meaning.
+    open_cues += [c for c in dropped if c[2] is False]
+    summary["unaddressed_cues"] = [c[3] for c in open_cues]
+    return summary
+
+
+def _mark_notes_omitted(summary, meta):
+    """Publish, as summary["notes_omitted"], how many notes the prompt left out.
+
+    _trim() can leave notes out of the model's prompt when there are more of
+    them than one call can carry (see its docstring for which end goes and
+    why). Telling only the MODEL about that — which is all this did before — is
+    telling the one party who cannot report it back. The user is the one who
+    typed the notes, and a summary silently built from a subset of their own
+    writing is a summary they will trust more than it deserves.
+
+    So the count rides on the summary itself, next to the prose it qualifies:
+      * to_markdown() renders it, so every export and transcript.md carries it;
+      * meeting.json stores it, so the review UI can badge it (it does not yet
+        — templates/index.html ignores keys it does not know, so this is
+        additive and breaks nothing);
+      * sync.py uploads it, because a caveat that does not follow the summary
+        to the phone is a caveat the user will miss exactly when they are
+        reading the summary somewhere else. It is a count, not note text —
+        nothing the user wrote travels with it.
+
+    The key is ADDED ONLY when something was actually dropped. A meeting with
+    no notes, and a meeting whose notes all fit (every meeting notes.py can
+    produce today — the cap is generous), store the identical summary they did
+    before this existed.
+    """
+    dropped_notes = _trim(meta)[4]
+    if dropped_notes:
+        summary["notes_omitted"] = dropped_notes
+    return summary
+
+
+# --------------------------------------------------------------- chunk notes --
 
 def _render_notes(notes):
     """One ChunkNotes dict -> compact text block for the next pass."""
@@ -286,15 +813,21 @@ def _render_notes(notes):
     return "\n".join(out)
 
 
-def _condense(blocks, title, progress_cb):
-    """Recursively condense note blocks until they fit one model call."""
-    while len(blocks) > 1 and sum(len(b) for b in blocks) + 200 > MAX_CHUNK_CHARS:
+def _condense(blocks, title, progress_cb, limit=MAX_CHUNK_CHARS):
+    """Recursively condense note blocks until they fit one model call.
+
+    `limit` is the space these notes may occupy in that call. It is the full
+    per-call budget by default; summarize_meeting() shrinks it by the size of
+    the user's own notes block, which is attached to the same call and must not
+    push it over the model's context.
+    """
+    while len(blocks) > 1 and sum(len(b) for b in blocks) + 200 > limit:
         progress_cb("Condensing notes…")
         merged = []
         group, size = [], 0
         groups = []
         for b in blocks:
-            if group and size + len(b) > MAX_CHUNK_CHARS:
+            if group and size + len(b) > limit:
                 groups.append(group)
                 group, size = [], 0
             group.append(b)
@@ -302,7 +835,7 @@ def _condense(blocks, title, progress_cb):
         if group:
             groups.append(group)
         if len(groups) == len(blocks):  # can't group further; hard-truncate
-            return "\n".join(blocks)[:MAX_CHUNK_CHARS]
+            return "\n".join(blocks)[:limit]
         for g in groups:
             if len(g) == 1:
                 merged.append(g[0])
@@ -317,7 +850,7 @@ def _condense(blocks, title, progress_cb):
                 merged.append(_render_notes(notes))
             except local_llm.LocalLLMError as exc:
                 if exc.code in ("guardrail", "refusal", "context_overflow"):
-                    merged.append("\n".join(g)[: MAX_CHUNK_CHARS // 2])
+                    merged.append("\n".join(g)[: limit // 2])
                 else:
                     raise
         blocks = merged
@@ -356,6 +889,16 @@ def _speaker_note(meta):
     if _is_mic_fallback(meta):
         return f"{note} {_NO_LOCAL_USER_NOTE}".strip()
     return note
+
+
+def _notes_guidance(meta, brief=False):
+    """The paragraphs telling the model how to use a notes block, in the
+    variant this meeting needs. Callers append it ONLY when _notes_block()
+    returned something — see NOTES_GUIDANCE."""
+    text = NOTES_GUIDANCE_BRIEF if brief else NOTES_GUIDANCE
+    if _is_mic_fallback(meta):
+        text = text.replace(_NOTES_OWNER, _NOTES_OWNER_NO_LOCAL_USER)
+    return text
 
 
 def _extractive_fallback(chunk):
@@ -465,9 +1008,54 @@ class NeedsClaudeError(RuntimeError):
     through logging in."""
 
 
+def _inline_note_line(when, text):
+    """One timed user note as an inline, unmistakably-not-speech transcript line.
+
+    It carries NO speaker name and states plainly that it was TYPED privately,
+    not spoken — the two things that stop the model from reading it as
+    something a participant said or pinning it on whoever spoke last (the exact
+    failure the fenced-only design avoided; see the notes rationale above)."""
+    return (f"[{_fmt_time(when)}] «PRIVATE NOTE — typed by the local user, "
+            f"not spoken aloud»: {text}")
+
+
+def _interleave_timed_notes(meta, lines):
+    """`lines` with each TIMED user note spliced in where it was written.
+
+    Mirrors the client's placement rule (templates/index.html transcriptItems):
+    a note is emitted before the first turn that STARTS AFTER it — i.e. after
+    every turn already under way when it was typed — so a note written mid-turn
+    lands right after that turn, and ties (note.t == a turn's start) resolve as
+    speech-then-note. Notes past the last shown turn sit at the end. `lines` is
+    turn-aligned (_transcript_lines emits one line per turn in order, stopping
+    only on truncation), so lines[i] corresponds to turns[i].
+
+    Only TIMED notes move here; untimed notes and cues stay in the trailing
+    block. With no timed notes, `lines` is returned unchanged (byte-identical).
+    """
+    notes, _cues = _split(meta)
+    timed = sorted(((when, text) for text, when, _c, _r in notes if when is not None),
+                   key=lambda p: p[0])
+    if not timed:
+        return lines
+    turns = meta.get("turns") or []
+    starts = [float(turns[i].get("start") or 0) for i in range(min(len(lines), len(turns)))]
+    out, k = [], 0
+    for j, line in enumerate(lines):
+        if j < len(starts):
+            while k < len(timed) and timed[k][0] < starts[j]:
+                out.append(_inline_note_line(*timed[k]))
+                k += 1
+        out.append(line)
+    while k < len(timed):     # anything written after the last shown turn
+        out.append(_inline_note_line(*timed[k]))
+        k += 1
+    return out
+
+
 def _full_source(meta, lines):
     title = meta.get("title") or "Untitled meeting"
-    notes = [f'Transcript of the meeting "{title}".', _speaker_note(meta)]
+    preamble = [f'Transcript of the meeting "{title}".', _speaker_note(meta)]
     # Naming the Mac's account holder as the speaker labelled "You" is only
     # true when such a speaker exists. Under the mic fallback it does not, and
     # asserting it would invite the model to pin the local user on whichever
@@ -475,14 +1063,27 @@ def _full_source(meta, lines):
     if not _is_mic_fallback(meta):
         me = _local_user_name()
         if me:
-            notes.append(f'IMPORTANT: the local user — the speaker labelled "You" — '
-                         f'is {me}. Anyone else in the conversation is a different '
-                         f'person; find their names in the dialogue.')
+            preamble.append(f'IMPORTANT: the local user — the speaker labelled "You" — '
+                            f'is {me}. Anyone else in the conversation is a different '
+                            f'person; find their names in the dialogue.')
     cal = meta.get("calendar_event") or {}
     if cal.get("names"):
-        notes.append("Calendar attendees besides the local user: "
-                     + ", ".join(cal["names"]) + ".")
-    return " ".join(n for n in notes if n) + "\n\n" + "\n".join(lines)
+        preamble.append("Calendar attendees besides the local user: "
+                        + ", ".join(cal["names"]) + ".")
+    # Timed notes are woven INTO the transcript at the point they were written
+    # (each behind a speaker-less «PRIVATE NOTE …» marker — see NOTES_GUIDANCE),
+    # so the model reads them in context instead of only as a trailing block.
+    lines = _interleave_timed_notes(meta, lines)
+    source = " ".join(n for n in preamble if n) + "\n\n" + "\n".join(lines)
+    # UNTIMED notes and the cues still go AFTER the transcript, behind a fence:
+    # untimed notes have no position to weave into, and the cue-coverage
+    # machinery reads them from this block. inline_timed=True keeps timed notes
+    # out of it (they are inline above) so nothing is duplicated; the block is
+    # "" — and nothing is appended — when no untimed note or cue remains.
+    block = _notes_block(meta, inline_timed=True)
+    if block:
+        source += "\n\n" + block
+    return source
 
 
 def find_claude():
@@ -584,6 +1185,15 @@ def _extract_json(text):
     raise ValueError("unbalanced JSON in the reply")
 
 
+def _summary_model():
+    """The model the summary pass runs on. Left unset, the CLI inherits the
+    user's default (often Opus in 1M-context mode — the slowest option for a
+    single bounded transcript pass). Sonnet gives near-Opus summary quality far
+    faster. Overridable via config "summary_model"; set it to "opus" to trade
+    speed back for maximum quality."""
+    return str(load_config().get("summary_model") or "sonnet")
+
+
 def _summarize_claude(meta, lines, progress_cb):
     """One full-transcript pass through the user's own Claude."""
     exe = find_claude()
@@ -592,13 +1202,15 @@ def _summarize_claude(meta, lines, progress_cb):
     source = _full_source(meta, lines)
     instructions = (FULL_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta)
                     else FULL_INSTRUCTIONS)
+    if _notes_block(meta):
+        instructions += _notes_guidance(meta)
     progress_cb("Summarizing with your Claude account…")
     try:
         # The transcript is untrusted input — see claude_sandbox(). The prompt
         # goes on stdin, never after the (variadic) flags.
         with claude_sandbox() as (sandbox_flags, sandbox_cwd):
             proc = subprocess.run(
-                [exe, "-p", "--output-format", "json"] + sandbox_flags,
+                [exe, "-p", "--output-format", "json", "--model", _summary_model()] + sandbox_flags,
                 input=instructions + "\n\n" + source,
                 capture_output=True, text=True, timeout=900, cwd=sandbox_cwd,
             )
@@ -638,6 +1250,8 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         raw = _summarize_claude(meta, lines, progress_cb)
         summary = _coerce(raw if isinstance(raw, dict) else {})
         summary["engine"] = "claude"
+        _mark_unaddressed_cues(summary, raw, meta, model_judged=True)
+        _mark_notes_omitted(summary, meta)
         return _store_summary(meta, meta_path, meeting_dir, summary)
 
     ok, reason = local_llm.available()
@@ -646,7 +1260,25 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     title = meta.get("title") or "Untitled meeting"
     speaker_note = _speaker_note(meta)
-    chunks = _chunk_lines(lines)
+
+    # The user's notes ride along with the FINAL call only — never through the
+    # map phase (where "extract only what is in this portion" would be a lie
+    # about them, and they would be repeated into every chunk) and never
+    # through _condense (which would summarize the user's own words back down
+    # and lose exactly the note nobody said aloud). To keep that final call the
+    # same size it is today, their space is taken OUT of the transcript budget
+    # instead of being added on top of it. No notes -> budget is unchanged ->
+    # identical chunking, identical prompts.
+    notes_block = _notes_block(meta)
+    budget = MAX_CHUNK_CHARS - (len(notes_block) + 2 if notes_block else 0)
+    # A cue-heavy block may claim up to CUES_MAX_CHARS, so keep the transcript a
+    # working share of the call no matter what: at the current caps the floor is
+    # never reached (6000 of block still leaves ~4000), but without it a larger
+    # block would drive the budget towards zero and chunk the meeting one line
+    # at a time — thousands of model calls, which is a worse failure than a
+    # slightly over-long prompt.
+    budget = max(budget, MAX_CHUNK_CHARS // 3)
+    chunks = _chunk_lines(lines, budget)
 
     if len(chunks) == 1:
         progress_cb("Summarizing on this Mac…")
@@ -667,17 +1299,23 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         progress_cb(f"Reading the meeting… 0/{len(chunks)}")
         with ThreadPoolExecutor(max_workers=MAP_WORKERS) as pool:
             blocks = list(pool.map(run_one, enumerate(chunks, 1)))
-        notes_text = _condense([b for b in blocks if b.strip()], title, progress_cb)
+        notes_text = _condense([b for b in blocks if b.strip()], title, progress_cb,
+                               limit=budget)
         progress_cb("Writing the summary…")
         source = (
             f'Notes covering the whole meeting "{title}", in order. {speaker_note}\n\n'
             f"{notes_text}"
         )
 
+    instructions = (REDUCE_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta)
+                    else REDUCE_INSTRUCTIONS)
+    if notes_block:
+        source += "\n\n" + notes_block
+        instructions += _notes_guidance(meta, brief=True)
+
     try:
         raw = local_llm.generate(
-            REDUCE_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta) else REDUCE_INSTRUCTIONS,
-            source, SUMMARY_SCHEMA, max_tokens=1400)
+            instructions, source, SUMMARY_SCHEMA, max_tokens=1400)
     except local_llm.LocalLLMError as exc:
         if exc.code in ("guardrail", "refusal"):
             raise RuntimeError(
@@ -689,6 +1327,8 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     summary = _coerce(raw if isinstance(raw, dict) else {})
     summary["engine"] = "apple-intelligence"
+    _mark_unaddressed_cues(summary, raw, meta)
+    _mark_notes_omitted(summary, meta)
     return _store_summary(meta, meta_path, meeting_dir, summary)
 
 
@@ -800,4 +1440,17 @@ def to_markdown(summary):
             lines.append("")
         lines += ["> " + ln if ln else ">" for ln in email["body"].splitlines()]
         lines.append("")
+    # The caveat goes LAST and reads as a caveat, not as a finding: it is a
+    # statement about how this summary was made, and burying it would defeat
+    # the point of recording it at all (see _mark_notes_omitted). Absent for
+    # every summary that did not drop a note, which is all of them today, so
+    # nothing else in this export changes.
+    omitted = summary.get("notes_omitted")
+    if isinstance(omitted, int) and omitted > 0:
+        lines += [
+            f"*Note: your {omitted} earliest note(s) did not fit the summary "
+            "prompt and were not read by the summarizer. All of them are still "
+            "stored with the meeting.*",
+            "",
+        ]
     return "\n".join(lines)

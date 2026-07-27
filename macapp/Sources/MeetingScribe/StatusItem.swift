@@ -6,7 +6,9 @@ final class StatusItem {
     private let item: NSStatusItem
     private let baseURL: URL
     private var recording = false
+    private var notesVisible = false
     var onOpenApp: (() -> Void)?
+    var onToggleNotes: (() -> Void)?
 
     init(baseURL: URL) {
         self.baseURL = baseURL
@@ -19,6 +21,14 @@ final class StatusItem {
         guard on != recording else { return }
         recording = on
         applyIcon()
+        item.menu = buildMenu()
+    }
+
+    /// Keeps the menu's checkmark honest when the panel is toggled elsewhere
+    /// (the ⌥⌘N shortcut, or its own close button).
+    func setNotesVisible(_ on: Bool) {
+        guard on != notesVisible else { return }
+        notesVisible = on
         item.menu = buildMenu()
     }
 
@@ -42,6 +52,14 @@ final class StatusItem {
         open.target = self
         menu.addItem(open)
         menu.addItem(.separator())
+        // Notes stay reachable whether or not a recording is running, and
+        // hiding them never touches the recording.
+        let notes = NSMenuItem(title: "Notes Panel", action: #selector(toggleNotes),
+                               keyEquivalent: "")
+        notes.target = self
+        notes.state = notesVisible ? .on : .off
+        menu.addItem(notes)
+        menu.addItem(.separator())
         if recording {
             let stop = NSMenuItem(title: "Stop & Transcribe", action: #selector(stopRecording), keyEquivalent: "")
             stop.target = self
@@ -58,6 +76,8 @@ final class StatusItem {
     }
 
     @objc private func openApp() { onOpenApp?() }
+
+    @objc private func toggleNotes() { onToggleNotes?() }
 
     @objc private func startRecording() {
         post("api/record/start", body: ["title": "", "mode": "online"])

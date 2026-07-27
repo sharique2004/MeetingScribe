@@ -346,6 +346,9 @@ input, select { font: inherit; color: inherit; }
 .brief-cta-text p { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
 
 .ov-section { margin-top: 18px; }
+/* The notes rescued onto a failed meeting's card: its own block under the
+   Reprocess button, separated so it reads as the user's, not the error's. */
+.ov-section.is-standalone { margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--border); text-align: left; }
 .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
 .section-heading h3 { margin: 4px 0 0; font-size: 16px; font-weight: 680; letter-spacing: -0.01em; }
 .section-heading.compact h3 { font-size: 14px; }
@@ -358,6 +361,31 @@ input, select { font: inherit; color: inherit; }
 .action-task small { font-size: 11px; color: var(--text-faint); }
 .due-chip { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 11px; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; }
 
+/* Notes typed on the floating panel during the meeting, each seekable. The
+   accent rule is the same one the transcript's .tr-note carries, so the two
+   places a note appears are recognisably the same object. */
+.note-lede { margin: -3px 0 10px; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+.note-list { display: flex; flex-direction: column; gap: 7px; }
+.note-row { display: flex; align-items: flex-start; gap: 12px; padding: 11px 14px; background: var(--panel); border: 1px solid var(--border); border-left: 2px solid var(--accent); border-radius: var(--r-md); }
+.note-time { flex: none; min-width: 52px; padding: 2px 8px; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: 99px; text-align: center; }
+button.note-time:hover { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+/* "we do not know when" — an absence, not a time. Hollow and dashed so it can
+   never be mistaken for the solid 0:00 pill of a note typed at the very start. */
+.note-time.is-untimed { color: var(--text-faint); background: transparent; border-style: dashed; font-weight: 500; letter-spacing: .04em; }
+.note-body { flex: 1; min-width: 0; font-size: 13px; line-height: 1.6; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-jump { flex: none; display: inline-flex; align-items: center; gap: 5px; margin-top: 1px; padding: 2px 8px;
+  font-size: 11px; color: var(--text-faint); border: 1px solid transparent; border-radius: 99px; }
+.note-jump:hover { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent); }
+@media (max-width: 620px) { .note-jump span { display: none; } }
+/* Cue checklist in the right rail. */
+.cue-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.cue-list li { display: flex; align-items: flex-start; gap: 9px; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); overflow-wrap: anywhere; }
+.cue-mark { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 6px; display: grid; place-items: center; color: var(--ok); background: color-mix(in oklab, var(--ok) 15%, transparent); }
+.cue-list li.missed { color: var(--text); }
+.cue-list li.missed .cue-mark { color: var(--warn); background: color-mix(in oklab, var(--warn) 16%, transparent); }
+.cue-note { margin: 11px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-faint); }
+.miss-label { color: var(--warn); background: color-mix(in oklab, var(--warn) 15%, transparent); border-radius: 99px; padding: 1px 8px; letter-spacing: .04em; }
 .ov-two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
 @media (max-width: 720px) { .ov-two { grid-template-columns: 1fr; } }
 .ov-card { padding: 16px 17px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--r-lg); }
@@ -412,13 +440,58 @@ input, select { font: inherit; color: inherit; }
   font-size: 10.5px; font-weight: 700; font-style: normal; color: var(--avatar-ink); }
 .tr-head { display: flex; align-items: baseline; gap: 9px; margin-bottom: 4px; min-width: 0; }
 .tr-time { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); border-radius: 4px; flex: none; }
-.tr-time:hover { color: var(--accent); }
+button.tr-time:hover { color: var(--accent); }
 .tr-spk { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr-text { font-size: 14.5px; line-height: 1.68; color: var(--text); text-wrap: pretty; min-width: 0; }
 .tr-text p { margin: 0 0 6px; }
 .tr-text p:last-child { margin-bottom: 0; }
 .tr-text mark { background: var(--mark-bg); color: inherit; border-radius: 3px; padding: 0 1px; }
 .tr-empty { padding: 40px 0; color: var(--text-faint); font-size: 13px; text-align: center; }
+
+/* A note the user typed during the meeting, standing in the transcript at the
+   moment they wrote it. Everything here is chosen so it can never be misread as
+   something somebody SAID: the avatar gutter is left empty (nobody spoke), the
+   accent rule and tint are the app's "this is yours" colour rather than any
+   speaker colour, and the label says so in words. It is indented to 56px so its
+   text lines up exactly with the speaker text above and below — a margin note on
+   the transcript, in the transcript's own column. */
+.tr-note { margin: 7px 0 9px 41px; padding: 9px 13px 11px; border-radius: var(--r-md);
+  border: 1px solid color-mix(in oklab, var(--accent) 24%, var(--border));
+  border-left: 2px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, transparent); }
+/* The note is a disclosure: a <details> whose <summary> is the head row, always
+   visible, and whose body is collapsed by default. The chevron rotates and the
+   body fades in — transform/opacity only, matching the app's motion (see the
+   pre-meeting cues chevron). The reveal is a one-shot class added on a genuine
+   user open, so a background re-render of an already-open note never replays it,
+   and the native <details> keeps working (toggle + chevron) with no JS at all. */
+.tr-note-head { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none;
+  -webkit-user-select: none; user-select: none; }
+.tr-note-head::-webkit-details-marker { display: none; }
+.tr-note-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--r-sm); }
+.tr-note-kicker { display: inline-flex; align-items: center; gap: 6px; flex: 1; min-width: 0;
+  font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.tr-note-time { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); border-radius: 4px; flex: none; }
+button.tr-note-time:hover { color: var(--accent); }
+.tr-note-chev { flex: none; display: grid; place-items: center; color: var(--text-faint); transition: transform .18s ease-out; }
+.tr-note[open] .tr-note-chev { transform: rotate(180deg); }
+/* Shares .tr-text (colour, leading, <mark>, and the A−/A+ reading size), adds
+   only what a typed note needs: its own line breaks kept, no run of characters
+   allowed to push the transcript sideways, and a little air below the head. */
+.tr-note-body { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tr-note-body.is-revealing { animation: ms-note-open .2s ease-out; }
+@keyframes ms-note-open { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .tr-note-chev { transition: none; }
+  .tr-note-body.is-revealing { animation: none; }
+}
+/* Arriving from the Overview's "In transcript": a ring that fades once, so the
+   eye lands on the right note without leaving the transcript decorated. */
+.tr-note.is-target { animation: ms-note-flash 1.8s ease-out 1; }
+@keyframes ms-note-flash {
+  0%, 45% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
 
 /* Ask tab — a chat over the transcript. Answers cite real turn timestamps, and
    every citation chip is a seek button into the recording. */
@@ -494,7 +567,18 @@ input, select { font: inherit; color: inherit; }
 
 /* Recorder */
 .rec-stage { flex: 1; display: grid; place-items: center; padding: 32px; overflow-y: auto; }
+/* Centring is right for a card on its own. With the rescued notes under it this
+   is a document, not a dialog: it can be many screens long, and it should start
+   at the top and scroll from there rather than sit centred on the one screen it
+   happens to fit on. (Measured: the stage scrolls either way — this is about
+   where the reading starts, not about clipping.) */
+.rec-stage.has-notes { place-items: start center; }
 .rec-card { width: 460px; max-width: 100%; }
+/* The stage's single auto track is sized by the card's 460px max-content, so
+   `max-width: 100%` has nothing left to clamp against and the 32px padding
+   pushes the whole card off the pane once the window is narrow. Below that,
+   hand the width back to the container. */
+@media (max-width: 900px) { .rec-stage { padding: 24px 14px; } .rec-card { width: 100%; } }
 .rec-kicker { font-size: 10.5px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
 .rec-h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 22px; }
 .field { margin-bottom: 18px; }
@@ -530,6 +614,27 @@ input, select { font: inherit; color: inherit; }
 .rec-alert.warn .ic, .rec-alert.warn b { color: var(--warn); }
 .rec-dev .name { font-size: 12.5px; font-weight: 550; }
 .rec-dev .role { font-size: 11px; color: var(--text-faint); margin-left: auto; text-align: right; }
+/* Pre-meeting cues. Collapsed to a single row by default: someone who just
+   wants to hit record must never have to scroll past an open textarea. */
+.cues-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); font-size: 12.5px; font-weight: 550; color: var(--text-dim); text-align: left; }
+.cues-toggle:hover { color: var(--text); border-color: var(--border-strong); }
+.cues-toggle .cues-ic { flex: none; display: grid; place-items: center; color: var(--text-faint); }
+.cues-toggle.on .cues-ic, .cues-toggle.on { color: var(--text); }
+.cues-toggle .cues-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cues-toggle .cues-count { flex: none; font-family: var(--font-mono); font-size: 10.5px; font-weight: 650; color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); border-radius: 99px; padding: 1px 8px; }
+.cues-toggle .cues-chev { flex: none; display: grid; place-items: center; color: var(--text-faint); transition: transform .15s; }
+.cues-toggle.on .cues-chev { transform: rotate(180deg); }
+.cues-body { margin-top: 8px; }
+.cues-body textarea { display: block; width: 100%; min-height: 96px; max-height: 220px; padding: 10px 11px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--panel); color: var(--text); outline: none; font-family: var(--font-ui); font-size: 12.5px; line-height: 1.65; resize: vertical; }
+.cues-body textarea:focus { border-color: color-mix(in oklab, var(--accent) 55%, transparent); }
+.cues-body textarea::placeholder { color: var(--text-faint); }
+.cues-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.cues-foot .hint { flex: 1; min-width: 0; margin-top: 0; }
+.cues-state { flex: none; font-size: 11px; color: var(--text-faint); }
+.cues-state.ok { color: var(--ok); }
+.cues-state.local { color: var(--warn); }
+.cues-clear { flex: none; font-size: 11px; color: var(--text-faint); padding: 2px 6px; border-radius: var(--r-sm); }
+.cues-clear:hover { color: var(--danger); background: var(--panel-2); }
 .rec-start { width: 100%; height: 40px; border-radius: var(--r-md); background: var(--accent); color: var(--accent-ink); font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
 .rec-start:hover { filter: brightness(1.07); }
 .rec-start:disabled { opacity: .6; }
@@ -620,6 +725,7 @@ const ICONS = {
   wave: '<path d="M2 12h2M6 8v8M10 5v14M14 9v6M18 7v10M22 12h-2"/>',
   chat: '<path d="M21 11.5a8 8 0 0 1-11.6 7.2L3.5 20.5l1.8-5.9A8 8 0 1 1 21 11.5z"/>',
   send: '<path d="M12 20V5"/><path d="M5.5 11.5L12 5l6.5 6.5"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
 };
 function icon(name, size = 14, sw = 1.7) {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ""}</svg>`;
@@ -729,6 +835,7 @@ const S = {
   summaryJobs: {},
   lastSummaryJobs: {},
   dismissed: new Set(),     // per-session dismissed notes
+  noteOpen: new Set(),      // ids of transcript notes expanded this session (survives re-renders)
   insightsOpen: false,
   menu: null,               // 'export' | 'more'
   reclusterFlash: null,
@@ -742,6 +849,10 @@ const S = {
   pendingTitle: "",
   busyTidy: false,
   busySummary: false,
+  cues: [],                 // saved talking points / questions, server-owned
+  cuesOpen: false,          // the pre-meeting editor starts collapsed
+  cuesDraft: null,          // textarea text mid-edit (null = mirror S.cues)
+  cuesState: "",            // "" | "saving" | "saved" | "local"
 };
 document.documentElement.setAttribute("data-theme", S.theme);
 
@@ -814,6 +925,19 @@ function transportPlayPause(forcePlay) {
 function seekAndPlay(t) {
   transportSeek(t);
   if (!AU.playing) transportPlayPause(true);
+}
+/* Is there a player for a timestamp to drive? This is the ONE condition under
+   which a timestamp may be offered as a seek, and renderReview() emits the
+   transport bar under exactly the same test — deliberately the same call, so
+   the two can never drift apart.
+
+   Audio alone is not enough. The transport is only rendered for a meeting that
+   also has speech, so in a meeting with notes but no detected speech a "jump"
+   would start audio with no play/pause, no clock and no waveform anywhere on
+   the page — invisible playback the user cannot stop. A timestamp with nothing
+   to seek is plain text, here as everywhere else. */
+function canSeek(meta) {
+  return !!((AU.mic || AU.sys) && meta && (meta.turns || []).length);
 }
 function tickWave() {
   cancelAnimationFrame(AU.raf);
@@ -1248,6 +1372,206 @@ function dismissNote(idx) {
   renderMain();
 }
 
+/* notes.py writes {t, text} and freezes cues as plain strings. These readers
+   accept a wider shape than that on purpose, and deliberately the SAME wider
+   shape as summarize.py's _entry(): the summary and the review must never
+   disagree about which cue went unasked because one of them could read a key
+   the other could not. If the stored shape changes, change both.
+   SAME means same: these two lists are summarize.py's _TEXT_KEYS and _TIME_KEYS
+   verbatim, in order — "cue" and "title" included, which an earlier version of
+   this list dropped while still claiming the shapes matched. A cue stored as
+   {"cue": "…"} was then read by the summarizer, judged, and named in
+   unaddressed_cues, while this file read no text for it at all and filtered it
+   out of the rail: the verdict arrived about a cue the user could not see.
+   entryText/entryTime below match _entry()'s scan rules for the same reason. */
+const NOTE_TEXT_KEYS = ["text", "note", "cue", "body", "content", "value", "label", "title"];
+const NOTE_TIME_KEYS = ["t", "time", "at", "ts", "start", "seconds", "offset", "elapsed"];
+const CUE_COVERED_KEYS = ["covered", "answered", "asked", "used", "done", "checked",
+                          "complete", "completed", "resolved", "addressed", "raised"];
+const CUE_COVERED_WORDS = ["covered", "answered", "asked", "done", "used", "complete",
+                           "completed", "resolved", "addressed", "raised"];
+const CUE_OPEN_WORDS = ["open", "pending", "unasked", "unanswered", "todo", "new",
+                        "not_asked", "not-asked", "unaddressed", "skipped", "missed"];
+const DAY_SECONDS = 24 * 3600;
+
+function entryText(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return "";
+  for (const k of NOTE_TEXT_KEYS) if (typeof item[k] === "string" && item[k].trim()) return item[k];
+  return "";
+}
+/* Seconds into the meeting, or null. Rejects epoch/millisecond stamps the same
+   way the summarizer does — a note "at 1.7 billion seconds" is not a seek.
+
+   null is UNTIMED, and that is a different fact from 0 — which means the note
+   was typed in the first second of the meeting. This is the contract with
+   notes.py: a timestamp it could not use comes back as null, never as 0.0,
+   because a note coerced to 0.0 is indistinguishable from a real one and would
+   be planted at the top of the transcript next to words the user was not
+   writing about. Untimed notes are rendered as untimed (see notesSection) and
+   left off the timeline (see timedNotes) — never silently moved to 0:00.
+
+   The scan itself mirrors summarize.py's _entry(): a key whose value is not a
+   number is skipped rather than believed, so {"t": "12", "time": 12} reads the
+   same 12 here as it does there. The FIRST numeric key decides — including when
+   it decides "unusable" (NaN, Infinity, negative, an epoch stamp): a later key
+   does not get to overrule a real number that was simply out of range. */
+function entryTime(item) {
+  if (!item || typeof item !== "object") return null;
+  for (const k of NOTE_TIME_KEYS) {
+    const v = item[k];
+    if (typeof v !== "number") continue;   // absent, null, a string, a bool
+    return (isFinite(v) && v >= 0 && v < DAY_SECONDS) ? v : null;
+  }
+  return null;
+}
+/* Notes taken on the floating panel while the meeting was happening, in the
+   order they were typed — which is the order notes.py appends them in, so it is
+   also chronological. This order is what the Overview lists, and the index into
+   it is the identity of a note everywhere else (jumpToNote, the transcript's
+   element ids). */
+function meetingNotes(meta) {
+  const raw = (meta && meta.notes) || [];
+  if (!Array.isArray(raw)) return [];
+  return raw.map(n => ({t: entryTime(n), text: entryText(n)})).filter(n => n.text.trim());
+}
+/* The notes that can be placed on the transcript's timeline, oldest first, each
+   carrying its meetingNotes() index so the Overview and the transcript point at
+   the same note. Sorted rather than trusted: appends are chronological in
+   practice, but the transcript is a timeline and one out-of-order note must not
+   be able to land in the wrong conversation.
+   A note whose timestamp is unusable (missing, null, a string, an epoch stamp —
+   see entryTime) is deliberately dropped here: it still shows in the Overview,
+   marked "—", but it has no moment to be shown AT, and inventing one would put
+   words next to a part of the meeting the user was not writing about. */
+function timedNotes(meta) {
+  return meetingNotes(meta)
+    .map((n, i) => ({t: n.t, text: n.text, i}))
+    .filter(n => n.t !== null)
+    .sort((a, b) => a.t - b.t);
+}
+/* The cues this meeting was started with. `covered` stays null unless something
+   actually said — an unjudged cue must never be shown as one the user missed. */
+function meetingCues(meta) {
+  const raw = (meta && meta.cues) || [];
+  if (!Array.isArray(raw)) return [];
+  /* summarize.py omits `unaddressed_cues` ENTIRELY when no engine it trusts
+     judged the cues, and includes it — possibly empty — when one did. So the
+     array's PRESENCE is the verdict, not its length: an empty list is the
+     positive claim "every cue came up", not an absence of information. */
+  const flaggedList = ((meta.summary || {}).unaddressed_cues);
+  const judged = Array.isArray(flaggedList);
+  const flagged = new Set((judged ? flaggedList : [])
+    .map(c => String(entryText(c) || c).trim().toLowerCase()));
+  return raw.map(c => {
+    const text = entryText(c);
+    let covered = null;
+    if (c && typeof c === "object" && !Array.isArray(c)) {
+      for (const k of CUE_COVERED_KEYS) {
+        if (k in c && (typeof c[k] === "boolean" || typeof c[k] === "number")) { covered = !!c[k]; break; }
+      }
+      if (covered === null) {
+        const status = c.status || c.state;
+        if (typeof status === "string") {
+          const w = status.trim().toLowerCase().replace(/ /g, "_");
+          if (CUE_COVERED_WORDS.includes(w)) covered = true;
+          else if (CUE_OPEN_WORDS.includes(w)) covered = false;
+        }
+      }
+    }
+    if (covered === null && judged) covered = !flagged.has(text.trim().toLowerCase());
+    return {text, covered};
+  }).filter(c => c.text.trim());
+}
+/* Notes, in the main column: the human record of the meeting, sitting directly
+   under the machine's — first thing after the brief, ahead of everything the
+   summarizer produced, because this is the one part of the page the user wrote
+   themselves. Each timestamp seeks the audio to that moment; "In transcript"
+   takes them to the same note standing in the transcript. */
+function notesSection(meta, opts) {
+  const notes = meetingNotes(meta);
+  if (!notes.length) return "";
+  // `standalone` is the render used by the two screens that REPLACE the review —
+  // a failed meeting and one still processing. The same notes, on a page with no
+  // tabs: no transcript to send anyone to and no player to seek.
+  const standalone = !!(opts && opts.standalone);
+  const seekable = !standalone && canSeek(meta);
+  let anyPlaced = false;
+  const rows = notes.map((n, i) => {
+    // UNTIMED IS NOT 0:00. A note with no usable timestamp gets a dashed, dimmed
+    // "—" that reads as an absence; a note genuinely typed in the first second
+    // gets the solid mono "0:00" pill every other timestamp gets. They mean
+    // different things — "we do not know when" against "at the very start" — so
+    // they must never render alike. (entryTime keeps them apart upstream.)
+    const stamp = n.t === null
+      ? `<span class="note-time is-untimed" title="No timestamp — this note was saved without a position in the meeting, so it has no moment to jump to.">—</span>`
+      : seekable
+        ? `<button class="note-time" title="Jump audio to ${fmtTs(n.t)}" onclick="seekAndPlay(${n.t})">${fmtTs(n.t)}</button>`
+        : `<span class="note-time" title="Written ${fmtTs(n.t)} into the meeting">${fmtTs(n.t)}</span>`;
+    // Only offer the jump for a note that is actually down there. A timed note
+    // always is, even in a meeting with no speech at all — the transcript falls
+    // back to the notes alone. An untimed one never is: it has no place on the
+    // timeline, so there is nothing to jump to. And on the standalone render
+    // there is no transcript tab at all.
+    const placed = n.t !== null;
+    anyPlaced = anyPlaced || placed;
+    const jump = placed && !standalone
+      ? `<button class="note-jump" title="Show this note in the transcript, where you wrote it"
+          onclick="jumpToNote(${i})">${icon("list", 12)}<span>In transcript</span></button>`
+      : "";
+    return `<div class="note-row">${stamp}<div class="note-body">${esc(n.text)}</div>${jump}</div>`;
+  }).join("");
+  // The standalone caller says WHY this page is showing the notes on their own —
+  // "the run failed" and "the run has not finished yet" are different things to
+  // be told while you look for a note you typed.
+  const ledeText = standalone
+    ? ((opts && opts.lede) || "Written straight to disk as you typed them, so they are here whatever the audio does next.")
+    : anyPlaced ? "Yours, not the summarizer's — each one also stands in the transcript at the moment you typed it." : "";
+  const lede = ledeText ? `<p class="note-lede">${esc(ledeText)}</p>` : "";
+  return `<section class="ov-section${standalone ? " is-standalone" : ""}">
+    <div class="section-heading"><div><span class="section-kicker">${icon("pencil", 12)} While it happened</span><h3>Your notes</h3></div><span class="count-badge">${notes.length}</span></div>
+    ${lede}
+    <div class="note-list">${rows}</div>
+  </section>`;
+}
+/* Overview → the same note in the transcript. Any transcript search is cleared
+   first: the user asked to see THIS note, and a filter left over from an earlier
+   search is perfectly capable of hiding it. */
+function jumpToNote(i) {
+  S.tq = "";
+  S.noteOpen.add(i);   // the user asked to see THIS note — land on it open, not collapsed
+  if (S.tab === "transcript") renderMain();
+  else setTab("transcript");   // setTab renders synchronously
+  const el = $("trNote-" + i);
+  if (!el) return;
+  el.scrollIntoView({block: "center", behavior: "smooth"});
+  el.classList.add("is-target");
+  setTimeout(() => el.classList.remove("is-target"), 1800);
+}
+/* Cues, in the right rail: what you meant to raise, and whether you got to it. */
+function cuesCard(meta) {
+  const cues = meetingCues(meta);
+  if (!cues.length) return "";
+  const judged = cues.some(c => c.covered !== null);
+  const missed = cues.filter(c => c.covered === false).length;
+  let body, foot = "", label = "";
+  if (!judged) {
+    body = `<ul class="q-list">${cues.map(c => `<li>${esc(c.text)}</li>`).join("")}</ul>`;
+  } else {
+    body = `<ul class="cue-list">${cues.map(c => `<li class="${c.covered === false ? "missed" : ""}">
+      <span class="cue-mark">${icon(c.covered === false ? "warn" : "check", 11, 2.2)}</span>
+      <span>${esc(c.text)}</span></li>`).join("")}</ul>`;
+    label = missed
+      ? `<span class="miss-label">${missed} not covered</span>`
+      : `<span class="ready-label">All covered</span>`;
+    foot = missed ? `<p class="cue-note">Judged from the transcript — worth a second look before you close this out.</p>` : "";
+  }
+  return `<section class="aside-card">
+    <div class="aside-head"><span>Your cues</span>${label}</div>
+    ${body}${foot}
+  </section>`;
+}
+
 /* Overview tab: privacy strip + Meeting Brief hero (or Summarize CTA), action
    items, decisions/open-questions, and the right conversation + follow-up rail.
    Maps entirely onto the real summary data. */
@@ -1317,9 +1641,9 @@ function overviewHTML(meta, busy) {
 
   // The privacy claim moved to the tab row (.privacy-pill) — it belongs to the
   // whole meeting, not to the Overview body.
-  const mainCol = `<div class="ov-main">${lead}${actions}${two}${more}</div>`;
+  const mainCol = `<div class="ov-main">${lead}${notesSection(meta)}${actions}${two}${more}</div>`;
 
-  const aside = `<aside class="ov-aside">${conversationAside(meta)}${followupCard(meta)}${askCard(meta)}</aside>`;
+  const aside = `<aside class="ov-aside">${conversationAside(meta)}${cuesCard(meta)}${followupCard(meta)}${askCard(meta)}</aside>`;
   return `<div class="ov-grid">${mainCol}${aside}</div>`;
 }
 
@@ -1641,6 +1965,48 @@ function transcriptGroups(meta) {
   }
   return groups;
 }
+/* Speaker groups and the user's notes as ONE chronological stream. Returns
+   {spk, t, parts} for a run of speech and {note} for a note.
+
+   WHERE A NOTE GOES. A note is emitted before the first turn that starts after
+   it — i.e. after every turn that had already begun when it was typed. That
+   single rule covers the two cases that matter:
+     * a note in a gap between turns lands in that gap;
+     * a note typed DURING a turn lands directly after that turn, not before it.
+   The second is the important one, and it is why this cannot just interleave
+   between groups. A group is a whole run of one person talking and can be
+   minutes long; dropping the note before or after the run would put it next to
+   something the user had not heard yet, or long after they reacted to it. A
+   note written 40 seconds into a 60-second answer belongs at that answer, and
+   "after the turn it fell inside" is the closest the transcript can honestly
+   place it — there are no word-level timings to split a turn on.
+   Ties (note.t exactly equal to a turn's start) resolve as speech-then-note:
+   the words were on screen when the note was typed.
+   A group is closed and reopened around a note it contains, so the second half
+   of a long run comes back with its own speaker name and its own timestamp,
+   rather than the note appearing to be part of what was said.
+   Turns are assumed to be in start order (pipeline.py sorts them). If one ever
+   were not, a note could be emitted a turn later than ideal — never lost, and
+   never able to break the render. */
+function transcriptItems(groups, notes) {
+  const items = [];
+  let open = null, ni = 0;
+  const close = () => { if (open) { items.push(open); open = null; } };
+  for (const g of groups) {
+    for (const turn of g.parts) {
+      const start = turn.start || 0;
+      while (ni < notes.length && notes[ni].t < start) { close(); items.push({note: notes[ni++]}); }
+      if (!open) open = {spk: g.spk, t: start, parts: []};
+      open.parts.push(turn);
+    }
+    close();  // the next group is a different speaker
+  }
+  close();
+  // Everything left is a note from after the last word — including a timestamp
+  // past the end of the recording, which simply sits at the bottom.
+  while (ni < notes.length) items.push({note: notes[ni++]});
+  return items;
+}
 function highlight(text, ql) {
   if (!ql) return esc(text);
   const low = text.toLowerCase();
@@ -1651,25 +2017,91 @@ function highlight(text, ql) {
   }
   return out + esc(text.slice(pos));
 }
+/* One note, as it stands in the transcript. Nothing about it is a speaker turn:
+   no avatar, no speaker colour, and the label says whose it is. The body carries
+   .tr-text as well, so it inherits the transcript's colour, leading, <mark>
+   styling and the A−/A+ reading size (setTrSize walks .tr-text) — the note reads
+   at exactly the weight of the words around it, because it is worth as much. */
+function transcriptNoteHTML(n, ql, seekable) {
+  // n.t came through entryTime: a finite number in [0, 24h). Safe to inline.
+  // `seekable` is canSeek(meta), passed down rather than re-derived: in a
+  // meeting with notes but no speech there is no player on the page, and a
+  // timestamp that cannot seek is text, not a button.
+  // The seek button stops the click so tapping the timestamp jumps the audio
+  // WITHOUT toggling the disclosure the head row is.
+  const stamp = seekable
+    ? `<button class="tr-note-time" title="Jump audio to ${fmtTs(n.t)}" onclick="event.stopPropagation();seekAndPlay(${n.t})">${fmtTs(n.t)}</button>`
+    : `<span class="tr-note-time" title="Written ${fmtTs(n.t)} into the meeting">${fmtTs(n.t)}</span>`;
+  // Open-state lives in S.noteOpen (keyed by note id) so a background re-render
+  // re-emits the note in the state the user left it — a native <details> alone
+  // would fall back to closed on every full render.
+  const open = S.noteOpen.has(n.i) ? " open" : "";
+  return `<details class="tr-note" id="trNote-${n.i}"${open} ontoggle="noteToggled(this, ${n.i})">
+    <summary class="tr-note-head"><span class="tr-note-kicker">${icon("pencil", 11)} Your note</span>${stamp}<span class="tr-note-chev">${icon("chevronDown", 13)}</span></summary>
+    <div class="tr-text tr-note-body" style="font-size:${S.trSize}px">${highlight(n.text, ql)}</div>
+  </details>`;
+}
+/* Remember a note's open/closed state across re-renders, and play the reveal
+   ONLY on a genuine user toggle. A <details> born with the `open` attribute (the
+   way a re-render re-emits an already-open note) fires no toggle event, so the
+   one-shot animation can never replay under a background poll. Degrades cleanly:
+   with JS off the native disclosure still toggles and the chevron still turns. */
+function noteToggled(el, i) {
+  if (el.open) {
+    S.noteOpen.add(i);
+    const body = el.querySelector(".tr-note-body");
+    if (body) {
+      body.classList.add("is-revealing");
+      body.addEventListener("animationend", () => body.classList.remove("is-revealing"), {once: true});
+    }
+  } else {
+    S.noteOpen.delete(i);
+  }
+}
+/* Every note that matches the transcript search. SEARCH DOES MATCH NOTE TEXT,
+   on purpose: the user searches this box for what they remember about the
+   meeting, and what they remember best is what they thought worth typing. A
+   note that matches stays visible even when the talk around it is filtered out —
+   it is a result in its own right, not an annotation on one. */
+function matchingNotes(meta, ql) {
+  const notes = timedNotes(meta);
+  return ql ? notes.filter(n => n.text.toLowerCase().includes(ql)) : notes;
+}
 function transcriptHTML(meta) {
   const ql = S.tq.trim().toLowerCase();
   const groups = transcriptGroups(meta);
   const visible = ql ? groups.filter(g => g.parts.some(p => p.text.toLowerCase().includes(ql))) : groups;
+  // Notes are filtered BEFORE interleaving so a note hidden by the search
+  // cannot leave the run of speech it sits inside split in two.
+  const items = transcriptItems(visible, matchingNotes(meta, ql));
+  const seekable = canSeek(meta);
   let html = "";
-  for (const g of visible) {
-    const c = speakerColor(meta, g.spk);
-    const name = meta.speakers[g.spk] || g.spk;
+  for (const it of items) {
+    if (it.note) { html += transcriptNoteHTML(it.note, ql, seekable); continue; }
+    const c = speakerColor(meta, it.spk);
+    const name = meta.speakers[it.spk] || it.spk;
     html += `<div class="tr-group">
       <div class="tr-ava"><i style="background:${c}">${esc(initials(name))}</i></div>
       <div class="tr-head">
         <span class="tr-spk" style="color:${c}">${esc(name)}</span>
-        <button class="tr-time" title="Jump audio here" onclick="seekAndPlay(${g.t})">${fmtTs(g.t)}</button>
+        ${seekable
+          ? `<button class="tr-time" title="Jump audio here" onclick="seekAndPlay(${it.t})">${fmtTs(it.t)}</button>`
+          : `<span class="tr-time" title="Said ${fmtTs(it.t)} into the meeting">${fmtTs(it.t)}</span>`}
       </div>
-      <div class="tr-text" style="font-size:${S.trSize}px">${g.parts.map(p => `<p>${highlight(p.text, ql)}</p>`).join("")}</div>
+      <div class="tr-text" style="font-size:${S.trSize}px">${it.parts.map(p => `<p>${highlight(p.text, ql)}</p>`).join("")}</div>
     </div>`;
   }
-  if (!visible.length) html = `<div class="tr-empty">${(meta.turns || []).length ? `Nothing in this transcript matches “${esc(S.tq)}”.` : "No speech was detected in this recording."}</div>`;
+  if (!items.length) html = `<div class="tr-empty">${(meta.turns || []).length ? `Nothing in this transcript matches “${esc(S.tq)}”.` : "No speech was detected in this recording."}</div>`;
+  // Notes but no speech: say why the transcript is only notes, then show them.
+  else if (!(meta.turns || []).length) html = `<div class="tr-empty">No speech was detected in this recording — only what you wrote down.</div>` + html;
   return html;
+}
+/* What the toolbar counts. Turns, plus the notes the same search matched, so the
+   number is the number of things actually on screen. */
+function trMatchCount(meta, ql) {
+  if (!ql) return 0;
+  return (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length
+       + matchingNotes(meta, ql).length;
 }
 /* Reading size. Applied straight to the live nodes so the scroll position
    survives; transcriptHTML() re-emits it on the next full render. */
@@ -1689,7 +2121,7 @@ function trSearch(v) {
   if (!meta) return;
   $("trInner").innerHTML = transcriptHTML(meta);
   const ql = v.trim().toLowerCase();
-  const count = ql ? (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length : 0;
+  const count = trMatchCount(meta, ql);
   $("trCount").textContent = ql ? `${count} match${count === 1 ? "" : "es"}` : "";
 }
 
@@ -1719,7 +2151,7 @@ function chatThread(id) {
   if (!S.chat[id]) S.chat[id] = [];
   return S.chat[id];
 }
-function askMessageHTML(m) {
+function askMessageHTML(m, seekable) {
   if (m.role === "user") return `<div class="ask-msg user"><div class="ask-bubble">${esc(m.text)}</div></div>`;
   // Waiting and writing are ONE bubble in two states, so the first token lands
   // by adding a class and setting a text node — see askSend's onDelta. Built
@@ -1730,10 +2162,17 @@ function askMessageHTML(m) {
     <div class="ask-bubble is-pending${m.streaming ? " is-streaming" : ""}" id="askStreamBubble"><span
       class="spinner"></span><span class="ask-wait">Reading the transcript…</span><span
       class="ask-stream" id="askStream">${esc(m.text || "")}</span></div></div>`;
+  // A chip is a seek button only when there is a player to seek — the quote and
+  // its time are worth showing either way, but a dead button is not.
   const cites = (m.citations || [])
     .map(c => (c ? citeSeconds(c.t) : null))
-    .map((t, i) => t === null ? "" : `<button class="ask-cite" title="Jump audio to ${fmtTs(t)}" onclick="seekAndPlay(${t})">
-      <span class="t">${fmtTs(t)}</span><span class="q">${esc((m.citations[i] || {}).quote || "")}</span></button>`).join("");
+    .map((t, i) => {
+      if (t === null) return "";
+      const body = `<span class="t">${fmtTs(t)}</span><span class="q">${esc((m.citations[i] || {}).quote || "")}</span>`;
+      return seekable
+        ? `<button class="ask-cite" title="Jump audio to ${fmtTs(t)}" onclick="seekAndPlay(${t})">${body}</button>`
+        : `<span class="ask-cite" title="Said ${fmtTs(t)} into the meeting">${body}</span>`;
+    }).join("");
   return `<div class="ask-msg assistant">
     <div class="ask-bubble">${esc(m.text || "No answer came back — try asking again.")}</div>
     ${cites ? `<div class="ask-cites">${cites}</div>` : ""}
@@ -1746,7 +2185,10 @@ function renderChat(meta) {
     </div></div></div>`;
   }
   const thread = chatThread(meta.id);
-  const body = thread.length ? thread.map(askMessageHTML).join("") : `
+  // Arrow, not a bare `.map(askMessageHTML)`: map would pass the ARRAY INDEX as
+  // the second argument and every message but the first would think it can seek.
+  const seekable = canSeek(meta);
+  const body = thread.length ? thread.map(m => askMessageHTML(m, seekable)).join("") : `
     <div class="ask-start">
       <h3>Ask this meeting anything</h3>
       <p>Questions are answered from this transcript alone — and every answer points back at the
@@ -2083,11 +2525,22 @@ function renderReview(meta) {
   </header>`;
 
   if (meta.status === "error") {
-    html += `<div class="rec-stage"><div class="rec-card">
+    // A failed meeting has no transcript, so it gets no tabs — but it is the
+    // meeting MOST likely to be holding notes nobody has read, because the run
+    // that would have folded them into the summary is the run that died. They
+    // were written to notes.jsonl as they were typed and the backend folds them
+    // into every read, so they are here in `meta`; showing only the Reprocess
+    // card was the last place they could still go unseen. Standalone render:
+    // no seek (there is no player on this page) and no "In transcript" (there
+    // is no transcript to jump to).
+    const rescued = notesSection(meta, {standalone: true,
+      lede: "Written straight to disk as you typed them, so they outlived the failure. They are safe here whether or not the audio ever processes."});
+    html += `<div class="rec-stage${rescued ? " has-notes" : ""}"><div class="rec-card">
       <div class="rec-kicker">This recording needs attention</div>
       <h1 class="rec-h1" style="margin-bottom:10px">The audio is saved — processing failed</h1>
-      <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:18px">Reprocess to try again with the current settings.</div>
+      <div style="font-size:12.5px;color:var(--text-dim);margin-bottom:18px">Reprocess to try again with the current settings.${rescued ? " Your notes are below, and stay whatever happens." : ""}</div>
       <button class="rec-start" onclick="reprocess('${meta.id}')">${icon("refresh", 14)}Reprocess audio</button>
+      ${rescued}
     </div></div>`;
     $("main").innerHTML = html;
     bindTitle(meta);
@@ -2111,7 +2564,7 @@ function renderReview(meta) {
   </div>`;
 
   const ql = S.tq.trim().toLowerCase();
-  const count = ql ? (meta.turns || []).filter(t => t.text.toLowerCase().includes(ql)).length : 0;
+  const count = trMatchCount(meta, ql);
   if (tab === "transcript") {
     html += `
     <div class="tr-wrap">
@@ -2138,7 +2591,9 @@ function renderReview(meta) {
     html += `<div class="ov-scroll">${overviewHTML(meta, sumBusy)}</div>`;
   }
 
-  if (hasTurns && (AU.mic || AU.sys)) {
+  // Same test every timestamp on the page uses before offering itself as a seek
+  // — one function, so the player and the buttons that drive it cannot disagree.
+  if (canSeek(meta)) {
     html += `
     <div class="transport">
       <button class="tp-play" id="tpPlay" onclick="transportPlayPause()" title="Play / pause">${icon(AU.playing ? "pause" : "play", 15)}</button>
@@ -2336,6 +2791,136 @@ async function pollLive() {
   } catch (e) { /* transient */ }
   setTimeout(pollLive, S.rec.recording ? 700 : 2000);
 }
+/* ------------------------------------------------------------------ cues -- */
+/* Talking points and questions written BEFORE a meeting, so they are on hand
+   while talking instead of buried in another tab. They live outside any meeting
+   (GET/PUT /api/cues) and the backend copies them into a recording when it
+   starts, which is what lets the summary flag the ones never addressed.
+   localStorage is a cache, not the source of truth: it makes the editor usable
+   the instant the screen paints and survives the backend being unreachable. */
+const CUES_CACHE = "msCues";
+let _cuesTimer = 0;
+
+function cuesParse(text) {
+  return String(text ?? "").split("\n").map(s => s.trim()).filter(Boolean);
+}
+/* The draft wins while the user is typing; otherwise the saved list. */
+function cuesText() { return S.cuesDraft === null ? (S.cues || []).join("\n") : S.cuesDraft; }
+function cuesList() { return S.cuesDraft === null ? (S.cues || []) : cuesParse(S.cuesDraft); }
+
+async function loadCues() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(CUES_CACHE) || "[]");
+    if (Array.isArray(cached)) S.cues = cached.filter(c => typeof c === "string");
+  } catch (e) { /* corrupt cache — the server copy below is authoritative */ }
+  try {
+    const r = await api("/api/cues");
+    S.cues = (r && Array.isArray(r.cues) ? r.cues : []).map(c => String(c));
+    try { localStorage.setItem(CUES_CACHE, JSON.stringify(S.cues)); } catch (e) {}
+    S.cuesState = "";
+  } catch (e) {
+    // No backend for cues (older build, or restarting): keep the local copy and
+    // say so, rather than pretending the list is empty and losing the user's work.
+    S.cuesState = S.cues.length ? "local" : "";
+  }
+  if (S.cues.length) S.cuesOpen = true;   // they wrote these for a reason
+  if (S.view === "new" && !S.rec.recording && S.cuesDraft === null) renderRecorder();
+}
+/* Status is painted in place — never re-render the form under a live caret. */
+function cuesStatus(state) {
+  S.cuesState = state;
+  const el = $("cuesState");
+  if (!el) return;
+  el.className = "cues-state" + (state === "saved" ? " ok" : state === "local" ? " local" : "");
+  el.textContent = state === "saving" ? "Saving…"
+    : state === "saved" ? "Saved"
+    : state === "local" ? "Saved on this Mac only" : "";
+}
+/* Everything in the open editor that depends on HOW MANY cues there are, moved
+   in place. Typing must never re-render the field — that would rebuild the
+   textarea under the caret — so the count badge and the Clear button are both
+   updated by hand here. They are rendered into the DOM either way and toggled
+   with `display`, because a Clear button that only appeared on the next full
+   render left someone who had just typed their first cue with no way to drop
+   them again.
+
+   Not named cuesCount: the badge's own id is "cuesCount", and an element id is
+   published as a global, so that name would collide with the very node this
+   updates. */
+function syncCuesCount(n) {
+  const badge = $("cuesCount");
+  if (badge) {
+    badge.textContent = n ? String(n) : "";
+    badge.style.display = n ? "" : "none";
+  }
+  const clear = $("cuesClear");
+  if (clear) clear.style.display = n ? "" : "none";
+}
+function cuesInput(ta) {
+  S.cuesDraft = ta.value;
+  cuesStatus("saving");
+  syncCuesCount(cuesList().length);
+  clearTimeout(_cuesTimer);
+  _cuesTimer = setTimeout(flushCues, 700);
+}
+async function flushCues() {
+  clearTimeout(_cuesTimer);
+  const list = cuesList();
+  const unchanged = JSON.stringify(list) === JSON.stringify(S.cues || []);
+  S.cues = list;
+  try { localStorage.setItem(CUES_CACHE, JSON.stringify(list)); } catch (e) {}
+  if (unchanged && S.cuesState !== "saving") return;
+  try {
+    await api("/api/cues", {method: "PUT", headers: {"Content-Type": "application/json"},
+                            body: JSON.stringify({cues: list})});
+    cuesStatus("saved");
+  } catch (e) { cuesStatus("local"); }
+}
+function toggleCues() {
+  S.cuesOpen = !S.cuesOpen;
+  S.pendingTitle = ($("recTitle") || {}).value ?? S.pendingTitle;
+  renderRecorder();
+  if (S.cuesOpen) {
+    const ta = $("cuesBox");
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+}
+function clearCues() {
+  S.cuesDraft = "";
+  S.pendingTitle = ($("recTitle") || {}).value ?? S.pendingTitle;
+  cuesStatus("saving");
+  flushCues();
+  renderRecorder();
+}
+/* Collapsed by default and one click from open — it must never stand between
+   someone and the record button. */
+function cuesField() {
+  const n = cuesList().length;
+  const open = !!S.cuesOpen;
+  const body = !open ? "" : `
+      <div class="cues-body">
+        <textarea id="cuesBox" rows="5" spellcheck="false" placeholder="One per line&#10;Ask where we landed on the pricing tiers&#10;Raise the October timeline"
+          oninput="cuesInput(this)" onblur="flushCues()">${esc(cuesText())}</textarea>
+        <div class="cues-foot">
+          <div class="hint">Kept until you clear them, and copied into the meeting when you start — so the summary can flag anything you never got to.</div>
+          <button class="cues-clear" id="cuesClear" onclick="clearCues()"${n ? "" : ' style="display:none"'}>Clear</button>
+          <span class="cues-state${S.cuesState === "saved" ? " ok" : S.cuesState === "local" ? " local" : ""}" id="cuesState">${
+            S.cuesState === "saving" ? "Saving…" : S.cuesState === "saved" ? "Saved"
+            : S.cuesState === "local" ? "Saved on this Mac only" : ""}</span>
+        </div>
+      </div>`;
+  return `
+    <div class="field">
+      <button class="cues-toggle${open ? " on" : ""}" onclick="toggleCues()" aria-expanded="${open}">
+        <span class="cues-ic">${icon("list", 14)}</span>
+        <span class="cues-label">Talking points &amp; questions</span>
+        <span class="cues-count" id="cuesCount"${n ? "" : ' style="display:none"'}>${n || ""}</span>
+        <span class="cues-chev">${icon("chevronDown", 13)}</span>
+      </button>
+      ${body}
+    </div>`;
+}
+
 function renderRecorder() {
   const rec = S.rec || {};
   if (rec.recording) {
@@ -2443,6 +3028,7 @@ function renderRecorder() {
       </select>
       <div class="hint">Locks speech recognition to one language for better accuracy. Live captions always need a chosen or default language.</div>
     </div>
+    ${cuesField()}
     <div class="field">
       <label>Audio devices</label>
       <div class="rec-devices">
@@ -2476,6 +3062,8 @@ async function startRecording() {
   const btn = $("startBtn");
   btn.disabled = true;
   S.pendingTitle = ($("recTitle") || {}).value || "";
+  // Land any half-typed cue before the backend snapshots them into the meeting.
+  await flushCues();
   try {
     const meta = await postJSON("/api/record/start",
       {title: S.pendingTitle, mode: S.recType, language: S.recLang});
@@ -2519,8 +3107,15 @@ function renderProcessing(meta) {
   // full-quality transcript is being built.
   const capturedRows = (S.live.turns || []).map(t =>
     `<div class="live-row"><span class="live-who ${t.track === "mic" ? "you" : ""}">${esc(t.who)}</span><span>${esc(t.text)}</span></div>`).join("");
+  // The notes come too. Processing is the other status whose screen replaces the
+  // whole review, and it can sit here for minutes — or forever, if the run that
+  // is meant to finish it dies. The same standalone render as the error page:
+  // there is no transcript to jump into and no player to seek yet, but there is
+  // no reason for what the user typed to be unreachable while they wait.
+  const written = notesSection(meta, {standalone: true,
+    lede: "Already saved — they were written to disk as you typed them. They will move into the meeting when the transcript lands."});
   $("main").innerHTML = `
-  <div class="rec-stage"><div class="rec-card">
+  <div class="rec-stage${written ? " has-notes" : ""}"><div class="rec-card">
     <div class="rec-kicker">Processing on-device</div>
     <h1 class="rec-h1" style="margin-bottom:4px">${esc(meta.title)}</h1>
     <div class="mono" style="font-size:12px;color:var(--text-dim)">${meta.duration ? fmtTs(meta.duration) + " recorded · " : ""}~90 s for a 45-min call</div>
@@ -2529,6 +3124,7 @@ function renderProcessing(meta) {
       <div class="live-head">Live captions from the recording <span class="live-note">draft — being replaced by the full transcript</span></div>
       <div class="live-body" style="max-height:180px">${capturedRows}</div>
     </div>` : ""}
+    ${written}
   </div></div>`;
 }
 
@@ -2615,6 +3211,14 @@ function setConnected(ok) {
     refreshList(); if (S.activeId) openMeeting(S.activeId);
   }
 }
+/* True while the user is typing somewhere in the main pane. Background polls
+   must never replace the DOM under a live caret — the recorder form (title,
+   cues) and the review pane are all rebuilt wholesale on render. */
+function mainEditing() {
+  const el = document.activeElement;
+  return !!(el && $("main").contains(el)
+    && (el.isContentEditable || el.tagName === "INPUT" || el.tagName === "TEXTAREA"));
+}
 async function pollStatus() {
   try {
     const st = await api("/api/status");
@@ -2642,11 +3246,7 @@ async function pollStatus() {
     // Never replace the main view under the user's cursor: if they are
     // typing in the title, a rename field, a search box or the Ask composer,
     // defer the re-render to a later poll tick.
-    const editing = document.activeElement
-      && $("main").contains(document.activeElement)
-      && (document.activeElement.isContentEditable
-          || document.activeElement.tagName === "INPUT"
-          || document.activeElement.tagName === "TEXTAREA");
+    const editing = mainEditing();
     // live processing updates for the open meeting
     if (S.detail && S.jobs[S.detail.id] && S.jobs[S.detail.id].state === "processing") {
       if (S.detail.status !== "processing" && !editing) { S.detail.status = "processing"; renderMain(); }
@@ -2697,7 +3297,7 @@ async function pollDevices() {
       S.devices = d;
       if (JSON.stringify(d) !== before) {
         renderSidebar();
-        if (S.view === "new" && !S.rec.recording) renderRecorder();
+        if (S.view === "new" && !S.rec.recording && !mainEditing()) renderRecorder();
       }
     }
   } catch (e) { /* keep last known */ }
@@ -2707,7 +3307,7 @@ async function pollCalendar() {
   try {
     const c = await api("/api/calendar/today");
     S.calendar = (c && c.events) || [];
-    if (S.view === "new" && !S.rec.recording) renderRecorder();
+    if (S.view === "new" && !S.rec.recording && !mainEditing()) renderRecorder();
   } catch (e) { /* not available */ }
 }
 
@@ -2719,6 +3319,7 @@ async function pollCalendar() {
   pollStatus();
   pollDevices();
   pollCalendar();
+  loadCues();
   pollLive();
   refreshAuth();
   setInterval(pollCalendar, 300000);
