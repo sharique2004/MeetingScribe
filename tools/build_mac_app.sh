@@ -30,7 +30,7 @@ xcrun swiftc -O -parse-as-library \
     "$PROJECT"/macapp/Sources/MeetingScribe/*.swift \
     -o "$BUILD_DIR/$APP_NAME"
 
-echo "Assembling $DEST…"
+echo "Assembling ${DEST}…"
 rm -rf "$DEST"
 mkdir -p "$DEST/Contents/MacOS" "$DEST/Contents/Resources/app"
 cp "$BUILD_DIR/$APP_NAME" "$DEST/Contents/MacOS/$APP_NAME"
