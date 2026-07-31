@@ -17,6 +17,15 @@ VENV="$DATA/venv"
 BIN="$DATA/bin"
 mkdir -p "$DATA" "$BIN"
 
+# Bundles built by tools/build_dmg_bundle.sh ship their own CPython runtime
+# (with all dependencies) next to this script — nothing to install at all.
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$SELF_DIR/python/bin/python3" ]; then
+    echo "This copy of MeetingScribe ships its own Python runtime — no setup needed."
+    echo "SETUP-COMPLETE"
+    exit 0
+fi
+
 echo "MeetingScribe first-time setup"
 echo "This runs once and takes a few minutes. Everything installs on this Mac."
 echo

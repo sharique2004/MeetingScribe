@@ -2,10 +2,17 @@
 # Build MeetingScribe.app — a self-contained, distributable Mac app.
 #
 # The Python source ships INSIDE the bundle (Contents/Resources/app), so a
-# downloaded copy is complete on its own. It does not ship the ~2 GB of
-# Python dependencies; the app builds those on first launch via the bundled
-# bootstrap.sh (see BackendManager.runBootstrap). User data (recordings,
-# models, config) lives in ~/.meetingscribe, so the bundle stays read-only.
+# downloaded copy is complete on its own. Two flavours:
+#
+#   MS_PYTHON_RUNTIME=<dir>  — a prepared relocatable CPython runtime (see
+#       tools/build_dmg_bundle.sh) is copied to Contents/Resources/python and
+#       the app runs with NO install step: no system Python, no pip, no
+#       bootstrap. This is what the DMG / curl installer ships.
+#   unset — the app builds a ~/.meetingscribe venv on first launch via the
+#       bundled bootstrap.sh (see BackendManager.runBootstrap), as before.
+#
+# User data (recordings, models, config) lives in ~/.meetingscribe, so the
+# bundle stays read-only.
 #
 # Compiles macapp/Sources with bare swiftc (Command Line Tools are enough),
 # assembles the bundle, draws the icon, ad-hoc signs it. Pass a destination
@@ -49,6 +56,16 @@ APP_SRC="$DEST/Contents/Resources/app"
 cp "$PROJECT/tools/bootstrap.sh" "$DEST/Contents/Resources/bootstrap.sh"
 chmod +x "$DEST/Contents/Resources/bootstrap.sh"
 
+# Optional: bundle a relocatable CPython runtime (site-packages included) so
+# the downloaded app needs no Python, no pip and no first-launch install.
+# tools/build_dmg_bundle.sh prepares the runtime and points us at it.
+if [ -n "${MS_PYTHON_RUNTIME:-}" ]; then
+    [ -x "$MS_PYTHON_RUNTIME/bin/python3" ] \
+        || { echo "ERROR: MS_PYTHON_RUNTIME=$MS_PYTHON_RUNTIME has no bin/python3"; exit 1; }
+    echo "Bundling the Python runtime…"
+    rsync -a "$MS_PYTHON_RUNTIME/" "$DEST/Contents/Resources/python/"
+fi
+
 # Pre-compile the Swift helpers on THIS machine's up-to-date SDK and ship the
 # binaries. Compiling on the user's Mac is unreliable — the Speech and
 # FoundationModels frameworks need a recent Command Line Tools SDK that a
@@ -81,7 +98,9 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>$APP_NAME</string>
-  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <!-- The pre-built Speech/AI helpers link macOS 26 frameworks (minos 26.0),
+       so the app is Apple Silicon + macOS 26 only. -->
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>MeetingScribe records meetings with your microphone. Audio never leaves this Mac.</string>
@@ -109,7 +128,30 @@ fi
 # Ad-hoc signature: enough to run locally and to post notifications. A
 # downloaded copy is unsigned by a Developer ID, so Gatekeeper asks the user
 # to right-click → Open the first time (the download page explains this).
-codesign --force --deep --sign - "$DEST" 2>/dev/null || codesign --force --sign - "$DEST"
+#
+# Sign every nested Mach-O first — the bundled runtime carries thousands of
+# .so extension modules and dylibs — then the bundle itself, so the resource
+# seal covers the freshly signed files. (--deep is deprecated and would not
+# reach code inside Resources anyway.)
+echo "Signing…"
+SIGNLOG="$BUILD_DIR/codesign.log"
+find "$DEST/Contents/Resources" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
+    | xargs -0 -n 64 codesign --force --sign - 2>>"$SIGNLOG" \
+    || { echo "codesign failed on a nested library:"; cat "$SIGNLOG"; exit 1; }
+# Extension-less executables (helper binaries, python3.11 itself): sign
+# anything whose magic says Mach-O.
+for dir in "$DEST/Contents/Resources/bin" "$DEST/Contents/Resources/python/bin"; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"/*; do
+        [ -f "$f" ] && [ ! -L "$f" ] || continue
+        case "$(head -c 4 "$f" | xxd -p)" in
+            cffaedfe|cafebabe|feedfacf)
+                codesign --force --sign - "$f" 2>>"$SIGNLOG" \
+                    || { echo "codesign failed on $f:"; cat "$SIGNLOG"; exit 1; } ;;
+        esac
+    done
+done
+codesign --force --sign - "$DEST"
 
 touch "$DEST"  # nudge LaunchServices to refresh the icon
 echo "Built: $DEST"

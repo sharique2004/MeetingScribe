@@ -1,14 +1,18 @@
 // Marketing / info landing page — shown to every signed-out visitor.
 //
-// On desktop the primary action is downloading the Mac app (.dmg on InsForge
-// storage). On a phone you can't run the Mac app, so the download and install
-// steps are hidden and the primary action becomes "View your meetings →",
-// which opens the sign-in page (same arrow the desktop nav uses).
+// On desktop the primary actions are the quick-install one-liner (curl | sh,
+// served from this site's own /install.sh) and the DMG from GitHub Releases.
+// On a phone you can't run the Mac app, so the download and install steps are
+// hidden and the primary action becomes "View your meetings →", which opens
+// the sign-in page (same arrow the desktop nav uses).
 
 import React from "react";
 
 const DMG_URL =
-  "https://5uh76ypz.us-east.insforge.app/api/storage/buckets/downloads/objects/MeetingScribe.dmg";
+  "https://github.com/sharique2004/MeetingScribe/releases/latest/download/MeetingScribe.dmg";
+
+const INSTALL_CMD =
+  "curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh";
 
 const IS_MAC = /Macintosh|Mac OS X/.test(navigator.userAgent);
 
@@ -67,9 +71,20 @@ export default function Landing({ onOpenApp, phone = false }) {
           )}
           <a className="lp-btn ghost" href="#how">How it works</a>
         </div>
+        {showDownload && (
+          <div className="lp-quick">
+            <div className="lp-quicklabel">
+              Or paste this in Terminal — it installs to /Applications and launches, no security prompts:
+            </div>
+            <InstallCommand />
+          </div>
+        )}
         <div className="lp-meta">
           {showDownload
-            ? <>Free · Apple Silicon Mac · macOS 26 recommended (older works with Whisper){!IS_MAC && " · you're not on a Mac, but you can still view synced meetings"}</>
+            ? <>Free · Apple Silicon Mac · macOS 26 Tahoe · ~370 MB download (1.2 GB on disk) · speech
+                models download on first run{!IS_MAC && " · you're not on a Mac, but you can still view synced meetings"}
+                <br />Optional: hearing the other side of calls without speakerphone uses the
+                free <a href="https://existential.audio/blackhole/" target="_blank" rel="noreferrer">BlackHole</a> audio driver.</>
             : <>Sign in with your MeetingScribe account to read the transcripts and summaries you synced from your Mac — audio stays on the Mac.</>}
         </div>
       </header>
@@ -118,17 +133,29 @@ export default function Landing({ onOpenApp, phone = false }) {
       {showDownload ? (
         <section className="lp-install">
           <h2>Installing</h2>
+          <h3 className="lp-installsub">Quick install</h3>
+          <p>
+            One command installs MeetingScribe to /Applications and launches it —
+            no security prompts.
+          </p>
+          <InstallCommand />
+          <h3 className="lp-installsub">Or install from the DMG</h3>
           <ol>
-            <li><b>Download</b> the disk image and drag <b>MeetingScribe</b> into Applications.</li>
-            <li><b>First open:</b> right-click the app → <b>Open</b> (it's a free indie app, not
-              signed through Apple's paid program, so macOS asks once).</li>
-            <li><b>First launch</b> sets itself up — it installs its local engine on your Mac
-              (a few minutes, one time). After that it opens instantly.</li>
-            <li>For meeting summaries, sign in to Claude once in Terminal
-              (<code>claude</code>); for capturing the other side of calls, install the free
-              <code> BlackHole</code> audio driver. The app guides you.</li>
+            <li>Open the disk image and drag <b>MeetingScribe</b> into <b>Applications</b>.</li>
+            <li>On first launch, macOS shows <b>“Apple could not verify…”</b> with no Open
+              button (it's a free indie app, not signed through Apple's paid program) —
+              click <b>Done</b>.</li>
+            <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll down
+              to <b>Security</b>, and click <b>Open Anyway</b>. Authenticate when asked.</li>
+            <li>Launch <b>MeetingScribe</b> again and confirm — after that it opens normally.</li>
           </ol>
-          <a className="lp-btn primary" href={DMG_URL} download><DownloadGlyph /> Download for Mac</a>
+          <p>
+            First run downloads the speech models and walks you through setup — Claude
+            sign-in for summaries, and the optional{" "}
+            <a href="https://existential.audio/blackhole/" target="_blank" rel="noreferrer">BlackHole</a>{" "}
+            driver for hearing the other side of calls.
+          </p>
+          <a className="lp-btn primary" href={DMG_URL} download><DownloadGlyph /> Download the DMG</a>
         </section>
       ) : (
         <section className="lp-install">
@@ -147,6 +174,24 @@ export default function Landing({ onOpenApp, phone = false }) {
         <div className="brand"><MicIcon size={16} /><span>MeetingScribe</span></div>
         <span>Runs on your Mac. <button className="lp-link" onClick={onOpenApp}>View your meetings</button></span>
       </footer>
+    </div>
+  );
+}
+
+function InstallCommand() {
+  const [copied, setCopied] = React.useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(INSTALL_CMD).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    });
+  };
+  return (
+    <div className="lp-cmd">
+      <code>{INSTALL_CMD}</code>
+      <button className="lp-copy" onClick={copy} aria-label="Copy install command">
+        {copied ? "Copied" : "Copy"}
+      </button>
     </div>
   );
 }

@@ -35,7 +35,19 @@ final class BackendManager {
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
         dataDir = home.appendingPathComponent(".meetingscribe")
-        pythonPath = dataDir.appendingPathComponent("venv/bin/python").path
+
+        // Prefer the relocatable CPython runtime shipped inside the bundle
+        // (Contents/Resources/python — see tools/build_dmg_bundle.sh): a
+        // downloaded copy runs with no install step at all. Fall back to the
+        // ~/.meetingscribe venv for developer builds, built on first launch
+        // by bootstrap.sh.
+        let bundledPython = Bundle.main.resourceURL?
+            .appendingPathComponent("python/bin/python3").path
+        if let py = bundledPython, FileManager.default.isExecutableFile(atPath: py) {
+            pythonPath = py
+        } else {
+            pythonPath = dataDir.appendingPathComponent("venv/bin/python").path
+        }
 
         // Prefer the Python source bundled inside the app (a downloaded copy);
         // fall back to the Info.plist path or ~/MeetingScribe for dev builds.
@@ -102,6 +114,9 @@ final class BackendManager {
         p.currentDirectoryURL = projectDir
         var env = ProcessInfo.processInfo.environment
         env["MEETINGSCRIBE_NO_BROWSER"] = "1"
+        // Never write .pyc files: the bundled runtime lives inside the signed,
+        // read-only .app and its resource seal must survive execution.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         if bundled {
             env["MEETINGSCRIBE_DATA"] = dataDir.path
             // Pre-built Speech/AI helpers ship in the bundle; the backend

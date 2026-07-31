@@ -11,6 +11,19 @@ transcript + summary to read it on your phone.
 
 ## How to start
 
+**macOS — easiest:** grab the app from <https://meetingscribe.shariquekhatri.com>,
+or paste this in Terminal:
+
+```sh
+curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh
+```
+
+It installs **MeetingScribe.app** to /Applications and launches it — no
+security prompts. (Apple Silicon, macOS 26 Tahoe, ~370 MB download; speech
+models download on first run.)
+
+**From source (developers):**
+
 **Windows:** double-click **`setup.bat`** once, then **`run.bat`** from then on.
 **macOS:** open Terminal in this folder and run `bash setup.sh` once. That
 builds and installs **MeetingScribe.app** — a real Mac app with a Dock icon,
