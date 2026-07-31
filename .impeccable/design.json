@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-30T00:00:00Z",
+  "title": "Design System: MeetingScribe",
+  "extensions": {
+    "colorMeta": {
+      "night": { "role": "neutral", "displayName": "Night", "canonical": "#0a0a12", "tonalRamp": ["oklch(13% 0.02 285)", "oklch(20% 0.02 285)", "oklch(30% 0.02 285)", "oklch(42% 0.02 285)", "oklch(55% 0.02 285)", "oklch(70% 0.015 285)", "oklch(84% 0.01 285)", "oklch(95% 0.005 285)"] },
+      "ink": { "role": "neutral", "displayName": "Signal Ink", "canonical": "#eef1f9", "tonalRamp": ["oklch(15% 0.01 265)", "oklch(27% 0.01 265)", "oklch(39% 0.01 265)", "oklch(51% 0.01 265)", "oklch(63% 0.01 265)", "oklch(75% 0.01 265)", "oklch(87% 0.008 265)", "oklch(95% 0.008 265)"] },
+      "ink-dim": { "role": "neutral", "displayName": "Dimmed Ink", "canonical": "rgba(226, 232, 248, 0.72)", "tonalRamp": ["rgba(226,232,248,0.16)", "rgba(226,232,248,0.24)", "rgba(226,232,248,0.32)", "rgba(226,232,248,0.42)", "rgba(226,232,248,0.52)", "rgba(226,232,248,0.62)", "rgba(226,232,248,0.72)", "rgba(226,232,248,0.86)"] },
+      "ink-faint": { "role": "neutral", "displayName": "Faint Ink", "canonical": "rgba(226, 232, 248, 0.48)", "tonalRamp": ["rgba(226,232,248,0.08)", "rgba(226,232,248,0.14)", "rgba(226,232,248,0.20)", "rgba(226,232,248,0.27)", "rgba(226,232,248,0.34)", "rgba(226,232,248,0.41)", "rgba(226,232,248,0.48)", "rgba(226,232,248,0.60)"] },
+      "aqua": { "role": "primary", "displayName": "Working Aqua", "canonical": "#5eead4", "tonalRamp": ["oklch(15% 0.13 174)", "oklch(27% 0.13 174)", "oklch(39% 0.13 174)", "oklch(50% 0.13 174)", "oklch(62% 0.13 174)", "oklch(73% 0.13 174)", "oklch(87% 0.13 174)", "oklch(95% 0.07 174)"] },
+      "sky": { "role": "primary", "displayName": "Signal Sky", "canonical": "#7dd3fc", "tonalRamp": ["oklch(15% 0.1 224)", "oklch(27% 0.1 224)", "oklch(39% 0.1 224)", "oklch(50% 0.1 224)", "oklch(62% 0.1 224)", "oklch(73% 0.1 224)", "oklch(83% 0.1 224)", "oklch(95% 0.05 224)"] },
+      "hairline": { "role": "neutral", "displayName": "Hairline", "canonical": "rgba(255, 255, 255, 0.08)", "tonalRamp": ["rgba(255,255,255,0.02)", "rgba(255,255,255,0.04)", "rgba(255,255,255,0.06)", "rgba(255,255,255,0.08)", "rgba(255,255,255,0.10)", "rgba(255,255,255,0.14)", "rgba(255,255,255,0.20)", "rgba(255,255,255,0.30)"] },
+      "hairline-lit": { "role": "neutral", "displayName": "Hairline Lit", "canonical": "rgba(255, 255, 255, 0.14)", "tonalRamp": ["rgba(255,255,255,0.04)", "rgba(255,255,255,0.06)", "rgba(255,255,255,0.08)", "rgba(255,255,255,0.10)", "rgba(255,255,255,0.14)", "rgba(255,255,255,0.18)", "rgba(255,255,255,0.24)", "rgba(255,255,255,0.34)"] },
+      "glass": { "role": "neutral", "displayName": "Glass", "canonical": "rgba(255, 255, 255, 0.03)", "tonalRamp": ["rgba(255,255,255,0.01)", "rgba(255,255,255,0.02)", "rgba(255,255,255,0.03)", "rgba(255,255,255,0.045)", "rgba(255,255,255,0.055)", "rgba(255,255,255,0.07)", "rgba(255,255,255,0.09)", "rgba(255,255,255,0.12)"] },
+      "glass-raised": { "role": "neutral", "displayName": "Raised Glass", "canonical": "rgba(255, 255, 255, 0.055)", "tonalRamp": ["rgba(255,255,255,0.02)", "rgba(255,255,255,0.03)", "rgba(255,255,255,0.045)", "rgba(255,255,255,0.055)", "rgba(255,255,255,0.07)", "rgba(255,255,255,0.09)", "rgba(255,255,255,0.12)", "rgba(255,255,255,0.16)"] },
+      "console": { "role": "neutral", "displayName": "Console", "canonical": "rgba(13, 13, 22, 0.88)", "tonalRamp": ["rgba(13,13,22,0.40)", "rgba(13,13,22,0.50)", "rgba(13,13,22,0.60)", "rgba(13,13,22,0.70)", "rgba(13,13,22,0.78)", "rgba(13,13,22,0.82)", "rgba(13,13,22,0.88)", "rgba(13,13,22,0.96)"] },
+      "aurora-blue": { "role": "secondary", "displayName": "Aurora Blue", "canonical": "#3b82f6", "tonalRamp": ["oklch(15% 0.19 259)", "oklch(27% 0.19 259)", "oklch(39% 0.19 259)", "oklch(50% 0.19 259)", "oklch(62% 0.19 259)", "oklch(73% 0.15 259)", "oklch(84% 0.1 259)", "oklch(95% 0.04 259)"] },
+      "aurora-iris": { "role": "secondary", "displayName": "Aurora Iris", "canonical": "#a5b4fc", "tonalRamp": ["oklch(15% 0.1 277)", "oklch(27% 0.1 277)", "oklch(39% 0.1 277)", "oklch(50% 0.1 277)", "oklch(62% 0.1 277)", "oklch(78% 0.1 277)", "oklch(87% 0.07 277)", "oklch(95% 0.03 277)"] },
+      "aurora-lilac": { "role": "secondary", "displayName": "Aurora Lilac", "canonical": "#c4b5fd", "tonalRamp": ["oklch(15% 0.11 293)", "oklch(27% 0.11 293)", "oklch(39% 0.11 293)", "oklch(50% 0.11 293)", "oklch(62% 0.11 293)", "oklch(79% 0.11 293)", "oklch(88% 0.07 293)", "oklch(95% 0.03 293)"] },
+      "speaker-blue": { "role": "tertiary", "displayName": "Speaker Blue", "canonical": "#5b8cff", "tonalRamp": ["oklch(15% 0.18 265)", "oklch(27% 0.18 265)", "oklch(39% 0.18 265)", "oklch(50% 0.18 265)", "oklch(65% 0.18 265)", "oklch(75% 0.13 265)", "oklch(85% 0.08 265)", "oklch(95% 0.03 265)"] },
+      "speaker-violet": { "role": "tertiary", "displayName": "Speaker Violet", "canonical": "#c07af6", "tonalRamp": ["oklch(15% 0.17 305)", "oklch(27% 0.17 305)", "oklch(39% 0.17 305)", "oklch(50% 0.17 305)", "oklch(62% 0.17 305)", "oklch(70% 0.17 305)", "oklch(84% 0.1 305)", "oklch(95% 0.04 305)"] },
+      "speaker-green": { "role": "tertiary", "displayName": "Speaker Green", "canonical": "#2fbf87", "tonalRamp": ["oklch(15% 0.15 163)", "oklch(27% 0.15 163)", "oklch(39% 0.15 163)", "oklch(50% 0.15 163)", "oklch(62% 0.15 163)", "oklch(71% 0.15 163)", "oklch(84% 0.1 163)", "oklch(95% 0.05 163)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The dual-claim hero headline only; balanced wrapping." },
+      "headline": { "displayName": "Headline", "purpose": "Section openers (Then it opens. / Install it)." },
+      "title": { "displayName": "Title", "purpose": "Proof-row heads; balanced wrapping." },
+      "body": { "displayName": "Body", "purpose": "Paragraph copy; proof text capped at 42ch." },
+      "label": { "displayName": "Mono Label", "purpose": "Uppercase micro-labels inside panels (Summary, talk time · demo)." },
+      "mono": { "displayName": "Machine Mono", "purpose": "Commands, prompts, timestamps, durations, percentages, requirements." }
+    },
+    "shadows": [
+      { "name": "top-light", "value": "inset 0 1px 0 rgba(255, 255, 255, 0.05)", "purpose": "Universal 1px top-lit glass edge on every panel; 0.06–0.07 alpha on console surfaces." },
+      { "name": "machine-terminal", "value": "0 30px 90px rgba(0, 0, 0, 0.55)", "purpose": "Under the hero terminal only." },
+      { "name": "machine-window", "value": "0 40px 110px rgba(0, 0, 0, 0.55)", "purpose": "Under the app-window payoff only." },
+      { "name": "machine-phone", "value": "0 20px 60px rgba(0, 0, 0, 0.5)", "purpose": "Under the phone artifact only." },
+      { "name": "accent-glow", "value": "0 10px 32px rgba(94, 234, 212, 0.22)", "purpose": "Under the primary button only." },
+      { "name": "live-halo", "value": "0 0 0 1px rgba(94, 234, 212, 0.32), 0 0 18px rgba(94, 234, 212, 0.14)", "purpose": "The currently-speaking transcript turn." }
+    ],
+    "motion": [
+      { "name": "ease-out", "value": "cubic-bezier(0.22, 1, 0.32, 1)", "purpose": "The single easing token; every transition on the landing uses it." },
+      { "name": "micro", "value": "120ms–150ms", "purpose": "Hover color/border shifts, press scale(0.97), arrow slides." },
+      { "name": "reveal", "value": "600ms opacity + 14px translateY rise", "purpose": "One-shot IntersectionObserver section reveals (.in class)." },
+      { "name": "word-cascade", "value": "55–70ms per-word transition-delay steps", "purpose": "Caption and live-turn word-by-word landings." },
+      { "name": "beam-spin", "value": "7s linear infinite on --angle", "purpose": "The conic border-beam orbit; killed under prefers-reduced-motion." },
+      { "name": "caret-blink", "value": "1.1s steps(1) opacity blink", "purpose": "Idle terminal caret; a native terminal device, not a fake-liveness dot." },
+      { "name": "bar-fill", "value": "0.9–1s scaleX from 0, transform-origin left (fast bar delayed 0.35s)", "purpose": "Talk-share and speed bars on reveal." }
+    ],
+    "breakpoints": [
+      { "name": "collapse", "value": "860px", "purpose": "Proof rows and the app-window body drop to one column." },
+      { "name": "compact", "value": "720px", "purpose": "Gutters 18px, nav links hide, hero actions stack, terminal type 12px." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The aqua-mint call to action (DMG download, phone viewer entry); the only gradient fill and the only glowing shadow.",
+      "html": "<a href=\"#\" class=\"ds-btn-primary\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3v12\"/><path d=\"M7 11l5 5 5-5\"/><path d=\"M4 20h16\"/></svg> Download the DMG</a>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 9px; height: 46px; padding: 0 22px; border-radius: 12px; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 14.5px; text-decoration: none; border: 1px solid transparent; background: linear-gradient(180deg, #71efdb, #43c4ae); color: #04251f; box-shadow: 0 10px 32px rgba(94, 234, 212, 0.22); transition: transform 0.12s cubic-bezier(0.22, 1, 0.32, 1), filter 0.15s cubic-bezier(0.22, 1, 0.32, 1); } .ds-btn-primary:hover { filter: brightness(1.06); } .ds-btn-primary:active { transform: scale(0.97); } .ds-btn-primary:focus-visible { outline: 2px solid rgba(94, 234, 212, 0.75); outline-offset: 2px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Glass secondary action; hover lifts the hairline border.",
+      "html": "<a href=\"#\" class=\"ds-btn-ghost\">Download the DMG</a>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; gap: 9px; height: 46px; padding: 0 22px; border-radius: 12px; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 14.5px; text-decoration: none; border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(255, 255, 255, 0.03); color: #eef1f9; transition: transform 0.12s cubic-bezier(0.22, 1, 0.32, 1), border-color 0.15s cubic-bezier(0.22, 1, 0.32, 1); } .ds-btn-ghost:hover { border-color: rgba(255, 255, 255, 0.14); } .ds-btn-ghost:active { transform: scale(0.97); } .ds-btn-ghost:focus-visible { outline: 2px solid rgba(94, 234, 212, 0.75); outline-offset: 2px; }"
+    },
+    {
+      "name": "Copy Chip",
+      "kind": "chip",
+      "refersTo": "copy-chip",
+      "description": "Mono copy-to-clipboard chip in terminal bars and command rows; border tints aqua on hover, text flips to Copied.",
+      "html": "<button class=\"ds-copy\">Copy</button>",
+      "css": ".ds-copy { background: rgba(255, 255, 255, 0.055); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 7px; color: #5eead4; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 500; font-size: 11.5px; padding: 4px 12px; cursor: pointer; transition: border-color 0.15s cubic-bezier(0.22, 1, 0.32, 1), color 0.15s cubic-bezier(0.22, 1, 0.32, 1); } .ds-copy:hover { border-color: rgba(94, 234, 212, 0.5); } .ds-copy:focus-visible { outline: 2px solid rgba(94, 234, 212, 0.75); outline-offset: 2px; }"
+    },
+    {
+      "name": "Glass Card",
+      "kind": "card",
+      "refersTo": "card-glass",
+      "description": "The standard informational panel: hairline glass, top-light inset, uppercase mono label opener; casts no drop shadow.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-label\">talk time · demo</div><p class=\"ds-card-body\">We can hold the launch until metering is signed off, that feels safer.</p></div>",
+      "css": ".ds-card { border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; background: rgba(255, 255, 255, 0.03); padding: 20px 22px; text-align: left; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); max-width: 360px; } .ds-card-label { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(226, 232, 248, 0.48); margin-bottom: 14px; } .ds-card-body { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 15px; line-height: 1.6; color: #eef1f9; margin: 0; }"
+    },
+    {
+      "name": "Floating Glass Nav",
+      "kind": "nav",
+      "refersTo": "nav-bar",
+      "description": "Sticky blurred glass capsule: brand mark left, faint links and one aqua action right.",
+      "html": "<nav class=\"ds-nav\"><span class=\"ds-nav-brand\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"#5eead4\" stroke-width=\"2\" stroke-linecap=\"round\"><path d=\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\"/><path d=\"M19 10v2a7 7 0 0 1-14 0v-2\"/><line x1=\"12\" y1=\"19\" x2=\"12\" y2=\"22\"/></svg>MeetingScribe</span><span class=\"ds-nav-links\"><a class=\"ds-nav-link\" href=\"#\">GitHub</a><a class=\"ds-nav-action\" href=\"#\">View your meetings →</a></span></nav>",
+      "css": ".ds-nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px 18px; background: rgba(10, 10, 18, 0.72); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 14px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); min-width: 340px; } .ds-nav-brand { display: inline-flex; align-items: center; gap: 9px; font-family: 'Bricolage Grotesque', 'Hanken Grotesk', sans-serif; font-weight: 600; font-size: 16.5px; letter-spacing: -0.01em; color: #eef1f9; } .ds-nav-links { display: inline-flex; align-items: center; gap: 22px; } .ds-nav-link { color: rgba(226, 232, 248, 0.48); font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 13.5px; font-weight: 500; text-decoration: none; transition: color 0.15s cubic-bezier(0.22, 1, 0.32, 1); } .ds-nav-link:hover { color: #eef1f9; } .ds-nav-action { color: #5eead4; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 14px; text-decoration: none; } .ds-nav-action:hover { text-decoration: underline; }"
+    },
+    {
+      "name": "Border-Beam Terminal",
+      "kind": "custom",
+      "refersTo": "console-surface",
+      "description": "The signature artifact: console surface with macOS traffic lights, mono transcript with sky prompt, aqua checks and blinking caret, wrapped in the orbiting conic border-beam.",
+      "html": "<div class=\"ds-beam\"><div class=\"ds-term\"><div class=\"ds-termbar\"><span class=\"ds-tl ds-tl-r\"></span><span class=\"ds-tl ds-tl-y\"></span><span class=\"ds-tl ds-tl-g\"></span><span class=\"ds-termtitle\">meetingscribe · zsh</span></div><div class=\"ds-termbody\"><div><span class=\"ds-prompt\">$</span> curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh</div><div class=\"ds-out\"><span class=\"ds-check\">✓</span> installed to /Applications</div><div><span class=\"ds-prompt\">$</span> <span class=\"ds-caret\"></span></div></div></div></div>",
+      "css": "@property --ds-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; } .ds-beam { position: relative; border-radius: 17px; max-width: 560px; } .ds-beam::before, .ds-beam::after { content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none; background: conic-gradient(from var(--ds-angle), transparent 0turn 0.62turn, rgba(94, 234, 212, 0.9) 0.72turn, rgba(125, 211, 252, 0.9) 0.78turn, transparent 0.88turn 1turn); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; animation: ds-spin 7s linear infinite; } .ds-beam::after { filter: blur(9px); opacity: 0.5; } @keyframes ds-spin { to { --ds-angle: 360deg; } } .ds-term { position: relative; text-align: left; border-radius: 16px; overflow: hidden; background: rgba(13, 13, 22, 0.88); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.06); } .ds-termbar { display: flex; align-items: center; gap: 7px; padding: 12px 12px 12px 15px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); } .ds-tl { width: 11px; height: 11px; border-radius: 50%; flex: none; } .ds-tl-r { background: #e0604f; } .ds-tl-y { background: #d9a44a; } .ds-tl-g { background: #63c78a; } .ds-termtitle { flex: 1; text-align: center; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; color: rgba(226, 232, 248, 0.48); } .ds-termbody { padding: 20px 22px 22px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13.5px; line-height: 2.05; color: #eef1f9; word-break: break-all; } .ds-prompt { color: #7dd3fc; } .ds-out { color: rgba(226, 232, 248, 0.72); } .ds-check { color: #5eead4; } .ds-caret { display: inline-block; width: 8px; height: 15px; margin-left: 2px; background: #5eead4; vertical-align: -2px; animation: ds-blink 1.1s steps(1) infinite; } @keyframes ds-blink { 50% { opacity: 0; } }"
+    },
+    {
+      "name": "Transcript Turn",
+      "kind": "custom",
+      "refersTo": "card-glass",
+      "description": "One meeting turn: mono timestamp gutter, speaker-colored name, dimmed dialogue; the live variant gets the aqua halo and full ink.",
+      "html": "<div class=\"ds-turnwrap\"><div class=\"ds-turn\"><span class=\"ds-ts\">00:19</span><div><span class=\"ds-who\" style=\"color:#c07af6\">Priya Nair</span><p>The usage based tier is the one people keep asking for.</p></div></div><div class=\"ds-turn ds-live\"><span class=\"ds-ts\">01:28</span><div><span class=\"ds-who\" style=\"color:#5b8cff\">You</span><p>Trustworthy metering is the gate for the pricing launch.</p></div></div></div>",
+      "css": ".ds-turnwrap { background: #0a0a12; padding: 16px; border-radius: 14px; max-width: 420px; } .ds-turn { display: grid; grid-template-columns: 44px 1fr; gap: 12px; padding: 10px 12px; border-radius: 10px; margin-bottom: 4px; } .ds-ts { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: rgba(226, 232, 248, 0.48); padding-top: 3px; letter-spacing: -0.02em; } .ds-who { display: block; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12.5px; font-weight: 600; margin-bottom: 3px; } .ds-turn p { font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 13.5px; line-height: 1.6; color: rgba(226, 232, 248, 0.72); margin: 0; } .ds-live { background: rgba(255, 255, 255, 0.055); box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.32), 0 0 18px rgba(94, 234, 212, 0.14); } .ds-live p { color: #eef1f9; }"
+    },
+    {
+      "name": "Action Item Row",
+      "kind": "custom",
+      "refersTo": "card-glass",
+      "description": "Summary-rail action item: speaker-colored owner dot, dimmed text, mono due date.",
+      "html": "<div class=\"ds-actionwrap\"><div class=\"ds-action\"><span class=\"ds-owner\" style=\"background:#c07af6\"></span><span class=\"ds-actiontext\">Pricing page copy for the usage tier</span><span class=\"ds-due\">Thu</span></div><div class=\"ds-action\"><span class=\"ds-owner\" style=\"background:#2fbf87\"></span><span class=\"ds-actiontext\">Metering reconciliation design doc</span><span class=\"ds-due\">Thu</span></div></div>",
+      "css": ".ds-actionwrap { background: #0a0a12; padding: 16px; border-radius: 14px; max-width: 360px; } .ds-action { display: flex; align-items: center; gap: 9px; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 9px; padding: 8px 11px; margin-bottom: 7px; background: rgba(10, 10, 18, 0.4); } .ds-owner { width: 8px; height: 8px; border-radius: 50%; flex: none; } .ds-actiontext { flex: 1; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12.5px; color: rgba(226, 232, 248, 0.72); } .ds-due { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: rgba(226, 232, 248, 0.48); }"
+    },
+    {
+      "name": "Talk-Share Bar",
+      "kind": "custom",
+      "refersTo": "card-glass",
+      "description": "Data bar: speaker-colored fill in a 6px pill track, mono percentage right-aligned; fills scaleX from 0 on reveal.",
+      "html": "<div class=\"ds-sharewrap\"><div class=\"ds-speakrow\"><span class=\"ds-who\" style=\"color:#5b8cff\">You</span><span class=\"ds-sharebar\"><span class=\"ds-sharefill\" style=\"width:41%;background:#5b8cff\"></span></span><span class=\"ds-sharepct\">41%</span></div><div class=\"ds-speakrow\"><span class=\"ds-who\" style=\"color:#c07af6\">Priya Nair</span><span class=\"ds-sharebar\"><span class=\"ds-sharefill\" style=\"width:34%;background:#c07af6\"></span></span><span class=\"ds-sharepct\">34%</span></div></div>",
+      "css": ".ds-sharewrap { background: #0a0a12; padding: 18px; border-radius: 14px; max-width: 360px; } .ds-speakrow { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; } .ds-speakrow:last-child { margin-bottom: 0; } .ds-who { flex: none; width: 92px; font-family: 'Hanken Grotesk', system-ui, sans-serif; font-size: 12.5px; font-weight: 600; } .ds-sharebar { flex: 1; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.06); overflow: hidden; } .ds-sharefill { display: block; height: 100%; border-radius: 99px; } .ds-sharepct { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: rgba(226, 232, 248, 0.48); width: 34px; text-align: right; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Terminal Under the Aurora",
+    "overview": "MeetingScribe's visual world is a developer's night desk: a near-black violet night (#0a0a12), a restrained blue-to-lilac aurora glowing only in the top third of the sky, and below it, machines that actually run. The landing page's centerpiece is not a screenshot but a working terminal that types the real install command and prints a truthful transcript; the app window, the phone, the talk-time bars are all rendered as live instruments, not marketing art. Everything sits on hairline glass: white fills at 3–5.5% opacity, 1px hairline borders, a single top-lit inset highlight.\n\nThe system is deliberately quiet so its one recurring signature lands: the conic --angle border-beam, a thin aqua/sky arc orbiting the terminal and the install command. Cool blue-violet atmosphere is decoration; warm aqua/mint is work. Every interactive or affirmative element (links, primary button, checkmarks, the caret, live-line halos) speaks aqua, which keeps the page from reading as textbook AI-purple. This world spans the shipped Mac app (templates/index.html, ui-demos/DESIGN_BRIEF.md); the landing is the app's first screen, built from the same materials with the same restraint.",
+    "keyCharacteristics": [
+      "Night base with an aurora wash confined to the top third; never behind reading columns at full strength",
+      "Hairline glass surfaces, flat by default; deep black shadows only under the \"machine\" artifacts",
+      "One signature: the animated conic border-beam, aqua-to-sky, glow-blurred twin layer",
+      "Three typographic voices: Bricolage Grotesque declares, Hanken Grotesk explains, JetBrains Mono measures",
+      "Honest instruments over marketing apparatus: real commands, real output, labeled demo data"
+    ],
+    "rules": [
+      { "name": "The Aqua Does the Work Rule", "body": "Cool blue-violet is weather; aqua/sky is machinery. Anything a visitor can click, copy, or read as confirmation is aqua or sky. Aurora hues never appear on an interactive element.", "section": "colors" },
+      { "name": "The Top-Third Wash Rule", "body": "The aurora exists as pointer-events-none radial gradients pinned to the top of the page, each dissolving to transparent by ~60%. It sets atmosphere behind the hero and must never compete with running text.", "section": "colors" },
+      { "name": "The Measured-In-Mono Rule", "body": "If a string is executable, timestamped, counted, or a system requirement, it is set in JetBrains Mono. Prose never wears mono; measurements never wear the sans.", "section": "typography" },
+      { "name": "The Machine Shadow Rule", "body": "Only the three \"machine\" artifacts (terminal, app window, phone) and the primary button cast shadows. Informational glass floats flat on the night; hardware sits heavy on it.", "section": "elevation" },
+      { "name": "The One Beam Rule", "body": "The conic border-beam (@property --angle, 1px conic-gradient padding-mask, transparent through 0.62turn, aqua 0.9-alpha at 0.72turn, sky at 0.78turn, gone by 0.88turn; 7s linear spin; a blurred 9px, 0.5-opacity twin behind it) is the single recurring signature. On the landing it traces exactly two elements: the hero terminal and the install command bar. In the shipped app it traces the Summary button and the playing line. It never multiplies onto ordinary cards.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do route every interactive or affirmative element through Working Aqua (#5eead4) / Signal Sky (#7dd3fc); atmosphere stays blue-violet, work stays aqua.",
+      "Do build every surface as hairline glass: ≤5.5% white fill, 1px rgba(255,255,255,0.08) border, inset top-light.",
+      "Do set commands, timestamps, durations, percentages, and requirements in JetBrains Mono, in faint or dimmed ink.",
+      "Do label fixture content honestly (mono \"demo\" tags) and render product proof as working instruments with real values, never as static screenshots.",
+      "Do reuse the single ease-out (cubic-bezier(0.22,1,0.32,1)), keep micro-motion under 300ms, and honor prefers-reduced-motion by dropping transforms and loops while keeping opacity."
+    ],
+    "donts": [
+      "Don't use gradient text on headings; the primary button's aqua-mint fill is the only gradient on a foreground element. (The shipped app's white title shimmer is the world's one sanctioned exception; the landing ships none.)",
+      "Don't add a second signature: the conic border-beam appears on at most two elements per surface, and its glow blur stays ≤ 20px.",
+      "Don't ship AI tells: no ≥2px colored side-accents on cards, no icon-tile stacks, no fake-liveness pulsing dots. The blinking terminal caret and the static speaker-colored owner dots are native devices of this world and exempt.",
+      "Don't use em dashes anywhere in site copy (user mandate, matching the app brief).",
+      "Don't let aurora hues (#3b82f6 / #a5b4fc / #c4b5fd) reach text, borders, or controls, or extend the wash below the page's top third at legibility-affecting strength."
+    ]
+  }
+}

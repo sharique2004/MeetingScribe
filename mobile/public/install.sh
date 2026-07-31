@@ -2,7 +2,7 @@
 # MeetingScribe one-line installer:
 #   curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh
 #
-# Downloads the self-contained app (Python runtime included — nothing else to
+# Downloads the self-contained app (Python runtime included, nothing else to
 # install), puts it in /Applications, and opens it. Apple Silicon + macOS 26+.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ say() { printf '%s\n' "$*"; }
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 # --- sanity checks -----------------------------------------------------------
-[ "$(uname -s)" = "Darwin" ] || fail "MeetingScribe is a Mac app — this installer only runs on macOS."
+[ "$(uname -s)" = "Darwin" ] || fail "MeetingScribe is a Mac app; this installer only runs on macOS."
 [ "$(uname -m)" = "arm64" ] || fail "MeetingScribe needs an Apple Silicon Mac (M1 or newer). This Mac is $(uname -m)."
 
 OS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
@@ -30,11 +30,11 @@ esac
 TMP="$(mktemp -d /tmp/meetingscribe-install.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
-say "Downloading MeetingScribe (about 300 MB — the whole engine ships in the app)…"
+say "downloading MeetingScribe.app (about 310 MB, the whole engine ships in the app)"
 curl -fL --retry 3 -o "$TMP/$APP.tar.gz" "$RELEASE_URL" \
     || fail "Download failed. Check your internet connection and try again."
 
-say "Unpacking…"
+say "unpacking"
 tar -xzf "$TMP/$APP.tar.gz" -C "$TMP"
 [ -d "$TMP/$APP" ] || fail "The downloaded archive did not contain $APP."
 
@@ -53,11 +53,14 @@ if [ -d "$DEST_DIR/$APP" ]; then
 fi
 mv "$TMP/$APP" "$DEST_DIR/$APP"
 
+say "installed to $DEST_DIR"
+
 # The app is ad-hoc signed (no Apple Developer ID); clear the quarantine flag
 # so Gatekeeper doesn't block the first launch.
 xattr -dr com.apple.quarantine "$DEST_DIR/$APP" 2>/dev/null || true
+say "cleared quarantine, no Gatekeeper prompts"
 
-say "Installed $DEST_DIR/$APP — opening it now."
+say "opening MeetingScribe"
 open "$DEST_DIR/$APP" || true
 
 say ""
