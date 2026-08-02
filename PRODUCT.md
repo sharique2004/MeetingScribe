@@ -24,7 +24,7 @@ Distribution: self-contained .app (bundled CPython runtime) on GitHub Releases; 
 
 ## Capabilities and Constraints
 
-Live captions, speaker diarization, AI summaries with action items, phone sync of text only. Claims the user approved for the landing (2026-07-31): a 45-minute call transcribes in about 90 seconds on the Apple Neural Engine; free and open source under MIT (github.com/sharique2004/MeetingScribe); nothing leaves the Mac (audio and transcripts stay local; only text the user chooses to sync reaches the phone viewer). The old hero capsule ("100% local · your audio never leaves your Mac") is banned by the user; the local claim may appear once, subtly, elsewhere. No em dashes anywhere in site copy (user mandate, matches the app design brief's ban).
+Live captions, speaker diarization, AI summaries with action items, phone sync of text only. Claims the user approved for the landing (2026-07-31): a 45-minute call transcribes in about 90 seconds on the Apple Neural Engine; free and open source under GPLv3 (relicensed from MIT 2026-08-02) (github.com/sharique2004/MeetingScribe); nothing leaves the Mac (audio and transcripts stay local; only text the user chooses to sync reaches the phone viewer). The old hero capsule ("100% local · your audio never leaves your Mac") is banned by the user; the local claim may appear once, subtly, elsewhere. No em dashes anywhere in site copy (user mandate, matches the app design brief's ban).
 
 ## Brand Commitments
 

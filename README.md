@@ -229,3 +229,11 @@ Delete a meeting from the UI, or just delete its folder.
   sound actually plays through this PC (not a phone or external speaker).
 - **Transcript quality poor** — switch `whisper_model` to `"medium"` in
   `config.json`, then use **🔁 Reprocess** on the meeting.
+
+## License
+
+MeetingScribe is free software under the **GNU GPL v3** — see [LICENSE](LICENSE).
+Versions published before 2026-08-02 were MIT-licensed; that grant continues to
+apply to those historical versions only. Contributions are accepted under the
+terms in [CONTRIBUTING.md](CONTRIBUTING.md), which keep dual-licensing possible
+(e.g. a Mac App Store build under a separate license).

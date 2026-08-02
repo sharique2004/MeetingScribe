@@ -44,3 +44,6 @@ macapp/.build/
 .trae
 .windsurf
 dist/
+
+# symlink form (recordings/ only matches the old directory)
+recordings
