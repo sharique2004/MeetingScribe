@@ -84,6 +84,26 @@ if command -v xcrun >/dev/null 2>&1; then
         && echo "  built apple_llm" || echo "  WARNING: apple_llm failed to build here"
     xcrun swiftc -O "$PROJECT/tools/calendar_events.swift" -o "$PREBUILT/calendar_events" \
         && echo "  built calendar_events" || echo "  WARNING: calendar_events failed to build here"
+
+    # apple_syscap stays BYTE-STABLE across releases as a defensive measure:
+    # under adhoc signing the System Audio Recording grant may key on the
+    # helper's cdhash (research memo; to be verified against TCC.db before
+    # Phase 2 ships), and an unchanged helper preserves that identity even
+    # when the app changes. Reuse the cached build unless the source or the
+    # toolchain changed (the later adhoc codesign pass is deterministic for
+    # identical input bytes).
+    SYSCAP_CACHE="$HOME/.meetingscribe/build-cache"
+    SYSCAP_KEY=$( (shasum -a 256 "$PROJECT/tools/apple_syscap.swift"; xcrun swiftc --version 2>/dev/null) | shasum -a 256 | cut -d' ' -f1 )
+    mkdir -p "$SYSCAP_CACHE"
+    if [ -f "$SYSCAP_CACHE/apple_syscap-$SYSCAP_KEY" ]; then
+        cp "$SYSCAP_CACHE/apple_syscap-$SYSCAP_KEY" "$PREBUILT/apple_syscap"
+        echo "  reused cached apple_syscap (unchanged — keeps the user's TCC grant)"
+    elif xcrun swiftc -O -parse-as-library "$PROJECT/tools/apple_syscap.swift" -o "$PREBUILT/apple_syscap"; then
+        cp "$PREBUILT/apple_syscap" "$SYSCAP_CACHE/apple_syscap-$SYSCAP_KEY"
+        echo "  built apple_syscap (new cdhash — first recording after update re-prompts)"
+    else
+        echo "  WARNING: apple_syscap failed to build here"
+    fi
 fi
 
 cat > "$DEST/Contents/Info.plist" <<PLIST
@@ -104,6 +124,8 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>MeetingScribe records meetings with your microphone. Audio never leaves this Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>MeetingScribe records the audio your Mac plays during a meeting so the other participants are transcribed. Nothing leaves this Mac.</string>
   <key>NSCalendarsFullAccessUsageDescription</key>
   <string>MeetingScribe reads today's events to name recordings automatically and remind you to record meetings. Calendar data never leaves this Mac.</string>
   <key>NSAppTransportSecurity</key>

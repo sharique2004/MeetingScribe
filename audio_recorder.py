@@ -8,22 +8,27 @@ meeting participants with certainty.
 Windows: system audio comes from WASAPI loopback (PyAudioWPatch); a
 silence-keeper output stream keeps the loopback flowing during quiet moments.
 
-macOS: CoreAudio has no built-in loopback, so the recorder looks for a
-virtual loopback input device such as BlackHole (free,
-https://existential.audio/blackhole/). When BlackHole is present, the
-recorder routes audio to it automatically: macos_audio.ensure_routing()
-creates a "MeetingScribe Output" Multi-Output Device (real speakers +
-BlackHole), makes it the default output for the duration of the recording,
-and restores the previous output afterwards. The mic is recorded normally
-via sounddevice.
+macOS: the system track comes from a Core Audio process tap via the
+tools/apple_syscap.swift helper — driverless, no output rerouting, capture
+survives headphones/volume/mute (macOS asks once for "System Audio
+Recording Only"). When the helper is unavailable, the recorder falls back
+to the legacy path: a virtual loopback input device such as BlackHole
+(https://existential.audio/blackhole/), automatically routed via
+macos_audio.ensure_routing()'s "MeetingScribe Output" Multi-Output Device
+for the duration of the recording. The mic is recorded normally via
+sounddevice either way. Override the source with
+MEETINGSCRIBE_SYSTEM_SOURCE=tap|blackhole|none (default: auto).
 """
 
+import json
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
 import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -50,6 +55,75 @@ try:  # macOS only - raises ImportError elsewhere
     import macos_audio
 except Exception:
     macos_audio = None
+
+try:  # Swift helper plumbing (macOS); harmless to miss elsewhere
+    import swift_helpers
+except Exception:
+    swift_helpers = None
+
+# --------------------------------------------------- system-audio source --
+
+_SYSCAP_SRC = Path(__file__).resolve().parent / "tools" / "apple_syscap.swift"
+
+# Written after each tap recording so preflight can report the permission
+# state ("System Audio Recording Only" has no public query API — the last
+# recording's outcome is the best signal available).
+TAP_STATE_PATH = Path.home() / ".meetingscribe" / "tap_state.json"
+
+
+def _tap_binary(build=True):
+    """Path to the apple_syscap helper, or None where unsupported.
+
+    build=False only probes for an existing binary (bundle or a previous
+    compile) and never invokes swiftc — for startup and UI-poll paths that
+    must not block. Recording start uses build=True.
+    """
+    if sys.platform != "darwin" or BACKEND == "wasapi" or swift_helpers is None:
+        return None
+    if not build:
+        return swift_helpers.find_binary("apple_syscap")
+    return swift_helpers.ensure_binary(
+        _SYSCAP_SRC, "apple_syscap", min_macos=(26, 0)
+    )
+
+
+def system_source(build=True):
+    """Resolved system-audio source for this run: 'tap', 'blackhole' or 'none'.
+
+    MEETINGSCRIBE_SYSTEM_SOURCE=tap|blackhole|none forces it (testing and
+    rollback); 'auto' (default) prefers the driverless tap, then a loopback
+    device, then mic-only.
+    """
+    forced = (os.environ.get("MEETINGSCRIBE_SYSTEM_SOURCE") or "auto").strip().lower()
+    if forced == "none":
+        return "none"
+    if forced == "blackhole":
+        return "blackhole"
+    if forced == "tap":
+        return "tap" if _tap_binary(build) else "none"
+    return "tap" if _tap_binary(build) else "blackhole"
+
+
+def _tap_permission_state():
+    """'tap_ready' | 'tap_denied' | 'tap_undetermined' from the last recording."""
+    try:
+        state = json.loads(TAP_STATE_PATH.read_text(encoding="utf-8")).get("state")
+    except (OSError, ValueError):
+        return "tap_undetermined"
+    if state == "ready":
+        return "tap_ready"
+    if state == "denied":
+        return "tap_denied"
+    return "tap_undetermined"
+
+
+def _write_tap_state(state):
+    try:
+        TAP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TAP_STATE_PATH.write_text(json.dumps({"state": state, "ts": time.time()}),
+                                  encoding="utf-8")
+    except OSError as exc:
+        log.debug("could not persist tap state: %s", exc)
 
 
 # ------------------------------------------------------------ device lookup --
@@ -154,6 +228,10 @@ class _BaseTrackRecorder(threading.Thread):
         self.started_at = None  # perf_counter at stream start
         self.error = None
         self.tap = None  # optional fn(pcm_bytes, channels, rate) — must not block
+        self.extra_warnings = []  # surfaced verbatim by MeetingRecorder.stop()
+
+    def force_stop(self):
+        """Break a blocking read that outlived the stop event (subclass hook)."""
 
     def _open_stream(self):
         raise NotImplementedError
@@ -272,6 +350,211 @@ class _SounddeviceTrackRecorder(_BaseTrackRecorder):
         stream.close()
 
 
+class _TapTrackRecorder(_BaseTrackRecorder):
+    """System track via the apple_syscap Core Audio process-tap helper.
+
+    The helper emits interleaved int16 PCM on stdout, locked at 48 kHz stereo
+    for its whole life (it resamples internally across output-device changes),
+    and NDJSON events on stderr. No driver, no output rerouting. If the helper
+    dies mid-recording it is restarted once, with the gap padded as silence so
+    the track keeps tracking wall-clock time.
+    """
+
+    CHUNK_MS = 20
+    READY_TIMEOUT = 15.0
+    # Extra patience on the first-ever run: tap creation MAY sit behind the
+    # one-time TCC prompt, and killing the helper mid-prompt would lose the
+    # far side of the very first meeting even after the user clicks Allow.
+    FIRST_RUN_TIMEOUT = 120.0
+    DENIED_WARNING = (
+        "macOS blocked system-audio recording, so only your mic was "
+        "captured. Enable MeetingScribe under System Settings → Privacy & "
+        "Security → Screen & System Audio Recording, then record again."
+    )
+
+    def __init__(self, device, path, stop_event, levels, key):
+        super().__init__(device, path, stop_event, levels, key)
+        self.rate = 48000
+        self.channels = 2
+        self._binary = device["tap_binary"]
+        self._proc = None
+        self._stderr_thread = None
+        self._ready = threading.Event()
+        self._last_event_error = None
+        self._silence_warned = False
+        self._restarted = False
+        self._saw_signal = False
+
+    @property
+    def _chunk_bytes(self):
+        return self.rate * self.channels * 2 * self.CHUNK_MS // 1000
+
+    def _spawn(self):
+        proc = subprocess.Popen(
+            [self._binary, "--rate", str(self.rate), "--channels", str(self.channels),
+             "--chunk-ms", str(self.CHUNK_MS), "--exclude-pid", str(os.getpid())],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self._ready.clear()
+        self._stderr_thread = threading.Thread(
+            target=self._read_events, args=(proc,), daemon=True,
+            name=f"tap-events-{self.key}",
+        )
+        self._stderr_thread.start()
+        # Wait for "ready" while also watching the helper's liveness: a
+        # helper that dies at startup (permission denied → exit 3) must fail
+        # fast and record the denial — not burn the whole timeout.
+        timeout = (self.FIRST_RUN_TIMEOUT if not TAP_STATE_PATH.exists()
+                   else self.READY_TIMEOUT)
+        deadline = time.monotonic() + timeout
+        while not self._ready.wait(0.25):
+            if proc.poll() is not None:
+                if self._stderr_thread is not None:
+                    self._stderr_thread.join(timeout=2)
+                if proc.returncode == 3:
+                    _write_tap_state("denied")
+                    self.extra_warnings.append(self.DENIED_WARNING)
+                raise RuntimeError(
+                    self._last_event_error
+                    or f"system-audio tap helper exited (code {proc.returncode})"
+                )
+            if time.monotonic() > deadline or self.stop_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                raise RuntimeError(
+                    self._last_event_error
+                    or "system-audio tap helper did not become ready"
+                )
+        return proc
+
+    def _read_events(self, proc):
+        for raw in proc.stderr:
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            kind = event.get("t")
+            if kind == "ready":
+                # Trust the helper's locked format over our defaults.
+                self.rate = int(event.get("rate") or self.rate)
+                self.channels = int(event.get("channels") or self.channels)
+                self._ready.set()
+            elif kind == "device_changed":
+                log.info("system tap follows new output: %s", event.get("output"))
+            elif kind == "silence" and not self._silence_warned:
+                self._silence_warned = True
+                log.warning("system tap reports sustained digital silence")
+            elif kind == "error":
+                self._last_event_error = (
+                    f"tap helper {event.get('stage', '?')}: {event.get('message', '')}"
+                )
+                log.warning("%s", self._last_event_error)
+
+    def _open_stream(self):
+        self._proc = self._spawn()
+        return self._proc
+
+    def _read_chunk(self, stream):
+        want = self._chunk_bytes
+        data = b""
+        while len(data) < want:
+            piece = self._proc.stdout.read(want - len(data))
+            if not piece:  # helper exited
+                if self.stop_event.is_set():
+                    break
+                if not self._restarted:
+                    self._restarted = True
+                    log.warning("system tap helper died — restarting once")
+                    self._close_helper()
+                    self._proc = self._spawn()
+                    self.extra_warnings.append(
+                        "The system-audio capture helper restarted once "
+                        "mid-recording; a short stretch of the meeting track "
+                        "was filled with silence."
+                    )
+                    # The dying helper's tail goes FIRST (it is audio from
+                    # before the gap), trimmed to whole frames, then silence
+                    # up to wall-clock.
+                    bytes_per_frame = self.channels * 2
+                    data = data[: len(data) - len(data) % bytes_per_frame]
+                    return data + self._gap_silence(len(data) // bytes_per_frame)
+                raise RuntimeError(
+                    self._last_event_error or "system-audio tap helper exited"
+                )
+            data += piece
+        if not self._saw_signal and any(data):
+            self._saw_signal = True
+        return data
+
+    def _gap_silence(self, pending_frames=0):
+        """Silence covering the frames lost while the helper was down, so the
+        track's length keeps tracking wall-clock time (start_offset only
+        aligns the beginning). `pending_frames` = frames already read but not
+        yet counted in frames_written."""
+        if self.started_at is None:
+            return b""
+        expected = int((time.perf_counter() - self.started_at) * self.rate)
+        deficit = expected - self.frames_written - pending_frames
+        deficit = max(0, min(deficit, self.rate * 600))
+        return b"\x00" * (deficit * self.channels * 2)
+
+    def _close_helper(self):
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return None
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=2)
+            self._stderr_thread = None
+        try:
+            proc.stdout.close()
+            proc.stderr.close()
+        except OSError:
+            pass
+        return proc.returncode
+
+    def force_stop(self):
+        """Last-resort unblock for stop(): killing the helper closes its
+        stdout, so a blocked _read_chunk sees EOF and the thread can exit."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+
+    def _close_stream(self, stream):
+        returncode = self._close_helper()
+        prior_ready = _tap_permission_state() == "tap_ready"
+        if self._saw_signal:
+            _write_tap_state("ready")
+        elif returncode == 3:  # tap creation failed — permission is the usual cause
+            _write_tap_state("denied")
+            self.extra_warnings.append(self.DENIED_WARNING)
+        elif self.seconds_recorded > 15 and not prior_ready:
+            # All zeros on a machine where the tap has never proven itself:
+            # could be a denied permission (which manifests as silence), or
+            # just a quiet meeting. Soft note, neutral state — never the loud
+            # denied alarm. Once one recording has captured real audio,
+            # quiet recordings (in-person mode) stay entirely silent here.
+            _write_tap_state("quiet")
+            self.extra_warnings.append(
+                "The system track recorded only silence. If nothing was "
+                "playing, all is well; if macOS asked to record system audio "
+                "and was denied, enable MeetingScribe under System Settings → "
+                "Privacy & Security → Screen & System Audio Recording."
+            )
+
+
 class _SilenceKeeper(threading.Thread):
     """(Windows) Plays silence so the WASAPI loopback stream keeps flowing.
 
@@ -343,7 +626,30 @@ def _routing_alert(routing, auto_route, loopback_name):
     - "not_routed": nothing feeds the loopback yet. That is the NORMAL idle
       state when auto-routing is on (routing happens when recording starts),
       so it is only worth flagging when auto-routing is off.
+
+    Tap states (driverless capture — nothing is ever routed):
+
+    - "tap_ready": last recording captured real system audio. Nothing to say.
+    - "tap_undetermined": no successful capture yet; macOS will show its
+      one-time permission prompt at the first recording. Calm tooltip note.
+    - "tap_denied": the permission looks denied — the far side will be lost
+      until the user flips it in System Settings. Loud alarm with directions.
     """
+    if routing == "tap_ready":
+        return None, None
+    if routing == "tap_undetermined":
+        return None, (
+            "System audio is captured directly by macOS — no driver, and your "
+            "sound output is never changed. macOS will ask once to allow "
+            "system-audio recording when you start recording."
+        )
+    if routing == "tap_denied":
+        return "silent", (
+            "macOS is blocking system-audio recording, so the other "
+            "participants will not be captured. Enable MeetingScribe under "
+            "System Settings → Privacy & Security → Screen & System Audio "
+            "Recording, then start the recording again."
+        )
     if routing == "loopback_only":
         if auto_route:
             # No alert: the note rides along as the System row's tooltip.
@@ -402,7 +708,15 @@ class MeetingRecorder:
         else:
             _sd_refresh_devices()
             mic, system = _sd_find_devices()
-            if system is None:
+            source = system_source()
+            if source == "tap":
+                # Driverless Core Audio process tap — replaces the loopback
+                # device even when one is installed (override with
+                # MEETINGSCRIBE_SYSTEM_SOURCE=blackhole).
+                system = {"name": "system-tap", "tap_binary": _tap_binary()}
+            elif source == "none":
+                system = None
+            elif system is None:
                 warnings.append(
                     "BlackHole is not installed, so other participants will not be "
                     "recorded — only your own mic. Fix once with: brew install blackhole-2ch "
@@ -440,6 +754,14 @@ class MeetingRecorder:
             else:
                 _sd_refresh_devices()
                 mic, system = _sd_find_devices()
+                # build=False: preflight is a UI poll and must never sit
+                # behind a first-time swiftc run (that happens at record
+                # start, in _discover).
+                source = system_source(build=False)
+                if source == "tap":
+                    system = {"name": "System audio (Core Audio tap)", "tap": True}
+                elif source == "none":
+                    system = None
             info = {
                 "recording": False,
                 "backend": BACKEND,
@@ -449,11 +771,14 @@ class MeetingRecorder:
             }
             if system is not None and macos_audio is not None:
                 info["system"]["auto_route"] = auto_route
-                try:
-                    info["system"]["routing"] = macos_audio.routing_status(str(system["name"]))
-                except Exception as exc:
-                    log.debug("routing status failed: %s", exc)
-                    info["system"]["routing"] = "unknown"
+                if system.get("tap"):
+                    info["system"]["routing"] = _tap_permission_state()
+                else:
+                    try:
+                        info["system"]["routing"] = macos_audio.routing_status(str(system["name"]))
+                    except Exception as exc:
+                        log.debug("routing status failed: %s", exc)
+                        info["system"]["routing"] = "unknown"
                 alert, note = _routing_alert(
                     info["system"]["routing"], auto_route, str(system["name"])
                 )
@@ -476,8 +801,22 @@ class MeetingRecorder:
 
             # macOS: make sure meeting audio actually reaches the loopback
             # device — without this the system track records pure silence.
+            # Under the process tap nothing is routed; the one carve-out the
+            # record-form tooltip promises is repairing a default output stuck
+            # on a loopback device (the user would hear nothing).
             self._route = None
-            if system is not None and auto_route and macos_audio is not None:
+            tap_mode = bool(system is not None and system.get("tap_binary"))
+            if tap_mode and auto_route and macos_audio is not None:
+                try:
+                    repaired = macos_audio.ensure_physical_output()
+                    if repaired.get("changed"):
+                        log.info(
+                            "sound output moved off '%s' to '%s' (loopback-only repair)",
+                            repaired.get("was"), repaired.get("hears"),
+                        )
+                except Exception as exc:
+                    log.warning("loopback-only output repair failed: %s", exc)
+            elif system is not None and not tap_mode and auto_route and macos_audio is not None:
                 try:
                     self._route = macos_audio.ensure_routing(str(system["name"]))
                     if self._route["changed"]:
@@ -501,6 +840,8 @@ class MeetingRecorder:
                 path = out_dir / f"{key}.wav"
                 if BACKEND == "wasapi":
                     rec = _WasapiTrackRecorder(self._pa, dev, path, self._stop_event, self.levels, key)
+                elif dev.get("tap_binary"):
+                    rec = _TapTrackRecorder(dev, path, self._stop_event, self.levels, key)
                 else:
                     rec = _SounddeviceTrackRecorder(dev, path, self._stop_event, self.levels, key)
                 if taps:
@@ -544,6 +885,18 @@ class MeetingRecorder:
                 t.join(timeout=10)
                 if t.is_alive():
                     stuck.append(key)
+            if stuck:
+                # Escalate: force each stuck track to break its blocking read
+                # (the tap recorder kills its helper so stdout hits EOF),
+                # then give the threads a moment to run their cleanup.
+                for key in stuck:
+                    self._tracks[key].force_stop()
+                still = []
+                for key in stuck:
+                    self._tracks[key].join(timeout=3)
+                    if self._tracks[key].is_alive():
+                        still.append(key)
+                stuck = still
             if self._silence is not None:
                 self._silence.join(timeout=5)
 
@@ -563,6 +916,7 @@ class MeetingRecorder:
                 duration = max(duration, t.seconds_recorded)
                 if t.error:
                     result["warnings"].append(f"{key} track stopped early: {t.error}")
+                result["warnings"].extend(t.extra_warnings)
             result["duration"] = round(duration, 2)
             for key in stuck:
                 result["warnings"].append(f"{key} track did not shut down cleanly.")

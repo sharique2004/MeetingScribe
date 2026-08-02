@@ -28,6 +28,16 @@ BIN_DIR = Path.home() / ".meetingscribe" / "bin"
 PREBUILT_DIR = Path(os.environ["MEETINGSCRIBE_PREBUILT"]) \
     if os.environ.get("MEETINGSCRIBE_PREBUILT") else None
 
+# Helpers that run IN PLACE from Contents/Resources/bin and are never copied
+# to ~/.meetingscribe/bin: a bare copied-out executable never appears in the
+# Screen & System Audio Recording settings pane (macOS 26.1 bug, DTS-
+# confirmed), and TCC attribution should reach MeetingScribe.app, not a loose
+# binary in the home directory. (Which identity the grant ultimately keys on
+# under adhoc signing — app bundle vs helper cdhash — is verified empirically
+# before Phase 2 ships; build_mac_app.sh keeps the helper byte-stable so the
+# cdhash-keyed case also survives app updates.)
+BUNDLE_ONLY = {"apple_syscap"}
+
 
 def macos_version():
     try:
@@ -65,8 +75,23 @@ def install_all_prebuilt():
     if PREBUILT_DIR is None:
         return
     for prebuilt in PREBUILT_DIR.glob("*"):
-        if prebuilt.is_file():
+        if prebuilt.is_file() and prebuilt.name not in BUNDLE_ONLY:
             _install_prebuilt(prebuilt.name)
+
+
+def find_binary(name):
+    """Where the helper already lives (bundle, then ~/.meetingscribe/bin) —
+    NEVER compiles. For cheap availability probes on paths that must not
+    block (app startup, UI preflight polls); ensure_binary() is the real
+    resolver at point of use."""
+    if sys.platform != "darwin":
+        return None
+    if PREBUILT_DIR is not None:
+        in_bundle = PREBUILT_DIR / name
+        if in_bundle.exists():
+            return str(in_bundle)
+    installed = BIN_DIR / name
+    return str(installed) if installed.exists() else None
 
 
 def ensure_binary(src, name, *, min_macos=None, require_arm64=True,
@@ -81,6 +106,10 @@ def ensure_binary(src, name, *, min_macos=None, require_arm64=True,
         return None
 
     # Packaged app: use the pre-built binary shipped in the bundle.
+    if name in BUNDLE_ONLY and PREBUILT_DIR is not None:
+        in_bundle = PREBUILT_DIR / name
+        if in_bundle.exists():
+            return str(in_bundle)
     installed = _install_prebuilt(name)
     if installed:
         return installed

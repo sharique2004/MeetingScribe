@@ -351,6 +351,43 @@ def _create_multi_output(real_uid, loopback_uid):
     raise RuntimeError("multi-output device did not appear after creation")
 
 
+def ensure_physical_output():
+    """Tap-mode repair for the "loopback_only" state: the default output IS a
+    virtual loopback device (BlackHole), so the user hears nothing. Make a
+    physical output the default. Under the process tap there is nothing to
+    route, so no multi-output is built and nothing needs restoring afterwards.
+    """
+    current = _default_output()
+    if _device_transport(current) != _TRANSPORT_VIRTUAL:
+        return {"changed": False}
+    real = _find_real_output()
+    if real is None:
+        raise RuntimeError("no physical output device found")
+    was = _device_name(current)
+    _set_default_output(real)
+    log.info("default output moved off loopback '%s' to '%s'", was, _device_name(real))
+    return {"changed": True, "was": was, "hears": _device_name(real)}
+
+
+def cleanup_legacy_aggregate():
+    """Remove a leftover "MeetingScribe Output" multi-output device.
+
+    Called at startup once the process tap is the active capture source — the
+    multi-output routing hack it belonged to is retired. If it is still the
+    default output, park the user on a physical output first.
+    """
+    agg = _find_by_uid(AGGREGATE_UID)
+    if agg is None:
+        return False
+    if _default_output() == agg:
+        real = _find_real_output()
+        if real is not None:
+            _set_default_output(real)
+    _check(_ca.AudioHardwareDestroyAggregateDevice(agg), "destroy legacy multi-output")
+    log.info("removed legacy '%s' multi-output device", AGGREGATE_NAME)
+    return True
+
+
 # ----------------------------------------------------------------- routing --
 
 def _save_state(previous_uid):

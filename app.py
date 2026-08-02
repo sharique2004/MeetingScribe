@@ -2040,6 +2040,15 @@ if __name__ == "__main__":
         except Exception:
             pass
         atexit.register(lambda: macos_audio.restore_routing())
+        # Driverless tap era: the "MeetingScribe Output" multi-output device
+        # belonged to the retired BlackHole routing hack — clear a leftover.
+        # build=False: never compile the helper on the startup path.
+        try:
+            import audio_recorder as _rec
+            if _rec.system_source(build=False) == "tap" and macos_audio.cleanup_legacy_aggregate():
+                print("  Removed the legacy 'MeetingScribe Output' multi-output device.")
+        except Exception:
+            pass
     if cfg.get("open_browser", True) and not os.environ.get("MEETINGSCRIBE_NO_BROWSER"):
         threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     # Retry any phone-sync pushes that failed while offline.
