@@ -30,18 +30,28 @@ submit_and_wait() {
     # $1 = file to submit. notarytool exits non-zero on an Invalid verdict,
     # so run it status-blind and decide from the transcript: Accepted wins;
     # anything else dumps the notary log (the whole point of the transcript).
+    # caffeinate keeps the Mac from idle-sleeping through the long wait (a
+    # sleep kills the poll AND locks the keychain); if the wait still dies
+    # after upload, resume it server-side by submission id.
     _sub="$1"
     _out="$WORKDIR/submit.txt"
     echo "Submitting $(basename "$_sub") to Apple notary service (this waits for the verdict)…"
     set +e
-    xcrun notarytool submit "$_sub" --keychain-profile "$PROFILE" --wait \
+    caffeinate -ims xcrun notarytool submit "$_sub" --keychain-profile "$PROFILE" --wait \
         2>&1 | tee "$_out"
     set -e
+    _id="$(awk '/^[[:space:]]*id: /{print $2; exit}' "$_out")"
+    if [ -n "$_id" ] && ! grep -q "status: Accepted" "$_out" && ! grep -q "status: Invalid" "$_out"; then
+        echo "  wait interrupted after upload — resuming server-side wait for $_id…"
+        set +e
+        caffeinate -ims xcrun notarytool wait "$_id" --keychain-profile "$PROFILE" 2>&1 | tee -a "$_out"
+        xcrun notarytool info "$_id" --keychain-profile "$PROFILE" 2>&1 | tee -a "$_out"
+        set -e
+    fi
     if grep -q "status: Accepted" "$_out"; then
         echo "  notarization: Accepted"
         return 0
     fi
-    _id="$(awk '/^[[:space:]]*id: /{print $2; exit}' "$_out")"
     echo "ERROR: notarization was not accepted."
     if [ -n "$_id" ]; then
         echo "---- notary log ($_id) ----"
