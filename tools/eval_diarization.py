@@ -22,11 +22,16 @@ reports, as the headline, HOW OFTEN THE AUTOMATIC SPEAKER COUNT IS RIGHT:
                    is not a reading of the evidence. Its embeddings are generated,
                    so it measures cluster() arithmetic, NOT voice separability.
 
-Nothing is transcribed, no audio is read, no recording is touched — the harness
-is read-only with respect to recordings/.
+Nothing is transcribed and no model is loaded. The clustering path above reads
+only the frozen caches; the ECHO section described below additionally reads the
+SAVED TRANSCRIPTS out of recordings/ (and, only under --echo-audio, the WAVs).
+Both are read-only with respect to recordings/. The one file this harness ever
+writes without being asked is the pseudonym map for that echo corpus, which
+lands in the already-gitignored test/fixtures/index.json.
 
     python tools/eval_diarization.py                 # accuracy + baseline report
     python tools/eval_diarization.py --check         # gate against BEHAVIOUR_BASELINE
+                                                     # and against ECHO_BASELINE
     python tools/eval_diarization.py --save-baseline out.json   # plain runs only
     python tools/eval_diarization.py --baseline out.json --set MIN_CLUSTER_S=15
     python tools/eval_diarization.py --set FOLD_MAX_FRAGMENTATION=0.15   # sweep
@@ -35,6 +40,9 @@ is read-only with respect to recordings/.
     python tools/eval_diarization.py --binding-only  # which fixture binds each constant
     python tools/eval_diarization.py --stability-only  # perturbation margin + churn
     python tools/eval_diarization.py --quick         # skip those two (the slow part)
+    python tools/eval_diarization.py --echo-only     # the transcript path, on its own
+    python tools/eval_diarization.py --echo-only --echo-audio   # plus the waveform check
+    python tools/eval_diarization.py --echo-only --echo-set ECHO_CHAR_MIN_COVER=0.4
 
 EVERY ACCURACY FIGURE IS PRINTED AS A DELTA OVER DOING NOTHING. Most of this
 corpus carries the same answer — 17 of the 21 truth-backed real fixtures have
@@ -56,6 +64,21 @@ TWO MORE THINGS THE COUNT METRIC CANNOT SEE, both reported by default:
                      report names WHICH fixtures hold each edge, how wide the
                      interval is, and flags an edge held by one fixture or by a
                      fixture whose truth is unknown.
+  ECHO / TRANSCRIPT   Everything else in this file scores EMBEDDINGS. This one
+                     section replays pipeline.drop_echo over the saved per-track
+                     transcripts of every real meeting on the machine that has
+                     both tracks, and reports per meeting and in aggregate how
+                     many segments it deletes and trims, split by the path that
+                     fired (word containment against the character fallback).
+                     It is gated against its own frozen ECHO_BASELINE, it has a
+                     decoy arm that scores every segment a second time where
+                     echo cannot exist, and it says out loud which echo
+                     constants this corpus cannot feel at all. It measures
+                     CHANGE and not correctness: there is no attribution truth
+                     for these transcripts, so a deleted segment is not thereby
+                     wrong. Without it, "prove parity with the eval harness"
+                     was a bar for clustering and an empty one for every word
+                     the product ships.
   STABILITY + CHURN  A seeded perturbation suite over the frozen caches (no
                      re-embedding, no new labels) reports the count-flip rate
                      per fixture AND the duration-weighted share of speech that
@@ -146,6 +169,7 @@ import re
 import sys
 import time
 import zlib
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 import numpy as np
@@ -2005,6 +2029,1017 @@ def print_stability(arms, rows, fixtures, seeds, show_titles=False, elapsed=None
         print("  displacements before quoting it.")
 
 
+# ---------------------------------------------------------------------------
+# ECHO / TRANSCRIPT REGRESSION: the only path in this file that scores WORDS.
+#
+# Everything above this line replays cached ECAPA embeddings through
+# diarization.cluster(). It never imports pipeline and never looks at a
+# transcript, so it is structurally incapable of noticing a change to echo
+# removal, to transcript assembly, or to anything else that operates on text.
+# That was the hole: "prove parity with the eval harness" was a real bar for
+# clustering and an empty one for the mic transcript, and echo removal DELETES
+# THE USER'S OWN SENTENCES, which is the most damaging thing this product does
+# to its own output.
+#
+# WHAT THIS SECTION REPLAYS. pipeline.drop_echo(mic_segs, sys_segs) over the
+# saved per-track transcripts of every meeting on this machine that has both
+# tracks. Those transcripts already exist in each meeting's analysis.json,
+# written by pipeline._save_analysis_state and read back by
+# pipeline.recluster_meeting, so nothing is re-transcribed and no model is
+# loaded: a full pass is a fraction of a second and needs none of the 17 GB of
+# raw audio. The acoustic arm (--echo-audio) is the only thing here that opens
+# a WAV, and it degrades to "not measured" when they are gone.
+#
+# THE ONE FACT THAT LIMITS EVERY NUMBER BELOW. analysis.json is written AFTER
+# the echo pass (drop_echo is step 2 of pipeline.process_meeting,
+# _save_analysis_state is step 3), so the mic transcript on disk is the
+# transcript that ALREADY SURVIVED the echo rule of whatever build recorded it.
+# Replaying drop_echo over it measures what today's rule removes ON TOP of
+# that, not what it would remove from a raw transcript. Consequences, stated
+# rather than papered over:
+#
+#   * the word path reads 0 drops corpus-wide, and that zero is a fixed point,
+#     not a measurement. These transcripts were cleaned by a word path
+#     identical to today's, so it has nothing left to find. A change that makes
+#     the word path MORE aggressive lifts that zero and is caught; a change
+#     that makes it more permissive leaves it at zero and is INVISIBLE HERE.
+#     The word-path drop counter is a one-sided detector.
+#   * the character fallback is the opposite case, and is why this section
+#     exists now: it has never run over this corpus, so its numbers are
+#     untruncated and move in both directions.
+#   * the band counters (partial, char-eligible) count segments that SURVIVE,
+#     so they are two-sided for every constant that decides eligibility. They
+#     are what keeps this gate alive once the drop counters go quiet.
+#
+# WHAT IT DOES NOT PROVE, and this is not a footnote. There is NO ATTRIBUTION
+# TRUTH for these transcripts. Nobody has labelled which mic segments were
+# really the far end leaking back through the speakers and which were the user
+# talking. So a dropped segment is not thereby wrong and a kept one is not
+# thereby right: this section measures CHANGE, exactly as BEHAVIOUR_BASELINE
+# does for clustering, and it is worth exactly as much. The decoy arm bounds
+# the false-positive rate from one direction and the acoustic arm from another.
+# Neither is truth.
+# ---------------------------------------------------------------------------
+
+# The two roots real meetings live under. The repo's recordings/ is a symlink
+# on this machine and may be a real directory on another, so both are read and
+# the union is de-duplicated BY MEETING ID rather than by path.
+ECHO_CORPUS_ROOTS = (
+    Path.home() / ".meetingscribe" / "recordings",
+    REPO / "recordings",
+)
+
+# Pseudonyms, for the same reason the diarization corpus has them: this file is
+# committed and a meeting directory name is a meeting title with participant
+# names in it. The map lives in the SAME gitignored index the real fixture
+# corpus uses (test/fixtures/index.json, under "echo_labels"), so there is one
+# de-anonymisation key in the tree and it is already out of git.
+#
+# It is keyed by meeting.json's "id" and not by the directory name, because
+# app._sync_folder_name RENAMES the directory when the user retitles a meeting
+# and the id never moves. Unlike the fixture map this one is MINTED
+# AUTOMATICALLY on first sight of a meeting: the fixture corpus is frozen and
+# hand-curated, this corpus grows every time the user takes a call, and a map
+# that has to be hand-extended is a map that goes stale and takes the gate with
+# it. Existing entries are never reassigned, so a pseudonym means the same
+# meeting for as long as the meeting exists.
+ECHO_LABELS_KEY = "echo_labels"
+ECHO_LABEL_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # I and O read as 1 and 0
+
+# ---------------------------------------------------------------------------
+# ECHO_BASELINE: a CHANGE-DETECTOR for the transcript path, and nothing more.
+#
+# Same contract as BEHAVIOUR_BASELINE above, same disclaimer, and the same
+# refusal to let a re-record mean "correct". It pins the five decision counters
+# drop_echo produces per meeting TODAY. Reproducing it proves the echo rule did
+# not move on this corpus. It certifies nothing about whether the segments it
+# deletes deserved deleting, because there is no attribution truth to check
+# them against.
+#
+# ONE RULE HERE DIFFERS FROM THE DIARIZATION GATE, deliberately. A fixture with
+# no baseline entry FAILS --check up there, because test/fixtures is frozen and
+# an unbaselined fixture means someone added evidence and did not look at it.
+# This corpus is the user's live recordings directory: it grows whenever they
+# have a meeting, and failing the deploy gate because somebody took a call
+# would be a false alarm about code that did not change. New meetings are
+# therefore reported as UNCOVERED, counted, and excluded from the verdict, and
+# the verdict line says how many were compared so that partial coverage can
+# never read as full coverage.
+#
+# HOW TO RE-BASELINE: run the section, read what moved and why, then add a new
+# dated generation below. Do not edit an existing one in place.
+# ---------------------------------------------------------------------------
+ECHO_BASELINE_DATE = "2026-08-03"
+ECHO_BASELINE_RULE = (
+    "pipeline.drop_echo: word containment, then the character fallback behind "
+    "the far-end cover gate (ECHO_CHAR_MIN_COVER / ECHO_CHAR_MIN_TOKENS)"
+)
+
+# The echo constants as they stood when ECHO GEN 1 was recorded. Same job as
+# BASELINE_CONSTANTS: an early-warning label, not a second gate. Counters can
+# be reproduced by a rule whose constants moved, and then "REPRODUCED" would be
+# true of a rule this header does not describe.
+ECHO_BASELINE_CONSTANTS = {
+    "ECHO_SLACK_S": 1.5,
+    "ECHO_DROP_RATIO": 0.7,
+    "ECHO_PARTIAL_RATIO": 0.35,
+    "ECHO_MIN_TOKENS": 4,
+    "ECHO_CHAR_MIN_COVER": 0.5,
+    "ECHO_CHAR_MIN_TOKENS": 5,
+}
+
+# Field order of every tuple in the generation below, and of every row in the
+# report:
+#
+#   partial     mic segments landing in the part-echo band [ECHO_PARTIAL_RATIO,
+#               ECHO_DROP_RATIO) on word containment
+#   char_elig   of those, the ones that reached the character fallback at all,
+#               i.e. long enough (ECHO_CHAR_MIN_TOKENS) AND with the far end
+#               actually making sound over them (ECHO_CHAR_MIN_COVER)
+#   drop_word   segments deleted by word containment alone
+#   drop_char   segments deleted by the character fallback
+#   trim        segments kept with an echoed leading or trailing run cut off
+#
+# drop_word is 0 on every row and that is expected rather than broken: see the
+# fixed point described at the top of this section.
+ECHO_FIELDS = ("partial", "char_elig", "drop_word", "drop_char", "trim")
+
+# ECHO GEN 1, recorded 2026-08-03 over the 17 both-track meetings on the
+# founder machine, the night the character fallback and its cover gate landed.
+# Pseudonyms only; the id map is in the gitignored corpus index.
+#
+# Read the shape of it before reading any single row. 115 of 1858 mic segments
+# land in the part-echo band, 42 of those reach the character fallback, and 30
+# are deleted by it. The word path deletes nothing, everywhere, for the reason
+# at the top of this section. Five meetings are all zeros: they are short or
+# were recorded on headphones, so there was never any echo to find, and they
+# still earn a row because a corpus reported only where it is interesting is a
+# corpus with its denominator hidden.
+ECHO_GEN1 = {
+    "Echo A": (0, 0, 0, 0, 0),
+    "Echo B": (6, 3, 0, 1, 2),
+    "Echo C": (0, 0, 0, 0, 0),
+    "Echo D": (19, 10, 0, 7, 2),
+    "Echo E": (14, 4, 0, 4, 0),
+    "Echo F": (2, 0, 0, 0, 0),
+    "Echo G": (5, 1, 0, 1, 0),
+    "Echo H": (10, 3, 0, 2, 1),
+    "Echo J": (7, 3, 0, 3, 0),
+    "Echo K": (9, 3, 0, 1, 1),
+    "Echo L": (12, 4, 0, 4, 0),
+    "Echo M": (5, 2, 0, 1, 0),
+    "Echo N": (0, 0, 0, 0, 0),
+    "Echo P": (10, 6, 0, 5, 0),
+    "Echo Q": (2, 0, 0, 0, 0),
+    "Echo R": (11, 2, 0, 1, 0),
+    "Echo S": (3, 1, 0, 0, 0),
+}
+
+ECHO_BASELINE = dict(ECHO_GEN1)
+
+# Echo constants --echo-set may override on the pipeline module, whitelisted so
+# a typo cannot silently do nothing. Deliberately SEPARATE from TUNABLES and
+# from the A/B machinery above: --set sweeps diarization and puts the whole
+# report into A/B mode, and an echo perturbation has nothing to say about
+# clustering counts. Overriding one of these is how you check that this section
+# would in fact catch a change to it.
+ECHO_TUNABLES = {
+    "ECHO_SLACK_S": float,
+    "ECHO_DROP_RATIO": float,
+    "ECHO_PARTIAL_RATIO": float,
+    "ECHO_MIN_TOKENS": int,
+    "ECHO_CHAR_MIN_COVER": float,
+    "ECHO_CHAR_MIN_TOKENS": int,
+}
+
+
+def load_echo_label_map(index_path):
+    """Read {meeting id: pseudonym} out of the gitignored corpus index.
+
+    Returns ({}, reason) when the index is absent or unreadable, and never
+    raises: "no map yet" is the state every machine starts in, and the map is
+    minted on the first run that sees a meeting.
+    """
+    index_path = Path(index_path)
+    if not index_path.exists():
+        return {}, "%s does not exist yet" % index_path
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {}, "%s is unreadable (%s)" % (index_path, exc)
+    if not isinstance(data, dict):
+        return {}, "%s is not a JSON object" % index_path
+    labels = data.get(ECHO_LABELS_KEY)
+    if not isinstance(labels, dict):
+        return {}, "%s carries no %r map yet" % (index_path, ECHO_LABELS_KEY)
+    return {str(k): str(v) for k, v in labels.items()}, ""
+
+
+def echo_label_for(n):
+    """Echo A .. Echo Z, then Echo AA, for the nth meeting ever labelled."""
+    letters = ECHO_LABEL_LETTERS
+    name = ""
+    n += 1
+    while n:
+        n, r = divmod(n - 1, len(letters))
+        name = letters[r] + name
+    return "Echo " + name
+
+
+def mint_echo_labels(index_path, existing, ids):
+    """Give every unlabelled meeting id a pseudonym and persist the map.
+
+    Assignment is in meeting-id order, which is recording order and therefore
+    stable: ids are capture timestamps, so a new meeting can only ever be
+    appended. Deleting a meeting leaves a hole rather than shifting anything,
+    which is what keeps a committed baseline addressable after a cleanup.
+
+    Returns (map, minted, note). A write failure is reported and survivable:
+    the run still has its map in memory, it just will not persist.
+    """
+    index_path = Path(index_path)
+    labels = dict(existing)
+    taken = set(labels.values())
+    fresh = [i for i in sorted(ids) if i not in labels]
+    if not fresh:
+        return labels, [], ""
+    n = 0
+    for mid in fresh:
+        while echo_label_for(n) in taken:
+            n += 1
+        labels[mid] = echo_label_for(n)
+        taken.add(labels[mid])
+    if not index_path.parent.is_dir():
+        return labels, fresh, ("%s does not exist, so the new pseudonyms are in "
+                               "memory only and will be re-minted next run."
+                               % index_path.parent)
+    try:
+        data = {}
+        if index_path.exists():
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        data[ECHO_LABELS_KEY] = labels
+        # Written beside the target and moved into place, so a crash mid-write
+        # cannot leave the fixture corpus's own label map truncated. This is the
+        # only file this harness writes that it was not explicitly asked to.
+        tmp = index_path.with_name(index_path.name + ".tmp")
+        tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False),
+                       encoding="utf-8")
+        tmp.replace(index_path)
+    except (OSError, ValueError) as exc:
+        return labels, fresh, ("could not write %s (%s), so the new pseudonyms "
+                               "are in memory only." % (index_path, exc))
+    return labels, fresh, ""
+
+
+def load_echo_corpus(roots, index_path):
+    """Every meeting on disk that drop_echo could possibly act on.
+
+    A meeting qualifies when it has BOTH a mic and a system transcript, which
+    is the same condition pipeline.py gates the echo pass on. Everything else
+    is counted and reported, never silently dropped, because "17 meetings"
+    means nothing without "out of how many".
+
+    Returns (records, stats).
+    """
+    seen_ids = set()
+    records = []
+    stats = {"dirs": 0, "unreadable": 0, "single_track": 0, "duplicate": 0}
+    for root in roots:
+        root = Path(root)
+        if not root.is_dir():
+            continue
+        for d in sorted(p for p in root.iterdir() if p.is_dir()):
+            aj, mj = d / "analysis.json", d / "meeting.json"
+            if not aj.exists() or not mj.exists():
+                continue
+            stats["dirs"] += 1
+            try:
+                transcripts = json.loads(
+                    aj.read_text(encoding="utf-8"))["transcripts"]
+                meta = json.loads(mj.read_text(encoding="utf-8"))
+            except (OSError, ValueError, KeyError, TypeError):
+                stats["unreadable"] += 1
+                continue
+            mid = str(meta.get("id") or d.name)
+            if mid in seen_ids:
+                stats["duplicate"] += 1
+                continue
+            seen_ids.add(mid)
+            mic = transcripts.get("mic") or []
+            sysx = transcripts.get("system") or []
+            if not mic or not sysx:
+                stats["single_track"] += 1
+                continue
+            records.append({"id": mid, "dir": d, "mode": meta.get("mode") or "?",
+                            "mic": mic, "system": sysx})
+    labels, _ = load_echo_label_map(index_path)
+    labels, minted, note = mint_echo_labels(
+        index_path, labels, [r["id"] for r in records])
+    for r in records:
+        r["key"] = labels.get(r["id"], "Echo ?")
+    records.sort(key=lambda r: (len(r["key"]), r["key"]))
+    stats["minted"] = minted
+    stats["index_note"] = note
+    return records, stats
+
+
+# ---------------------------------------------------------------------------
+# The replay itself.
+#
+# TWO MEASUREMENTS OF THE SAME THING, ON PURPOSE. drop_echo returns totals and
+# not a breakdown, so the per-path split has to come from somewhere, and there
+# are exactly two honest places to get it:
+#
+#   AUTHORITATIVE  run the real drop_echo twice, the second time with
+#                  pipeline._echo_containment_chars neutralised, which is the
+#                  shipped function minus its character fallback. The
+#                  difference IS the character path's contribution, measured by
+#                  the code that ships rather than by a description of it.
+#   MIRRORED       walk the same cascade here, to get the band counters
+#                  (partial, char-eligible) that drop_echo does not return, and
+#                  the per-segment detail the acoustic arm needs.
+#
+# The mirror is a REIMPLEMENTATION and can therefore drift from the original,
+# so its totals are checked against the authoritative ones on EVERY meeting and
+# a disagreement is a loud failure rather than a footnote. It uses pipeline's
+# own helpers and pipeline's own constants throughout, so what can drift is the
+# control flow, never the arithmetic.
+# ---------------------------------------------------------------------------
+
+ECHO_DECOY_OFFSET_S = 600.0
+
+
+def _echo_sys_word_table(sys_segs, pipeline):
+    """The (start, end, normalised text) far-end word table drop_echo builds.
+
+    Rebuilt here rather than imported because drop_echo builds it inline and it
+    is the one piece of that function with no seam. Word timestamps when the
+    track has them, whole segments when it does not, exactly as the original.
+    """
+    words = []
+    for s in sys_segs:
+        ws = s.get("words") or []
+        if ws:
+            for w in ws:
+                words.append((float(w["s"]), float(w["e"]),
+                              pipeline._norm_text(w["w"])))
+        else:
+            words.append((float(s["start"]), float(s["end"]),
+                          pipeline._norm_text(s["text"])))
+    words.sort(key=lambda w: w[0])
+    return words, [w[0] for w in words]
+
+
+def _echo_window(start, end, sys_words, starts, pipeline):
+    """drop_echo's comparison window for a segment placed at [start, end]."""
+    win_start = start - pipeline.ECHO_SLACK_S
+    lo = bisect_left(starts, win_start - 30.0)
+    hi = bisect_right(starts, end + pipeline.ECHO_SLACK_S)
+    return " ".join(w[2] for w in sys_words[lo:hi] if w[1] >= win_start).split()
+
+
+def echo_cascade(rec, pipeline, shift=0.0, collect=False):
+    """Mirror of drop_echo's decision cascade, counted rather than applied.
+
+    `shift` moves every mic segment along the clock without moving the far-end
+    table, which is the decoy arm: a segment scored 600 s from where it
+    happened cannot be an echo of what it lines up with there. Shifted segments
+    that fall outside the far end's own span are skipped rather than scored
+    against nothing, so the decoy sample is smaller than the real one and the
+    report prints both denominators.
+    """
+    sys_words, starts = _echo_sys_word_table(rec["system"], pipeline)
+    far_end = pipeline._merge_spans((w[0], w[1]) for w in sys_words)
+    far_end_ends = [span[1] for span in far_end]
+    lo_t = min(w[0] for w in sys_words)
+    hi_t = max(w[1] for w in sys_words)
+    counts = {f: 0 for f in ECHO_FIELDS}
+    counts.update({"segs": 0, "words_dropped": 0, "words_trimmed": 0})
+    drops = []
+    for m in rec["mic"]:
+        a, b = float(m["start"]) + shift, float(m["end"]) + shift
+        if shift and not (lo_t <= a and b <= hi_t):
+            continue
+        counts["segs"] += 1
+        mic_tokens = pipeline._norm_text(m["text"]).split()
+        window = _echo_window(a, b, sys_words, starts, pipeline)
+        ratio = pipeline._echo_containment(mic_tokens, window)
+        is_sentence = len(mic_tokens) >= pipeline.ECHO_MIN_TOKENS
+        threshold = pipeline.ECHO_DROP_RATIO if is_sentence else 0.999
+        if ratio >= threshold:
+            counts["drop_word"] += 1
+            counts["words_dropped"] += len(mic_tokens)
+            if collect:
+                drops.append({"start": a, "end": b, "path": "word",
+                              "tokens": len(mic_tokens), "word": ratio,
+                              "char": None, "cover": None})
+            continue
+        if ratio < pipeline.ECHO_PARTIAL_RATIO:
+            continue
+        counts["partial"] += 1
+        char_ratio, cover = 0.0, None
+        if len(mic_tokens) >= pipeline.ECHO_CHAR_MIN_TOKENS:
+            cover = pipeline._far_end_cover(a, b, far_end, far_end_ends)
+            if cover >= pipeline.ECHO_CHAR_MIN_COVER:
+                counts["char_elig"] += 1
+                char_ratio = pipeline._echo_containment_chars(mic_tokens, window)
+        if char_ratio >= pipeline.ECHO_DROP_RATIO:
+            counts["drop_char"] += 1
+            counts["words_dropped"] += len(mic_tokens)
+            if collect:
+                drops.append({"start": a, "end": b, "path": "char",
+                              "tokens": len(mic_tokens), "word": ratio,
+                              "char": char_ratio, "cover": cover})
+            continue
+        cut = pipeline._trim_echo_words(m, window)
+        if cut is not None:
+            counts["trim"] += 1
+            counts["words_trimmed"] += max(
+                0, len(mic_tokens) - len(pipeline._norm_text(cut["text"]).split()))
+    return counts, drops
+
+
+def echo_replay(rec, pipeline):
+    """One meeting: authoritative totals, mirrored breakdown, and the check."""
+    _, dropped, trimmed = pipeline.drop_echo(rec["mic"], rec["system"])
+    word_only = None
+    real_chars = getattr(pipeline, "_echo_containment_chars", None)
+    if real_chars is not None:
+        try:
+            pipeline._echo_containment_chars = lambda *a, **k: 0.0
+            _, word_only, _ = pipeline.drop_echo(rec["mic"], rec["system"])
+        finally:
+            pipeline._echo_containment_chars = real_chars
+    counts, drops = echo_cascade(rec, pipeline, collect=True)
+    decoy, _ = echo_cascade(rec, pipeline, shift=ECHO_DECOY_OFFSET_S)
+    if not decoy["segs"]:
+        decoy, _ = echo_cascade(rec, pipeline, shift=-ECHO_DECOY_OFFSET_S)
+    bad = []
+    if counts["drop_word"] + counts["drop_char"] != dropped:
+        bad.append("drops: drop_echo %d, mirror %d"
+                   % (dropped, counts["drop_word"] + counts["drop_char"]))
+    if counts["trim"] != trimmed:
+        bad.append("trims: drop_echo %d, mirror %d" % (trimmed, counts["trim"]))
+    if word_only is not None and counts["drop_word"] != word_only:
+        bad.append("word-path drops: drop_echo with the character fallback "
+                   "neutralised %d, mirror %d" % (word_only, counts["drop_word"]))
+    return {"key": rec["key"], "id": rec["id"], "mode": rec["mode"],
+            "dir": rec["dir"], "mic_segs": len(rec["mic"]),
+            "sys_segs": len(rec["system"]), "counts": counts, "drops": drops,
+            "decoy": decoy, "dropped": dropped, "trimmed": trimmed,
+            "word_only": word_only, "disagreements": bad,
+            "split_checked": word_only is not None}
+
+
+# ---------------------------------------------------------------------------
+# WHICH CONSTANTS THIS CORPUS CAN SEE.
+#
+# The binding-fixture section above exists because a count metric does not
+# constrain the constants it is used to justify. The question is sharper here,
+# because the echo constants were SET from a measurement over this exact corpus
+# (see the comment block at pipeline.py:426), and a gate that cannot feel one
+# of them is a gate that will wave through a change to it.
+#
+# So every echo constant is nudged one step each way and the report says how
+# many meetings react. A constant nothing reacts to is not thereby free to
+# change: it means THIS CORPUS holds no evidence about it, which is a statement
+# about the evidence and not about the constant.
+# ---------------------------------------------------------------------------
+ECHO_SENSITIVITY_STEPS = (
+    ("ECHO_SLACK_S", 0.5, float),
+    ("ECHO_DROP_RATIO", 0.05, float),
+    ("ECHO_PARTIAL_RATIO", 0.05, float),
+    ("ECHO_MIN_TOKENS", 1, int),
+    ("ECHO_CHAR_MIN_COVER", 0.1, float),
+    ("ECHO_CHAR_MIN_TOKENS", 1, int),
+)
+
+
+def echo_sensitivity(records, pipeline, live_rows):
+    """For each echo constant: how many meetings move when it moves one step.
+
+    Uses the mirror rather than drop_echo, which is 2 passes per constant
+    instead of 4 and is the same arithmetic; the mirror has already been
+    checked against the real function on every meeting by the time this runs.
+    """
+    live = {r["key"]: tuple(r["counts"][f] for f in ECHO_FIELDS) for r in live_rows}
+    out = []
+    for name, step, cast in ECHO_SENSITIVITY_STEPS:
+        if not hasattr(pipeline, name):
+            out.append({"name": name, "missing": True})
+            continue
+        base = getattr(pipeline, name)
+        row = {"name": name, "live": base, "step": step, "sides": {}}
+        for side, delta in (("down", -step), ("up", step)):
+            moved, fields = [], set()
+            value = cast(base + delta)
+            try:
+                setattr(pipeline, name, value)
+                for rec in records:
+                    counts, _ = echo_cascade(rec, pipeline)
+                    now = tuple(counts[f] for f in ECHO_FIELDS)
+                    was = live[rec["key"]]
+                    if now != was:
+                        moved.append(rec["key"])
+                        fields.update(f for f, x, y in zip(ECHO_FIELDS, now, was)
+                                      if x != y)
+            finally:
+                setattr(pipeline, name, base)
+            row["sides"][side] = {"value": value, "moved": moved,
+                                  "fields": sorted(fields)}
+        out.append(row)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# THE ACOUSTIC ARM (--echo-audio), opt-in and allowed to be absent.
+#
+# Everything else in this section is text arguing about text: the character
+# fallback deletes a sentence because its LETTERS line up with the far end's
+# letters, and no amount of that can distinguish an echo from the user
+# answering a question in the question's own words. The waveform can. True
+# acoustic echo means the microphone was physically carrying the far-end
+# signal, so the two energy envelopes track; a person answering over a talking
+# far end produces an envelope that does not.
+#
+# This is the measurement ECHO_CHAR_MIN_COVER was set from (median r 0.86 for
+# the deletions the gate keeps against 0.06 for the six it was built to stop;
+# dist/echo_review_v2.md has the tables). It needs mic.wav and system.wav,
+# which is 17 GB for this corpus and gone entirely for any meeting whose audio
+# the user deleted, so it is behind a flag and every absence is counted and
+# printed rather than quietly shrinking the sample.
+# ---------------------------------------------------------------------------
+ECHO_ENV_HOP_S = 0.010
+ECHO_ENV_PAD_S = 0.20
+ECHO_ENV_MAX_LAG = 30  # 300 ms of room delay at the hop above
+ECHO_ENV_SUSPECT = 0.5  # below this, the mic was not carrying the far end
+
+
+def _echo_envelope(x, sr):
+    n = int(ECHO_ENV_HOP_S * sr)
+    m = (len(x) // n) * n if n else 0
+    if m == 0:
+        return np.zeros(0)
+    frames = x[:m].reshape(-1, n)
+    return 20 * np.log10(np.sqrt((frames.astype(np.float64) ** 2).mean(axis=1) + 1e-12))
+
+
+def echo_envelope_correlation(mic_path, sys_path, start, end):
+    """Best mic-vs-system envelope correlation over 0 to 300 ms of delay.
+
+    Near 1 means the microphone was carrying the far-end signal. Returns None
+    for anything unreadable, which is reported as unmeasured and never as 0.
+    """
+    try:
+        import soundfile as sf
+    except Exception:
+        return None
+    try:
+        mi, si = sf.info(str(mic_path)), sf.info(str(sys_path))
+        sr = mi.samplerate
+        s0 = int(max(0.0, start - ECHO_ENV_PAD_S) * sr)
+        s1 = int((end + ECHO_ENV_PAD_S) * sr)
+        if s1 > mi.frames or s1 > si.frames or s1 <= s0:
+            return None
+        mic, _ = sf.read(str(mic_path), start=s0, stop=s1, dtype="float32",
+                         always_2d=True)
+        far, _ = sf.read(str(sys_path), start=s0, stop=s1, dtype="float32",
+                         always_2d=True)
+    except Exception:
+        return None
+    a = _echo_envelope(mic.mean(axis=1), sr)
+    b = _echo_envelope(far.mean(axis=1), sr)
+    n = min(len(a), len(b))
+    if n < 10:
+        return None
+    a, b = a[:n], b[:n]
+    best = None
+    for lag in range(0, ECHO_ENV_MAX_LAG + 1):
+        aa, bb = a[lag:], (b[: n - lag] if lag else b)
+        if len(aa) < 10:
+            break
+        aa = aa - aa.mean()
+        bb = bb - bb.mean()
+        denom = float(np.sqrt((aa * aa).sum() * (bb * bb).sum()))
+        if denom > 0:
+            r = float((aa * bb).sum() / denom)
+            best = r if best is None else max(best, r)
+    return best
+
+
+def echo_audio_arm(rows):
+    """Score every deletion whose WAVs survive. Returns (scored, unscorable)."""
+    scored, missing = [], 0
+    for row in rows:
+        mic_wav, sys_wav = row["dir"] / "mic.wav", row["dir"] / "system.wav"
+        have = mic_wav.exists() and sys_wav.exists()
+        for d in row["drops"]:
+            r = (echo_envelope_correlation(mic_wav, sys_wav, d["start"], d["end"])
+                 if have else None)
+            if r is None:
+                missing += 1
+                continue
+            d["envelope_r"] = r
+            scored.append((row["key"], d))
+    return scored, missing
+
+
+# ---------------------------------------------------------------------------
+# Echo reporting and the gate.
+# ---------------------------------------------------------------------------
+
+def echo_constant_drift(pipeline):
+    """Echo constants whose live value differs from ECHO_BASELINE_CONSTANTS."""
+    out = []
+    for name, recorded in sorted(ECHO_BASELINE_CONSTANTS.items()):
+        live = getattr(pipeline, name, "MISSING")
+        if live != recorded:
+            out.append((name, recorded, live))
+    return out
+
+
+def echo_compare(rows):
+    """(moved, uncovered, absent) against the frozen echo baseline."""
+    moved, uncovered = [], []
+    for row in rows:
+        want = ECHO_BASELINE.get(row["key"])
+        if want is None:
+            uncovered.append(row["key"])
+            continue
+        diffs = [(f, w, row["counts"][f])
+                 for f, w in zip(ECHO_FIELDS, want) if w != row["counts"][f]]
+        if diffs:
+            moved.append((row["key"], diffs))
+    named = {row["key"] for row in rows}
+    return moved, uncovered, [k for k in ECHO_BASELINE if k not in named]
+
+
+def echo_row_name(row, show_titles):
+    """Pseudonym plus shape by default. --show-titles resolves the directory,
+    which is a meeting title with participant names in it."""
+    if show_titles:
+        return short(row["dir"].name, 34)
+    return "%-10s %s" % (row["key"], row["mode"])
+
+
+def print_echo_report(rows, stats, sens, audio, pipeline, show_titles=False,
+                      overrides=None, elapsed=None):
+    """The echo section. Returns (moved, uncovered, disagreements)."""
+    print("=" * 100)
+    print("ECHO / TRANSCRIPT REGRESSION: what drop_echo does to real saved transcripts")
+    print("=" * 100)
+    print("pipeline.drop_echo replayed over the per-track transcripts in each meeting's")
+    print("analysis.json. No ASR runs, no model loads, no WAV is opened on this path. It is")
+    print("the only section of this harness that scores WORDS rather than embeddings, and it")
+    print("is disjoint from the fixture corpus above by construction: echo needs both tracks,")
+    print("and blind spot (a) is that no cached fixture holds both.")
+    print("Corpus: %d meeting director%s on disk, %d with both a mic and a system transcript,"
+          % (stats["dirs"], "y" if stats["dirs"] == 1 else "ies", len(rows)))
+    print("  %d single-track (drop_echo never runs on those)%s%s."
+          % (stats["single_track"],
+             "" if not stats["duplicate"] else
+             ", %d the same meeting seen under two roots" % stats["duplicate"],
+             "" if not stats["unreadable"] else
+             ", %d unreadable" % stats["unreadable"]))
+    if stats.get("minted") and not stats.get("index_note"):
+        print("  %d meeting(s) were given a pseudonym this run and the map was written back"
+              % len(stats["minted"]))
+        print("  to the gitignored corpus index. A pseudonym is stable once assigned.")
+    elif stats.get("minted"):
+        print("  %d meeting(s) were given a pseudonym this run, but the map did NOT persist:"
+              % len(stats["minted"]))
+        for line in _echo_wrap(stats["index_note"], 88):
+            print("    %s" % line)
+        print("    They are re-minted identically next run from the same corpus, so the")
+        print("    baseline still lines up; a corpus that gains or loses a meeting would")
+        print("    renumber, which is the whole reason the map is normally on disk.")
+    if overrides:
+        print("  !! RUNNING A VARIANT CONFIGURATION: %s"
+              % ", ".join("%s=%s" % kv for kv in sorted(overrides.items())))
+        print("     Every number below is the variant's. The baseline comparison is then a")
+        print("     measurement of what the variant moved, not a gate anyone should pass.")
+    drift = echo_constant_drift(pipeline)
+    if drift and not overrides:
+        print("  !! echo constants have drifted from the %s baseline:" % ECHO_BASELINE_DATE)
+        for name, recorded, live in drift:
+            print("       %-22s baseline %-8s live %s" % (name, recorded, live))
+    print()
+    hdr = ("%-34s %6s %6s %5s %5s %6s %6s %5s %6s"
+           % ("meeting", "mic", "system", "part", "elig", "dropW", "dropC",
+              "trim", "words"))
+    print(hdr)
+    print("-" * len(hdr))
+    total = {f: 0 for f in ECHO_FIELDS}
+    total.update({"segs": 0, "words_dropped": 0, "words_trimmed": 0})
+    decoy_total = dict(total)
+    for row in rows:
+        c = row["counts"]
+        print("%-34s %6d %6d %5d %5d %6d %6d %5d %6d"
+              % (echo_row_name(row, show_titles), row["mic_segs"], row["sys_segs"],
+                 c["partial"], c["char_elig"], c["drop_word"], c["drop_char"],
+                 c["trim"], c["words_dropped"] + c["words_trimmed"]))
+        for k in total:
+            total[k] += c[k]
+            decoy_total[k] += row["decoy"][k]
+    print("-" * len(hdr))
+    print("%-34s %6d %6d %5d %5d %6d %6d %5d %6d"
+          % ("TOTAL, %d meetings" % len(rows), total["segs"],
+             sum(r["sys_segs"] for r in rows), total["partial"], total["char_elig"],
+             total["drop_word"], total["drop_char"], total["trim"],
+             total["words_dropped"] + total["words_trimmed"]))
+    print()
+    print("columns: mic/system = segments in the saved transcripts | part = mic segments in")
+    print("         the part-echo band [%.2f, %.2f) on word containment | elig = of those, the"
+          % (pipeline.ECHO_PARTIAL_RATIO, pipeline.ECHO_DROP_RATIO))
+    print("         ones that reached the character fallback at all (at least %d tokens AND"
+          % pipeline.ECHO_CHAR_MIN_TOKENS)
+    print("         far-end cover at least %.2f) | dropW / dropC = segments deleted by the word"
+          % pipeline.ECHO_CHAR_MIN_COVER)
+    print("         path and by the character fallback | trim = segments kept with an echoed")
+    print("         edge cut off | words = words removed from the user's transcript.")
+    print("dropW + dropC and trim are the totals the SHIPPED drop_echo returns, checked on")
+    print("every meeting: the split comes from running it a second time with its character")
+    print("fallback neutralised, and part/elig from a mirror of the same cascade whose totals")
+    print("must agree with the real function or this section refuses to render a verdict.")
+    print()
+    print("dropW is 0 on every row, and that is the CORPUS rather than the code: analysis.json")
+    print("is written AFTER the echo pass, so these mic transcripts already survived a word")
+    print("path identical to today's and it has nothing left to find. The word-path column is")
+    print("therefore ONE-SIDED. It rises if a change makes the word path more aggressive; it")
+    print("cannot fall, so a change that makes it more permissive is invisible here. The")
+    print("character columns have no such truncation: that path has never run over this")
+    print("corpus, which is exactly why it was the thing worth building this for.")
+    print()
+    if not all(r["split_checked"] for r in rows):
+        print("note: the word/character split could not be cross-checked against drop_echo on")
+        print("      every meeting (pipeline._echo_containment_chars was not found, so the")
+        print("      shipped function could not be run with its fallback neutralised). The")
+        print("      split below is the mirror's alone.")
+        print()
+
+    # ---- the decoy null ----
+    live_fired = total["drop_word"] + total["drop_char"]
+    decoy_fired = decoy_total["drop_word"] + decoy_total["drop_char"]
+    print("DECOY NULL: the same cascade at a position where echo cannot exist")
+    print("  Every mic segment is scored a second time %.0f s from where it happened, against"
+          % ECHO_DECOY_OFFSET_S)
+    print("  far-end words it has nothing to do with. Anything that fires there is the")
+    print("  cascade agreeing with a coincidence.")
+    print("    real position : %4d of %4d segments deleted (%s)"
+          % (live_fired, total["segs"], _echo_pct(live_fired, total["segs"])))
+    print("    decoy position: %4d of %4d segments deleted (%s)"
+          % (decoy_fired, decoy_total["segs"],
+             _echo_pct(decoy_fired, decoy_total["segs"])))
+    if decoy_fired:
+        print("  The decoy rate is NOT zero. %d deletion(s) would have happened at a time the"
+              % decoy_fired)
+        print("  far end was saying something unrelated, so that much of the real rate is")
+        print("  within reach of chance. This is a FLOOR under the false-positive rate and not")
+        print("  an estimate of it: the decoy tests unrelated far-end TEXT, and the failure")
+        print("  this gate was built to stop was RELATED text at an impossible TIME, which no")
+        print("  text-based null can see.")
+    else:
+        print("  Nothing fired at the decoy position. That bounds the text-coincidence rate at")
+        print("  these thresholds and says nothing about the failure mode that matters, which")
+        print("  is related text scored at a time the far end was silent.")
+    print()
+
+    # ---- sensitivity ----
+    print("CONSTANTS THIS CORPUS CAN SEE")
+    print("  Each echo constant nudged one step each way, everything else at its live value.")
+    print("  The number is meetings whose counters move. A constant nothing reacts to is not")
+    print("  thereby safe to change: it means this corpus holds no evidence about it either")
+    print("  way, which is a statement about the evidence.")
+    blind = []
+    for row in sens:
+        if row.get("missing"):
+            print("  %-22s NOT PRESENT in pipeline.py, nothing to nudge." % row["name"])
+            continue
+        print("  %-22s live %s" % (row["name"], _num(row["live"])))
+        for side, sign in (("down", "-"), ("up", "+")):
+            s = row["sides"][side]
+            print("      %s%-6s -> %-8s %s"
+                  % (sign, _num(row["step"]), _num(s["value"]),
+                     "NO MEETING REACTS" if not s["moved"] else
+                     "%2d meeting(s) move: %s"
+                     % (len(s["moved"]), ", ".join(s["fields"]))))
+        if not row["sides"]["down"]["moved"] and not row["sides"]["up"]["moved"]:
+            blind.append(row["name"])
+    if blind:
+        print("  BLIND BOTH WAYS: %s." % ", ".join(blind))
+        print("  A change to those reproduces this baseline exactly, so nothing in this repo")
+        print("  gates them except the unit tests in tools/test_pipeline.py.")
+    print()
+
+    # ---- acoustic arm ----
+    if audio is None:
+        print("ACOUSTIC ARM: NOT MEASURED THIS RUN (pass --echo-audio)")
+        print("  Everything above is text arguing about text, which cannot tell an echo from")
+        print("  the user answering a question in the question's own words. --echo-audio")
+        print("  correlates the mic and system energy envelopes over each deletion, which can.")
+        print("  It reads the WAVs, so it is opt-in and needs the audio to still be on disk.")
+    else:
+        scored, missing = audio
+        vals = sorted(d["envelope_r"] for _, d in scored)
+        print("ACOUSTIC ARM: mic-vs-system envelope correlation over each deletion")
+        print("  Near 1 means the microphone was physically carrying the far-end signal, which")
+        print("  is what echo IS. Near 0 means it was not, whatever the letters said.")
+        if not vals and not missing:
+            print("    drop_echo deleted nothing on this corpus, so there was nothing to")
+            print("    correlate. Not a pass and not a failure: an empty sample.")
+        elif not vals:
+            print("    %d deletion(s), NONE scorable: the WAVs are gone or unreadable, so this"
+                  % missing)
+            print("    arm is UNMEASURED rather than passed.")
+        else:
+            median = vals[len(vals) // 2]
+            suspect = [(k, d) for k, d in scored if d["envelope_r"] < ECHO_ENV_SUSPECT]
+            print("    scored %d deletion(s), %d unscorable (audio absent or unreadable)"
+                  % (len(vals), missing))
+            print("    median r %.2f, lowest %.2f, highest %.2f"
+                  % (median, vals[0], vals[-1]))
+            if suspect:
+                print("    %d below %.1f: the far end was talking but the mic was NOT carrying"
+                      % (len(suspect), ECHO_ENV_SUSPECT))
+                print("    it through, which is what genuine user speech over a talking far end")
+                print("    looks like. These are the deletions a human should read:")
+                for key, d in sorted(suspect, key=lambda p: p[1]["envelope_r"]):
+                    print("      %-10s @ %7.1f s  r %5.2f  cover %s  %2d tokens  via %s"
+                          % (key, d["start"], d["envelope_r"],
+                             "n/a " if d["cover"] is None else "%.2f" % d["cover"],
+                             d["tokens"], d["path"]))
+                print("    The text of each is deliberately NOT printed here: this report gets")
+                print("    pasted into design docs and those sentences are what people said.")
+                print("    dist/echo_review_v2_measure.py prints them, locally.")
+            else:
+                print("    none below %.1f: every deletion this build makes is one the mic was"
+                      % ECHO_ENV_SUSPECT)
+                print("    demonstrably carrying the far end through.")
+    print()
+
+    # ---- the gate ----
+    moved, uncovered, absent = echo_compare(rows)
+    disagreements = [(r["key"], r["disagreements"]) for r in rows if r["disagreements"]]
+    compared = len(rows) - len(uncovered)
+    if disagreements:
+        print("!! MIRROR DISAGREES WITH drop_echo on %d meeting(s). The breakdown above is"
+              % len(disagreements))
+        print("   describing something the shipped function does not do, so no verdict below")
+        print("   means anything until this is fixed:")
+        for key, why in disagreements:
+            for line in why:
+                print("     %-10s %s" % (key, line))
+        print()
+    if moved:
+        print("ECHO BASELINE NOT REPRODUCED: %d meeting(s) moved against %s."
+              % (len(moved), ECHO_BASELINE_DATE))
+        for key, diffs in moved:
+            print("  !! %-10s %s" % (key, ", ".join(
+                "%s %d -> %d (%+d)" % (f, w, g, g - w) for f, w, g in diffs)))
+        agg = {}
+        for _, diffs in moved:
+            for f, w, g in diffs:
+                agg[f] = agg.get(f, 0) + (g - w)
+        print("  corpus-wide: %s"
+              % ", ".join("%s %+d" % (f, agg[f]) for f in ECHO_FIELDS if f in agg))
+        print("  Direction is the whole message and there is no right one. MORE drops means")
+        print("  more of the user's own transcript is being deleted; FEWER means more")
+        print("  duplicated far-end speech is being published under the user's name. Nothing")
+        print("  in this harness knows which of those a given change ought to cause, because")
+        print("  nothing here knows who was speaking. A human reads the segments;")
+        print("  dist/echo_review_v2_measure.py prints them with their text and their audio.")
+    elif compared:
+        print("ECHO BASELINE REPRODUCED: all %d compared meeting(s) match their %s entry."
+              % (compared, ECHO_BASELINE_DATE))
+        print("  proves : drop_echo's decisions on this corpus are identical to the day the")
+        print("           baseline was recorded, path by path.")
+        print("  does NOT prove: that any of those decisions is correct. There is no")
+        print("           attribution truth for these transcripts, so a dropped segment is not")
+        print("           wrong for having been dropped and a kept one is not right for having")
+        print("           been kept. This is a change detector, worth exactly what")
+        print("           BEHAVIOUR_BASELINE is worth for clustering, which is not nothing and")
+        print("           is not correctness.")
+    else:
+        print("ECHO BASELINE: NOTHING COMPARED. No meeting on this machine has an entry in the")
+        print("  %s generation, so this section reported numbers and gated on none of them."
+              % ECHO_BASELINE_DATE)
+    if uncovered:
+        print("  UNCOVERED: %d meeting(s) have no baseline entry and were NOT compared:"
+              % len(uncovered))
+        for line in wrapped(sorted(uncovered), 88):
+            print("    %s" % line)
+        print("  These are new recordings, not failures. This corpus grows whenever the user")
+        print("  takes a call, so unlike the frozen fixture corpus above, an unbaselined")
+        print("  meeting here does NOT fail --check: it is excluded from the verdict and")
+        print("  counted here so that partial coverage cannot read as full coverage. Fold them")
+        print("  into a new dated generation the next time the baseline is re-recorded.")
+    if absent:
+        print("  BASELINED BUT ABSENT: %d entr%s name a meeting no longer on disk:"
+              % (len(absent), "y" if len(absent) == 1 else "ies"))
+        for line in wrapped(sorted(absent), 88):
+            print("    %s" % line)
+        print("  The meeting was deleted or moved. Not a failure, and not coverage either.")
+    if elapsed is not None:
+        print()
+        print("echo section: %d meeting(s), %d mic segments, %d far-end word comparisons per"
+              % (len(rows), total["segs"], 1 + len(ECHO_SENSITIVITY_STEPS) * 2))
+        print("  segment (live, decoy, and the sensitivity nudges), %.1f s%s."
+              % (elapsed, "" if audio is None else ", including the acoustic arm"))
+    return moved, uncovered, disagreements
+
+
+def _echo_pct(n, d):
+    return "n/a" if not d else "%.2f%%" % (100.0 * n / d)
+
+
+def _echo_wrap(text, width):
+    """Plain prose folded to `width`. wrapped() above joins with commas, which
+    is right for a list of pseudonyms and wrong for a sentence."""
+    lines, cur = [], ""
+    for word in text.split():
+        if cur and len(cur) + 1 + len(word) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = word if not cur else cur + " " + word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def parse_echo_set(items, pipeline):
+    out = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit("--echo-set expects KEY=VALUE, got %r" % item)
+        k, v = item.split("=", 1)
+        k = k.strip()
+        if k not in ECHO_TUNABLES:
+            raise SystemExit("--echo-set: unknown key %r; allowed: %s"
+                             % (k, sorted(ECHO_TUNABLES)))
+        if not hasattr(pipeline, k):
+            raise SystemExit("--echo-set: pipeline.py has no %s" % k)
+        out[k] = ECHO_TUNABLES[k](v)
+    return out
+
+
+def run_echo_section(args):
+    """Load, replay, print, gate. Returns the exit-code contribution."""
+    try:
+        # Imported here rather than at module scope so that a clone which
+        # cannot satisfy pipeline's imports still gets the whole diarization
+        # report instead of an ImportError at startup.
+        import pipeline
+    except Exception as exc:
+        print_echo_not_measured(
+            "pipeline could not be imported (%s: %s), so drop_echo cannot be called."
+            % (type(exc).__name__, exc))
+        return 0
+    roots = [Path(p) for p in args.echo_corpus] if args.echo_corpus else list(
+        ECHO_CORPUS_ROOTS)
+    index_path = Path(args.fixtures) / FIXTURE_INDEX
+    t0 = time.time()
+    records, stats = load_echo_corpus(roots, index_path)
+    if not records:
+        print_echo_not_measured(
+            "no meeting under %s has both a mic and a system\n"
+            "  transcript in its analysis.json, so there is nothing for drop_echo to act\n"
+            "  on. This is the normal state on a clean clone, and on any machine that has\n"
+            "  only ever recorded in person."
+            % ", ".join(str(r) for r in roots))
+        return 0
+    overrides = parse_echo_set(args.echo_sets, pipeline)
+    saved = {k: getattr(pipeline, k) for k in overrides}
+    try:
+        for k, v in overrides.items():
+            setattr(pipeline, k, v)
+        rows = [echo_replay(rec, pipeline) for rec in records]
+        sens = echo_sensitivity(records, pipeline, rows)
+        audio = echo_audio_arm(rows) if args.echo_audio else None
+        moved, _, disagreements = print_echo_report(
+            rows, stats, sens, audio, pipeline, args.show_titles, overrides,
+            time.time() - t0)
+    finally:
+        for k, v in saved.items():
+            setattr(pipeline, k, v)
+    print()
+    return 1 if (args.check and (moved or disagreements)) else 0
+
+
+def print_echo_not_measured(why):
+    """Absence must read as absence here too."""
+    print("=" * 100)
+    print("ECHO / TRANSCRIPT REGRESSION: NOT MEASURED THIS RUN")
+    print("=" * 100)
+    print("  %s" % why)
+    print("  Nothing in this run has checked pipeline.drop_echo against anything. Echo")
+    print("  removal deletes the user's own sentences, and on this run its entire regression")
+    print("  surface is the unit tests in tools/test_pipeline.py.")
+    print()
+
+
 def run_binding_section(fixtures, res, args):
     """Sweep + print the binding report, timed, with the fit cache installed."""
     t0 = time.time()
@@ -2115,7 +3150,38 @@ def main(argv=None):
     ap.add_argument("--sweep-probes", type=int, default=2,
                     help="samples used to ask how far past a count edge ACCURACY "
                          "stays unchanged (default 2)")
+    ap.add_argument("--no-echo", action="store_true",
+                    help="skip the echo / transcript regression section. The report "
+                         "then says NOT MEASURED where it would have been, because "
+                         "echo removal deletes the user's own sentences and its only "
+                         "other regression surface is tools/test_pipeline.py.")
+    ap.add_argument("--echo-only", action="store_true",
+                    help="the echo / transcript regression section and nothing else")
+    ap.add_argument("--echo-corpus", action="append",
+                    help="directory of saved meetings to replay drop_echo over "
+                         "(repeatable; default: ~/.meetingscribe/recordings and "
+                         "./recordings)")
+    ap.add_argument("--echo-set", dest="echo_sets", action="append",
+                    help="echo constant override on the pipeline module, e.g. "
+                         "--echo-set ECHO_CHAR_MIN_COVER=0.4 (repeatable; see "
+                         "ECHO_TUNABLES). Separate from --set, which sweeps "
+                         "diarization and puts the whole report into A/B mode.")
+    ap.add_argument("--echo-audio", action="store_true",
+                    help="also correlate the mic and system energy envelopes over "
+                         "every deletion. Reads the WAVs, so it needs the raw audio "
+                         "to still be on disk; degrades to 'unscorable' per deletion "
+                         "when it is not.")
     args = ap.parse_args(argv)
+
+    # --echo-only returns before any fixture is loaded, and deliberately does
+    # NOT print the accuracy block first the way --binding-only does. Those two
+    # sections are statements ABOUT the accuracy figure; this one is about a
+    # different subsystem entirely, and pinning a transcript number underneath a
+    # clustering number is how the deploy bar came to read as covering both.
+    if args.echo_only:
+        code = run_echo_section(args)
+        print("\nexit %d" % code)
+        return code
 
     overrides = parse_set(args.sets)
     variant_fn = load_variant_module(args.variant_module) if args.variant_module else None
@@ -2357,6 +3423,18 @@ def main(argv=None):
     else:
         run_binding_section(fixtures, base, args)
         run_stability_section(fixtures, args)
+
+    # The transcript path. It runs on EVERY report, including --quick and
+    # including an A/B run: it costs a fraction of a second, it reads no cache
+    # and no embedding, and none of the diarization overrides above can move a
+    # single number in it. Skipping it to save time would be saving nothing, and
+    # a section that only runs on the full report is a section that is absent
+    # from exactly the runs people do while iterating.
+    if args.no_echo:
+        print_echo_not_measured(
+            "--no-echo was passed. Nothing here replayed drop_echo over anything.")
+    else:
+        exit_code = run_echo_section(args) or exit_code
 
     payload = {
         "shape": "ab" if ab_mode else "by_key",
