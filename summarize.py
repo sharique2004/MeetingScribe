@@ -259,9 +259,23 @@ def _drop_unsupported_actions(summary, meta):
     if not spoken:
         return summary
 
+    # A due date nobody said is worse than no due date: it lands in the user's
+    # task list already overdue. The on-device model produced "2025-01-01" on
+    # five items of one meeting held in July 2026, from a transcript
+    # containing no date at all.
+    spoken_text = " ".join(str(t.get("text") or "") for t in (meta.get("turns") or []))
+    spoken_norm = spoken_text.lower()
+
     kept, dropped = [], []
     for item in items:
         task = str((item or {}).get("task") or "") if isinstance(item, dict) else ""
+        if isinstance(item, dict) and item.get("due"):
+            due = str(item["due"]).strip()
+            bare = re.sub(r"[^a-z0-9]+", "", due.lower())
+            if bare and bare not in re.sub(r"[^a-z0-9]+", "", spoken_norm) \
+               and due.lower() not in spoken_norm:
+                log.info("dropped unspoken due date %r from %r", due, task[:60])
+                item = dict(item, due="")
         words = _content_words(task)
         if len(words) < ACTION_MIN_WORDS:
             kept.append(item)

@@ -165,7 +165,12 @@ APPLE_PROMPT_LADDER = (APPLE_PROMPT_CHARS, 8000, 5500)
 # that headroom keeps every map call inside the 4096-token context, so the
 # ladder-and-retry dance never has to run per portion.
 APPLE_SWEEP_CHARS = 6500
-APPLE_SWEEP_WORKERS = 3     # = local_llm MAX_INFLIGHT; more just queues
+# Below local_llm.MAX_INFLIGHT (3) on purpose. At 3, one sweep alone saturates
+# the Neural Engine queue, and a SECOND ask — two windows, or one impatient
+# retry — put six jobs against three slots and took the helper process down
+# with it. Two workers leave a slot free, and _SWEEP_LOCK below means a second
+# sweep waits its turn instead of competing.
+APPLE_SWEEP_WORKERS = 2
 APPLE_SWEEP_MAX_PORTIONS = 40   # ~4.5 hours of speech; a guard, not a policy
 APPLE_FINDING_CHARS = 700   # per-portion findings kept for the reduce call
 
@@ -1203,6 +1208,60 @@ SWEEP_REDUCE_INSTRUCTIONS = (
 )
 
 
+# One sweep at a time per process. A sweep is a burst of concurrent model
+# calls; two bursts at once is how the on-device helper died under two
+# simultaneous questions. Waiting is slower than crashing is fast.
+_SWEEP_LOCK = threading.Lock()
+
+
+def _strip_to(text, limit):
+    """Trim to `limit` chars on a word boundary, with an ellipsis if cut."""
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut + "…"
+
+
+# Words that betray the machinery to the user. The reduce prompt forbids them;
+# this catches the times it forgets, because "…is not specified in this
+# portion" quietly tells the reader the sweep might have missed something,
+# which is the one promise the sweep exists to keep.
+_LEAKED = re.compile(
+    r"\b(?:(?:in|from|within)\s+th(?:is|e)\s+(?:portion|excerpt|chunk|section)"
+    r"|speaker\s+labell?ed"
+    r"|portion\s+\d+"
+    r"|the\s+findings?\s+(?:say|show|contain))\b", re.I)
+
+
+def _clean_answer(text):
+    """Drop per-portion artefacts and repeats from an answer.
+
+    Whole sentences go, not phrases: excising "in this portion" from the
+    middle of a clause leaves "They agreed on Tuesday. This is not specified",
+    which reads worse than the leak did. A sentence that talks about the
+    machinery has nothing in it for the user anyway.
+    """
+    text = str(text or "").strip()
+    # A finding's first word welded to the answer: "Baywatch — The company…".
+    text = re.sub(r"^\s*\S{1,20}\s+—\s+(?=[A-Z])", "", text)
+
+    seen, out = set(), []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if _LEAKED.search(sentence):
+            continue
+        key = _norm(sentence)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        out.append(sentence)
+    cleaned = " ".join(out).strip()
+    # Never hand back nothing: if every sentence was machinery, the original
+    # is still more useful to the user than an empty answer.
+    return cleaned or text
+
+
 def _sweep_apple(meta, entries, question, history, fallback, progress_cb):
     """Read the WHOLE meeting on-device, one portion at a time. -> (raw, kept).
 
@@ -1251,8 +1310,9 @@ def _sweep_apple(meta, entries, question, history, fallback, progress_cb):
         return {"i": i, "findings": findings[:APPLE_FINDING_CHARS], "citations": cites}
 
     progress_cb(f"Reading the meeting… 0/{total}")
-    with ThreadPoolExecutor(max_workers=APPLE_SWEEP_WORKERS) as pool:
-        results = [r for r in pool.map(read_portion, enumerate(portions)) if r]
+    with _SWEEP_LOCK:
+        with ThreadPoolExecutor(max_workers=APPLE_SWEEP_WORKERS) as pool:
+            results = [r for r in pool.map(read_portion, enumerate(portions)) if r]
 
     if not results:
         # Nothing anywhere in the meeting bears on the question — and this
@@ -1261,34 +1321,45 @@ def _sweep_apple(meta, entries, question, history, fallback, progress_cb):
 
     citations = [c for r in results for c in r["citations"] if isinstance(c, dict)]
 
-    blocks = [f"FINDINGS FROM THE MEETING (in order):"]
-    for n, r in enumerate(results, 1):
-        blocks.append(f"{n}. {r['findings']}")
-    findings_text = "\n".join(blocks)
-
     history_text = _history_block(history)
     progress_cb("Writing the answer…")
     base = SWEEP_REDUCE_INSTRUCTIONS
     if fallback:
         base += (" No speaker is the local user: every voice was captured on one "
                  "microphone, so never claim a speaker is the person asking.")
-    source_parts = [_header(meta, False)]
-    if history_text:
-        source_parts.append(history_text)
-    source_parts.append(findings_text)
-    source_parts.append(f"QUESTION: {question}")
-    source = "\n\n".join(source_parts)
 
-    for budget in (len(source), 8000, 5500):
+    # THE QUESTION GOES FIRST. It used to be the last line of a ~9,000-char
+    # prompt that was then shortened with source[:budget] on a context
+    # overflow — which cut off the question itself, and with it the findings
+    # from the end of the meeting. The model was left summarizing whatever
+    # survived, which is exactly how "summarise the discussion about Y" came
+    # back about something else entirely. Now overflow costs detail from the
+    # middle of each finding, never the question and never a whole portion.
+    def assemble(finding_chars):
+        blocks = [f"QUESTION: {question}", _header(meta, False)]
+        if history_text:
+            blocks.append(history_text)
+        rendered = [f"{n}. {_strip_to(r['findings'], finding_chars)}"
+                    for n, r in enumerate(results, 1)]
+        blocks.append("FINDINGS FROM THE WHOLE MEETING (in order):\n"
+                      + "\n".join(rendered))
+        blocks.append(f"Answer the question at the top: {question}")
+        return "\n\n".join(blocks)
+
+    raw = None
+    for finding_chars in (APPLE_FINDING_CHARS, 320, 180):
         try:
-            raw = local_llm.generate(base, source[:budget], ASK_SCHEMA, max_tokens=700)
+            raw = local_llm.generate(base, assemble(finding_chars),
+                                     ASK_SCHEMA, max_tokens=700)
             break
         except local_llm.LocalLLMError as exc:
             if exc.code != "context_overflow":
                 raise RuntimeError(str(exc)) from exc
-            log.info("sweep reduce did not fit at %d chars — shortening", budget)
-    else:
+            log.info("sweep reduce did not fit at %d chars/finding — trimming",
+                     finding_chars)
+    if raw is None:
         raise RuntimeError("The findings were too long for the on-device model.")
+    source = assemble(320)   # what a retry re-reads
 
     answer = raw if isinstance(raw, dict) else {}
     # A yes/no question tempts this model into answering "Yes." and stopping,
@@ -1317,6 +1388,7 @@ def _sweep_apple(meta, entries, question, history, fallback, progress_cb):
         except local_llm.LocalLLMError as exc:
             log.info("sweep reduce retry failed: %s", exc)
 
+    answer["answer"] = _clean_answer(answer.get("answer"))
     # The reduce call never saw the transcript — it was handed prose. Anything
     # it offers as a citation is therefore invented, however plausible the
     # timestamp looks, so it is discarded, and the portions' own anchored

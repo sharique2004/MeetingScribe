@@ -15,17 +15,32 @@ final class Settings: ObservableObject {
     private let path = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".meetingscribe/config.json")
 
+    /// Claude if this Mac has it, Apple Intelligence otherwise.
+    ///
+    /// Both halves are load-bearing. Nothing has to be installed for the app
+    /// to summarise and answer questions — that is the point of the on-device
+    /// path, and it is what a fresh download gets. But an audit of both
+    /// engines against real transcripts is unambiguous that the on-device
+    /// model is the weaker writer on long meetings: it paraphrases loosely,
+    /// and it invents specifics (durations, amounts) that a reader would act
+    /// on. Where the better engine is already present, defaulting to it is
+    /// the honest choice; Settings switches either way in one click.
+    static var recommendedEngine: String {
+        let home = NSHomeDirectory()
+        let claude = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+                      "\(home)/.claude/local/claude", "\(home)/.local/bin/claude"]
+        return claude.contains { FileManager.default.isExecutableFile(atPath: $0) }
+            ? "claude" : "apple"
+    }
+
     private init() {
         let cfg = Self.read(path)
-        // Apple Intelligence is the default: on-device, fast, and it means a
-        // fresh install needs nothing installed to write summaries or answer
-        // questions. The engine's own default is Claude, so an absent key is
-        // written through rather than merely assumed.
         if let existing = cfg["summary_engine"] as? String {
             summaryEngine = existing
         } else {
-            summaryEngine = "apple"
-            write("summary_engine", "apple")
+            let picked = Self.recommendedEngine
+            summaryEngine = picked
+            write("summary_engine", picked)
         }
     }
 
@@ -74,9 +89,9 @@ struct SettingsView: View {
                     title: "Apple Intelligence",
                     detail: appleReady == false
                         ? (appleMessage ?? "Not available on this Mac")
-                        : "Built in, on-device, and fast — usually under a minute. Nothing to install, nothing leaves this Mac.",
+                        : "Built in, on-device and fast — usually under a minute, with nothing to install. Paraphrases more loosely than Claude on long meetings.",
                     available: appleReady ?? true,
-                    recommended: true,
+                    recommended: !claudeFound,
                     selected: settings.summaryEngine == "apple") {
                         settings.summaryEngine = "apple"
                     }
@@ -84,10 +99,10 @@ struct SettingsView: View {
                     id: "claude",
                     title: "Claude",
                     detail: claudeFound
-                        ? "Richer writing and reads the whole of a long meeting, but takes a minute or two and needs Claude Code installed."
+                        ? "The most accurate summaries and answers, especially on long meetings. Takes a minute or two."
                         : "Optional — install Claude Code to enable this.",
                     available: claudeFound,
-                    recommended: false,
+                    recommended: claudeFound,
                     selected: settings.summaryEngine == "claude") {
                         settings.summaryEngine = "claude"
                     }
