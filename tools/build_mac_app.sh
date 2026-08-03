@@ -15,8 +15,15 @@
 # bundle stays read-only.
 #
 # Compiles macapp/Sources with bare swiftc (Command Line Tools are enough),
-# assembles the bundle, draws the icon, ad-hoc signs it. Pass a destination
+# assembles the bundle, draws the icon, and signs it. Pass a destination
 # dir as arg 1 (default: install into /Applications).
+#
+# Signing: MS_SIGN_IDENTITY names a codesigning identity ("Developer ID
+# Application: …"). If unset, the first Developer ID Application cert in the
+# keychain is used automatically. If none exists, falls back to the old
+# ad-hoc signature (runs locally; downloads hit Gatekeeper's warning).
+# A real identity signs with hardened runtime + secure timestamps + the
+# entitlements in tools/entitlements/ — the notarization-ready shape.
 set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,6 +31,24 @@ APP_NAME="MeetingScribe"
 BUNDLE_ID="com.meetingscribe.app"
 VERSION="2.0"
 VENV_PY="$HOME/.meetingscribe/venv/bin/python"
+ENT="$PROJECT/tools/entitlements"
+
+SIGN_IDENTITY="${MS_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+    # awk reads ALL input (no early exit): an `exit` on first match can
+    # SIGPIPE security under pipefail and blank the whole substitution.
+    SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+        | awk -F'"' '/Developer ID Application/{if (!found) {id=$2; found=1}} END{if (found) print id}')"
+fi
+if [ -n "$SIGN_IDENTITY" ] && [ "$SIGN_IDENTITY" != "-" ]; then
+    ADHOC=0
+    echo "Signing identity: $SIGN_IDENTITY"
+else
+    ADHOC=1
+    SIGN_IDENTITY="-"
+    echo "Signing identity: ad-hoc (dev build; downloads are blocked by Gatekeeper"
+    echo "  until approved in System Settings > Privacy & Security > Open Anyway)"
+fi
 
 DEST_DIR="${1:-/Applications}"
 [ -w "$DEST_DIR" ] || DEST_DIR="$HOME/Applications"
@@ -147,9 +172,13 @@ else
     echo "(icon skipped — no committed icns and venv python/numpy unavailable)"
 fi
 
-# Ad-hoc signature: enough to run locally and to post notifications. A
-# downloaded copy is unsigned by a Developer ID, so Gatekeeper asks the user
-# to right-click → Open the first time (the download page explains this).
+# Signing. Two shapes:
+#   ad-hoc  — exactly the old behavior: runs locally; a downloaded copy is
+#             blocked by Gatekeeper until the user approves it in System
+#             Settings > Privacy & Security > Open Anyway (macOS 15+ removed
+#             the old right-click-Open bypass).
+#   Dev ID  — hardened runtime + secure timestamps + entitlements on every
+#             executable: the shape notarization requires.
 #
 # Sign every nested Mach-O first — the bundled runtime carries thousands of
 # .so extension modules and dylibs — then the bundle itself, so the resource
@@ -157,23 +186,84 @@ fi
 # reach code inside Resources anyway.)
 echo "Signing…"
 SIGNLOG="$BUILD_DIR/codesign.log"
-find "$DEST/Contents/Resources" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
-    | xargs -0 -n 64 codesign --force --sign - 2>>"$SIGNLOG" \
-    || { echo "codesign failed on a nested library:"; cat "$SIGNLOG"; exit 1; }
-# Extension-less executables (helper binaries, python3.11 itself): sign
-# anything whose magic says Mach-O.
-for dir in "$DEST/Contents/Resources/bin" "$DEST/Contents/Resources/python/bin"; do
-    [ -d "$dir" ] || continue
-    for f in "$dir"/*; do
-        [ -f "$f" ] && [ ! -L "$f" ] || continue
-        case "$(head -c 4 "$f" | xxd -p)" in
-            cffaedfe|cafebabe|feedfacf)
-                codesign --force --sign - "$f" 2>>"$SIGNLOG" \
-                    || { echo "codesign failed on $f:"; cat "$SIGNLOG"; exit 1; } ;;
-        esac
-    done
+if [ "$ADHOC" = 1 ]; then
+    TSFLAG=""
+else
+    TSFLAG="--timestamp"
+fi
+
+# sign_exe <file-or-bundle> [entitlements.plist] — one executable.
+# Standalone Mach-Os get an explicit stable identifier: codesign's default
+# (basename + content hash) would change every rebuild, and TCC's designated
+# requirement embeds the identifier — a drifting identifier would forfeit the
+# "System Audio grant survives updates" property Developer ID buys us.
+sign_exe() {
+    _f="$1"; _ent="${2:-}"
+    if [ "$ADHOC" = 1 ]; then
+        codesign --force --sign - "$_f" 2>>"$SIGNLOG" \
+            || { echo "codesign failed on $_f:"; tail -5 "$SIGNLOG"; exit 1; }
+        return
+    fi
+    set -- --force --sign "$SIGN_IDENTITY" --timestamp --options runtime
+    if [ ! -d "$_f" ]; then
+        set -- "$@" --identifier "com.meetingscribe.$(basename "$_f")"
+    fi
+    if [ -n "$_ent" ]; then
+        set -- "$@" --entitlements "$_ent"
+    fi
+    # one retry: with --timestamp each signature is a TSA network round trip
+    codesign "$@" "$_f" 2>>"$SIGNLOG" \
+        || { sleep 3; codesign "$@" "$_f" 2>>"$SIGNLOG"; } \
+        || { echo "codesign failed on $_f:"; tail -5 "$SIGNLOG"; exit 1; }
+}
+
+# Bulk-sign the nested libraries (no entitlements; libraries don't take the
+# hardened-runtime flag, they just need valid signatures + timestamps).
+# With a real identity every signature is a timestamp-server round trip, so
+# one transient TSA hiccup must not kill a long build: retry the whole pass
+# (codesign --force is idempotent) before giving up.
+_bulk_attempt=1
+while :; do
+    if find "$DEST/Contents/Resources" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
+        | xargs -0 -n 64 codesign --force --sign "$SIGN_IDENTITY" $TSFLAG 2>>"$SIGNLOG"; then
+        break
+    fi
+    if [ "$_bulk_attempt" -ge 3 ]; then
+        echo "codesign failed on a nested library (after 3 attempts):"
+        tail -5 "$SIGNLOG"; exit 1
+    fi
+    _bulk_attempt=$((_bulk_attempt + 1))
+    echo "  library pass failed (timestamp server?) — retrying ($_bulk_attempt/3)…"
+    sleep 5
 done
-codesign --force --sign - "$DEST"
+
+# Executables: EVERYTHING whose magic says Mach-O, wherever it lives. The
+# old two-directory scan missed wheel-vendored tools (torch ships
+# bin/protoc and torch_shm_manager inside site-packages) and Apple's notary
+# rejects the whole submission over a single unsigned executable. Restrict
+# the walk to files with an exec bit so we don't read magic bytes on ~50k
+# library sources.
+find "$DEST/Contents/Resources" -type f -perm -u+x \
+    ! -name "*.so" ! -name "*.dylib" ! -name "*.py" ! -name "*.sh" -print0 \
+    | while IFS= read -r -d '' f; do
+    [ -L "$f" ] && continue
+    case "$(head -c 4 "$f" | xxd -p)" in
+        cffaedfe|cafebabe|feedfacf)
+            case "$f" in
+                */Resources/python/bin/*)  sign_exe "$f" "$ENT/python.entitlements" ;;
+                */apple_syscap)            sign_exe "$f" "$ENT/helper-audio.entitlements" ;;
+                */calendar_events)         sign_exe "$f" "$ENT/helper-calendar.entitlements" ;;
+                *)                         sign_exe "$f" ;;
+            esac ;;
+    esac
+done
+sign_exe "$DEST" "$ENT/app.entitlements"
+if [ "$ADHOC" = 0 ]; then
+    echo "  signed with hardened runtime + timestamps (notarization-ready)"
+    echo "  note: apple_syscap's signing identity changed from ad-hoc to Developer ID,"
+    echo "  so the FIRST recording after this update re-prompts for System Audio;"
+    echo "  the grant then survives every future update (stable code identity)."
+fi
 
 touch "$DEST"  # nudge LaunchServices to refresh the icon
 echo "Built: $DEST"

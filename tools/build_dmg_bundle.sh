@@ -91,6 +91,50 @@ echo "Verifying the signature…"
 codesign --verify --deep --strict "$APP"
 echo "  codesign: OK"
 
+# --- 3b. notarize the app (when release-signed and credentials exist) --------
+# Order matters: staple the app FIRST, then package, so the DMG and the
+# tarball both carry the ticket and installs verify fully offline.
+# NOTE: Authority= lines only appear at codesign verbosity 2 (-dvv); -dv
+# prints none and would silently skip notarization on every release. The
+# check is deliberately pipeline-free: under pipefail, `codesign | grep -q`
+# can read as false when grep's early exit SIGPIPEs codesign.
+NOTARIZE=0
+RELEASE_SIGNED=0
+SIG_INFO="$(codesign -dvv "$APP" 2>&1)" || true
+case "$SIG_INFO" in
+*"Authority=Developer ID Application"*) IS_RELEASE_SIG=1 ;;
+*) IS_RELEASE_SIG=0 ;;
+esac
+if [ "$IS_RELEASE_SIG" = 1 ]; then
+    RELEASE_SIGNED=1
+    PROFILE="${MS_NOTARY_PROFILE:-meetingscribe-notary}"
+    HIST_ERR="$(xcrun notarytool history --keychain-profile "$PROFILE" 2>&1 >/dev/null)" \
+        && NOTARIZE=1 || true
+    if [ "$NOTARIZE" = 0 ]; then
+        if printf '%s' "$HIST_ERR" | grep -q "No Keychain password item found"; then
+            echo "WARNING: app is Developer ID signed but the notary keychain profile"
+            echo "         '$PROFILE' is missing. Run:"
+            echo "           xcrun notarytool store-credentials meetingscribe-notary \\"
+            echo "             --apple-id khatrisharique7@gmail.com --team-id 5VJ8KXLF45"
+            [ "${MS_ALLOW_UNNOTARIZED:-0}" = 1 ] \
+                || { echo "Refusing to build unnotarized release artifacts at the release"; \
+                     echo "paths (set MS_ALLOW_UNNOTARIZED=1 to override)."; exit 1; }
+        else
+            echo "ERROR: cannot reach the Apple notary service to verify credentials:"
+            printf '%s\n' "$HIST_ERR" | sed 's/^/  /'
+            echo "Notarization needs the network anyway — fix this and re-run"
+            echo "(or set MS_ALLOW_UNNOTARIZED=1 to build unnotarized artifacts)."
+            [ "${MS_ALLOW_UNNOTARIZED:-0}" = 1 ] || exit 1
+        fi
+    fi
+else
+    echo "NOTE: ad-hoc build — skipping notarization (downloads must be approved"
+    echo "      in System Settings > Privacy & Security > Open Anyway)."
+fi
+if [ "$NOTARIZE" = 1 ]; then
+    bash "$PROJECT/tools/notarize.sh" app "$APP"
+fi
+
 # --- 4. package: DMG + tarball -----------------------------------------------
 DMG="$PROJECT/dist/$APP_NAME.dmg"
 TARBALL="$PROJECT/dist/$APP_NAME.app.tar.gz"
@@ -107,6 +151,30 @@ echo "Compressing $TARBALL…"
 rm -f "$TARBALL"
 tar -czf "$TARBALL" -C "$STAGE" "$APP_NAME.app"
 
+# --- 5. sign, notarize + staple the DMG itself --------------------------------
+# The image itself must be Developer ID signed: spctl assesses the DMG's
+# primary signature, and an unsigned image is "no usable signature" even
+# after a successful notarization.
+if [ "$RELEASE_SIGNED" = 1 ]; then
+    DMG_IDENTITY="${MS_SIGN_IDENTITY:-}"
+    if [ -z "$DMG_IDENTITY" ] || [ "$DMG_IDENTITY" = "-" ]; then
+        DMG_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
+            | awk -F'"' '/Developer ID Application/{if (!found) {id=$2; found=1}} END{if (found) print id}')"
+    fi
+    if [ -n "$DMG_IDENTITY" ]; then
+        echo "Signing the disk image…"
+        codesign --force --sign "$DMG_IDENTITY" --timestamp "$DMG"
+    fi
+fi
+if [ "$NOTARIZE" = 1 ]; then
+    bash "$PROJECT/tools/notarize.sh" dmg "$DMG"
+fi
+
 echo
 echo "Built:"
 du -sh "$APP" "$DMG" "$TARBALL"
+if [ "$NOTARIZE" = 1 ]; then
+    echo "Release-ready: Developer ID signed, notarized, stapled (app + DMG)."
+else
+    echo "Local build only: NOT notarized — do not ship this as a release."
+fi

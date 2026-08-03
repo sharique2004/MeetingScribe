@@ -55,15 +55,22 @@ mv "$TMP/$APP" "$DEST_DIR/$APP"
 
 say "installed to $DEST_DIR"
 
-# The app is ad-hoc signed (no Apple Developer ID); clear the quarantine flag
-# so Gatekeeper doesn't block the first launch.
-xattr -dr com.apple.quarantine "$DEST_DIR/$APP" 2>/dev/null || true
-say "cleared quarantine, no Gatekeeper prompts"
+# Releases are Developer ID signed, notarized and stapled, so Gatekeeper
+# should accept the app on its own. Verify that instead of blindly stripping
+# quarantine — a real Gatekeeper pass on installs is what catches a broken
+# (unnotarized) release. Fall back to clearing quarantine only if assessment
+# fails (e.g. an older ad-hoc build).
+if spctl --assess --type exec "$DEST_DIR/$APP" 2>/dev/null; then
+    say "Gatekeeper verified the app (Developer ID + notarized)"
+else
+    say "WARNING: Gatekeeper did not accept this build; clearing quarantine as a fallback"
+    xattr -dr com.apple.quarantine "$DEST_DIR/$APP" 2>/dev/null || true
+fi
 
 say "opening MeetingScribe"
 open "$DEST_DIR/$APP" || true
 
 say ""
 say "Done! Your recordings and settings live in ~/.meetingscribe."
-say "Optional: to capture system audio (the other side of a call), install the"
-say "free BlackHole audio driver: https://existential.audio/blackhole/"
+say "System audio (the other side of a call) is captured driverlessly; macOS"
+say "will ask once for System Audio Recording permission on your first recording."
