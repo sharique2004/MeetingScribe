@@ -228,13 +228,20 @@ while :; do
         | xargs -0 -n 64 codesign --force --sign "$SIGN_IDENTITY" $TSFLAG 2>>"$SIGNLOG"; then
         break
     fi
-    if [ "$_bulk_attempt" -ge 3 ]; then
-        echo "codesign failed on a nested library (after 3 attempts):"
+    if [ "$_bulk_attempt" -ge 4 ]; then
+        echo "codesign failed on a nested library (after 4 attempts):"
         tail -5 "$SIGNLOG"; exit 1
     fi
+    # Apple's TSA throttles/blips under a burst of hundreds of timestamp
+    # requests; short sleeps burn every retry inside the same outage window.
+    case "$_bulk_attempt" in
+        1) _backoff=20 ;;
+        2) _backoff=60 ;;
+        *) _backoff=150 ;;
+    esac
     _bulk_attempt=$((_bulk_attempt + 1))
-    echo "  library pass failed (timestamp server?) — retrying ($_bulk_attempt/3)…"
-    sleep 5
+    echo "  library pass failed (timestamp server?) — waiting ${_backoff}s, then retry ($_bulk_attempt/4)…"
+    sleep "$_backoff"
 done
 
 # Executables: EVERYTHING whose magic says Mach-O, wherever it lives. The
