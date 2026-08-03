@@ -5,8 +5,10 @@
 
 import React from "react";
 
-const DMG_URL =
-  "https://github.com/sharique2004/MeetingScribe/releases/latest/download/MeetingScribe.dmg";
+// Canonical download link: our own domain. It currently redirects to the
+// GitHub release asset (mobile/vercel.json); when the file moves to different
+// hosting, only that redirect changes and every published link keeps working.
+const DMG_URL = "https://meetingscribe.shariquekhatri.com/MeetingScribe.dmg";
 
 const INSTALL_CMD =
   "curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh";

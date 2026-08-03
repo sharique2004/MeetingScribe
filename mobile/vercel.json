@@ -1,3 +1,15 @@
 {
+  "redirects": [
+    {
+      "source": "/MeetingScribe.dmg",
+      "destination": "https://github.com/sharique2004/MeetingScribe/releases/latest/download/MeetingScribe.dmg",
+      "permanent": false
+    },
+    {
+      "source": "/MeetingScribe.app.tar.gz",
+      "destination": "https://github.com/sharique2004/MeetingScribe/releases/latest/download/MeetingScribe.app.tar.gz",
+      "permanent": false
+    }
+  ],
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
 }

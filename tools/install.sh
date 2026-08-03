@@ -6,7 +6,9 @@
 # install), puts it in /Applications, and opens it. Apple Silicon + macOS 26+.
 set -euo pipefail
 
-RELEASE_URL="https://github.com/sharique2004/MeetingScribe/releases/latest/download/MeetingScribe.app.tar.gz"
+# Canonical URL on our own domain; it redirects to wherever the artifact is
+# hosted today (mobile/vercel.json), so shipped installers survive re-hosting.
+RELEASE_URL="https://meetingscribe.shariquekhatri.com/MeetingScribe.app.tar.gz"
 APP="MeetingScribe.app"
 DEST_DIR="/Applications"
 
