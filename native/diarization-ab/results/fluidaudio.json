@@ -1,0 +1,237 @@
+{
+ "engine": "fluidaudio",
+ "binary": "/Users/shariquekhatri/MeetingScribe/native/diarization-ab/FluidDiarize/.build/release/fluid-diarize",
+ "forced_num_speakers": null,
+ "gen3_reference": {
+  "date": "2026-07-25b",
+  "rule": "diarization._fold_weak_clusters: FOLD_KEEP_ABOVE_S ceiling, then the D2 scatter+size gate (FOLD_MAX_FRAGMENTATION / FOLD_MAX_DURATION_RATIO)"
+ },
+ "rows": {
+  "Call A": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 44,
+   "audio_seconds": 1488.92,
+   "elapsed_seconds": 2.4,
+   "track": "system"
+  },
+  "Call B": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 312,
+   "audio_seconds": 2953.49,
+   "elapsed_seconds": 8.7,
+   "track": "system"
+  },
+  "Call C": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 124,
+   "audio_seconds": 1049.79,
+   "elapsed_seconds": 2.68,
+   "track": "system"
+  },
+  "Call D": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 216,
+   "audio_seconds": 2876.18,
+   "elapsed_seconds": 5.31,
+   "track": "system"
+  },
+  "Call E": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 230,
+   "audio_seconds": 2047.34,
+   "elapsed_seconds": 9.47,
+   "track": "system"
+  },
+  "Call F": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 279,
+   "audio_seconds": 1908.33,
+   "elapsed_seconds": 5.51,
+   "track": "system"
+  },
+  "Call G": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 135,
+   "audio_seconds": 1207.15,
+   "elapsed_seconds": 5.35,
+   "track": "system"
+  },
+  "Call H": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 374,
+   "audio_seconds": 2716.1,
+   "elapsed_seconds": 12.02,
+   "track": "system"
+  },
+  "Call J": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 8,
+   "audio_seconds": 23.4,
+   "elapsed_seconds": 0.35,
+   "track": "system"
+  },
+  "Call K": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 186,
+   "audio_seconds": 1620.33,
+   "elapsed_seconds": 9.42,
+   "track": "system"
+  },
+  "Call L": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 43,
+   "audio_seconds": 624.15,
+   "elapsed_seconds": 3.01,
+   "track": "system"
+  },
+  "Call N": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 3,
+   "audio_seconds": 49.69,
+   "elapsed_seconds": 0.45,
+   "track": "system"
+  },
+  "Demo": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 2,
+   "gen3": 2,
+   "segments": 12,
+   "audio_seconds": 49.43,
+   "elapsed_seconds": 0.52,
+   "track": "system"
+  },
+  "E2E": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 2,
+   "audio_seconds": 22.46,
+   "elapsed_seconds": 0.29,
+   "track": "system"
+  },
+  "Room P": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 2,
+   "gen3": 2,
+   "segments": 54,
+   "audio_seconds": 357.14,
+   "elapsed_seconds": 1.62,
+   "track": "mic"
+  },
+  "Room Q": {
+   "count": 3,
+   "reported_count": 3,
+   "truth": 2,
+   "gen3": 2,
+   "segments": 333,
+   "audio_seconds": 1613.38,
+   "elapsed_seconds": 6.9,
+   "track": "mic"
+  },
+  "Room R": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 166,
+   "audio_seconds": 1304.32,
+   "elapsed_seconds": 4.17,
+   "track": "mic"
+  },
+  "Room S": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 91,
+   "audio_seconds": 646.66,
+   "elapsed_seconds": 2.19,
+   "track": "mic"
+  },
+  "Room T": {
+   "count": 2,
+   "reported_count": 2,
+   "truth": 2,
+   "gen3": 2,
+   "segments": 16,
+   "audio_seconds": 104.04,
+   "elapsed_seconds": 0.53,
+   "track": "mic"
+  },
+  "Room U": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 164,
+   "audio_seconds": 1170.3,
+   "elapsed_seconds": 4.0,
+   "track": "mic"
+  },
+  "Room V": {
+   "count": 1,
+   "reported_count": 1,
+   "truth": 1,
+   "gen3": 1,
+   "segments": 124,
+   "audio_seconds": 1038.02,
+   "elapsed_seconds": 3.42,
+   "track": "mic"
+  },
+  "Room W": {
+   "count": 21,
+   "reported_count": 21,
+   "truth": null,
+   "gen3": 7,
+   "segments": 887,
+   "audio_seconds": 6651.84,
+   "elapsed_seconds": 22.01,
+   "track": "mic"
+  }
+ },
+ "summary": {
+  "ran": 22,
+  "scorable": 21,
+  "hits": 11,
+  "gen3_hits_same_subset": 21
+ }
+}

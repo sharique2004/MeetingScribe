@@ -1,0 +1,11 @@
+# Swift build products and SPM state
+*/.build/
+*/Package.resolved
+.swiftpm/
+
+# Downloaded CoreML models (large; re-downloaded on demand)
+models/
+
+# Per-fixture segment dumps and temp files (pseudonym-keyed but bulky)
+results/segments/
+results/.tmp-*.json
