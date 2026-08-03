@@ -27,6 +27,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import config  # noqa: E402
 import voice_profiles as vp  # noqa: E402
 
 RNG = np.random.default_rng(7)
@@ -72,7 +73,10 @@ def _fresh_store():
     vp.PROFILES_PATH = Path(tempfile.mkdtemp()) / "voice_profiles.json"
 
 
-CFG = {"voice_profiles": True, "voice_profile_threshold": 0.4}
+# The shipped default, not a literal: the suite should be testing what users
+# actually run, and recognition_threshold_is_the_measured_one pins the value.
+CFG = {"voice_profiles": True,
+       "voice_profile_threshold": config.DEFAULTS["voice_profile_threshold"]}
 CHECKS = []
 
 
@@ -335,6 +339,47 @@ def displayed_duration_is_wall_clock_not_window_time():
     cs, ws, ss = vp.centroid_for_spans(short_wins, short_embs, [(0, 20)])
     assert ws == 14.0 and ss == 8.0, (ws, ss)
     assert vp.enroll_sample("Rushed", "m2", "s1", cs, ws, ss) is None
+
+
+@check
+def recognition_threshold_is_the_measured_one():
+    """The recognition cutoff is measured, not picked (see RECOGNIZE_MAX_DIST).
+
+    On this machine's corpus the empty band is [0.408, 0.505): every value in
+    it recognises all 14 held-out true matches and refuses all 576 stranger
+    comparisons. 0.45 sits inside it; the 0.4 it replaced sat 0.008 BELOW the
+    band, which cost a real person their name on their second meeting: the
+    hardest recognition there is, because a profile holding one sample is at
+    its widest. This pins the value, both copies of it, and the two decisions
+    that changed shape when it moved.
+    """
+    assert vp.RECOGNIZE_MAX_DIST == 0.45, vp.RECOGNIZE_MAX_DIST
+    assert config.DEFAULTS["voice_profile_threshold"] == vp.RECOGNIZE_MAX_DIST, (
+        "config.py's default and the measured constant have drifted apart")
+    _fresh_store()
+    base = _voice()
+    assert vp.enroll_sample("Priya", "m1", "s1", *_sample(base))
+    segs = [{"speaker": "s1", "track": "system", "start": 0, "end": 35}]
+
+    def recognized(distance, cfg):
+        """The name a cluster `distance` from Priya's profile comes back with."""
+        wins, embs = _windows_for(_voice_at(base, distance), 30, noise=0.02)
+        speakers = {"s1": "Speaker 1"}
+        return vp.apply_recognition(
+            {"system": {"windows": wins, "embeddings": embs}},
+            segs, speakers, cfg).get("s1")
+
+    # 0.42 is inside the band: the same person, back for a second meeting,
+    # against a profile still holding one sample. This is the recognition the
+    # old value was losing, and the ONLY behaviour the move changes.
+    assert recognized(0.42, CFG) == "Priya"
+    assert recognized(0.42, dict(CFG, voice_profile_threshold=0.4)) is None
+    # 0.52 is past the far edge, where the corpus's nearest stranger (0.505)
+    # sits. Still refused, and the margin is what stops a confident lie.
+    assert recognized(0.52, CFG) is None
+    # A config that predates the setting must fall back to the measured value,
+    # not to a literal that can go stale in a second place.
+    assert recognized(0.42, {"voice_profiles": True}) == "Priya"
 
 
 @check

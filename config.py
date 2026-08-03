@@ -55,8 +55,10 @@ DEFAULTS = {
     # name the user typed, only the "Speaker N" defaults.
     "voice_profiles": True,
     # Max cosine distance between a meeting's voice and a saved profile to
-    # accept the match. Lower = stricter (fewer, surer auto-names).
-    "voice_profile_threshold": 0.4,
+    # accept the match. Lower = stricter (fewer, surer auto-names). Measured
+    # against this machine's corpus, not chosen: voice_profiles.RECOGNIZE_MAX_
+    # DIST carries the measurement and must hold the same number.
+    "voice_profile_threshold": 0.45,
     # Extra words/names the speech recognizer should be biased toward, e.g.
     # ["Kubernetes", "Priya", "InsForge"]. Calendar attendee names are added
     # automatically per meeting.

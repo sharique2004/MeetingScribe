@@ -96,6 +96,16 @@ MAX_SAMPLES_PER_PROFILE = 10
 # When the best and second-best profile are this close in cosine distance,
 # the match is ambiguous and no name is assigned. Two profiles that both
 # nearly match are exactly the situation where guessing mislabels someone.
+#
+# UNMEASURED, and the corpus cannot measure it: swept alongside RECOGNIZE_MAX_
+# DIST below, this rule never once fired. Among the clusters that matched a
+# profile at all, the tightest gap between the winner and a DIFFERENTLY-named
+# runner-up was 0.233 at threshold 0.40 and 0.101 at 0.45, two to five times
+# the margin. Gaps under 0.05 do occur (down to 0.001) but only between two
+# profiles that are both 0.58 or further away, i.e. only where the winner was
+# going to be rejected anyway. So this is insurance against a situation this
+# machine has never been in, and 0.05 is a guess that has never been tested.
+# It stays because the cost of holding it is one skipped name.
 AMBIGUITY_MARGIN = 0.05
 
 # Enrolling a sample under a name that already exists merges into that profile
@@ -122,10 +132,13 @@ AMBIGUITY_MARGIN = 0.05
 # (39/47 same-person merges, 0/384 stranger merges); the first stranger merge
 # appears at 0.55 and it is 7/384 by 0.60.
 #
-# In the real operating condition — a new sample against a profile's blended
-# centroid rather than sample against sample — the margin is wider still: a
-# held-out sample of the same person sits at most 0.342 from a 1-sample
-# profile and 0.264 from a 9-sample one, while the nearest stranger sits 0.513.
+# In the real operating condition (a new sample against a profile's blended
+# centroid rather than sample against sample) the margin moves but does not
+# widen: see RECOGNIZE_MAX_DIST below, which swept it properly. (An earlier
+# draft of this block claimed 0.342 against a 1-sample profile and a nearest
+# stranger at 0.513. Both were informal and both are wrong: 0.408 and 0.505.
+# A 1-sample profile IS a sample, so its worst case cannot be better than the
+# worst sample pair, and the corrected figure is exactly that pair.)
 #
 # 0.45 is chosen from inside that band, deliberately just below its midpoint
 # (0.4595): 0.042 above the worst true-same pair, 0.061 below the closest true-
@@ -138,13 +151,77 @@ AMBIGUITY_MARGIN = 0.05
 # list, and costs nothing in recognition because match() no longer treats
 # same-named profiles as rivals.
 #
-# Deliberately LOOSER than the 0.4 recognition threshold, and that is not a
-# contradiction: recognition starts from silence with only the embedding to go
-# on, while enrollment additionally has the user typing the same name, which is
-# real corroborating evidence for sameness. The data agrees — 0.4 sits ON the
-# corpus's worst true-same pair (0.408) with no margin at all, and would split
-# that person in two.
+# Enrollment is ENTITLED to be looser than recognition, because it has the
+# user typing the same name, which is real corroborating evidence for sameness,
+# where recognition has only the embedding. It is not looser in fact: measured
+# separately, recognition landed on the same 0.45 (RECOGNIZE_MAX_DIST), because
+# both bands open at the same 0.408 and the value that clears it with margin is
+# the same value in both places. That entitlement is the
+# reason the two are allowed to move apart later; it is not a reason to have
+# split them tonight. What the data does rule out for BOTH is 0.4, which sits
+# ON the corpus's worst true-same pair (0.408) with no margin at all: here it
+# would split one person in two, and in recognition it lost that person their
+# name on their second meeting.
 MERGE_MAX_DIST = 0.45
+
+# The RECOGNITION cutoff: how close a fresh cluster's centroid must sit to a
+# saved profile's WORKING centroid before that profile's name is applied to it.
+# The user can move it (config's voice_profile_threshold); this is the shipped
+# default and the number the measurement below picked. config.py holds a second
+# copy for the settings file, and tools/test_voice_profiles.py fails if the two
+# ever drift apart.
+#
+# MEASURED on the same corpus as MERGE_MAX_DIST: 32 cached meetings, 43
+# clusters, 31 of them with an identity read off the transcripts (the user in
+# 10, D'nika Voges in 2, one hiring manager across a two-part call in 2, and 17
+# people seen exactly once). Leave-one-MEETING-out throughout and through the
+# real enroll/load/match path, so no profile is ever scored against a sample it
+# contains:
+#   TRUE MATCHES (14): a held-out cluster against a profile built from that
+#     person's OTHER meetings. 13 land at or below 0.278. The 14th is 0.683,
+#     and it is the 77-second recording whose mic caught more than one person
+#     in the room; MERGE_MAX_DIST already refuses to put that in anyone's
+#     profile, and recognition refusing to answer for it is the same right
+#     answer, not a miss.
+#   FALSE MATCHES (576): every cluster against every profile carrying a
+#     DIFFERENT person's name. The closest is 0.511, 1% are under 0.593, and
+#     half sit beyond 0.886.
+# Neither list holds the number that actually sets the floor, because both are
+# dominated by profiles that have filled up. A profile starts with ONE sample,
+# and the worst same-person distance to a 1-sample profile is 0.408 (76 such
+# pairs). Profiles tighten as they fill (worst same-person distance 0.408 at
+# 1 sample, 0.380 at 2, 0.348 at 4, 0.278 at 8), so a person's SECOND meeting
+# is the hardest recognition the module will ever be asked for, and it is the
+# one the threshold has to clear. The other edge holds across every size: the
+# closest a profile of ANY size gets to a cluster that is not its person is
+# 0.505.
+# So the empty band is [0.408, 0.505): every value in it recognises all 14
+# clean true matches INCLUDING the worst second-meeting one, and rejects all
+# 576 stranger comparisons. Swept end to end through match(), 0.30 / 0.35 /
+# 0.40 / 0.45 / 0.50 all give the same 13 recognitions and 0 wrong names; the
+# first clearly wrong name appears at 0.55, where a hackathon room cluster is
+# handed a synthesized demo voice's name from 0.510 away.
+#
+# 0.45 sits inside that band and just below its midpoint (0.4565): 0.042 above
+# the worst second-meeting true match, 0.055 below the closest stranger any
+# profile has to anyone. The 0.4 it replaces was NOT in the band: it sat 0.008
+# under that worst second-meeting match and lost it, and that is the single
+# measured error this value fixes. Everything else about the corpus is
+# unchanged by the move.
+#
+# Biased below the middle deliberately, because neither the cost nor the
+# exposure is symmetric. A wrong name is a confident lie inside a transcript
+# the user trusts; a missing name costs one rename, and that rename enrolls a
+# second sample, after which every measured true match of that person lands at
+# or below 0.380 and this threshold stops being the binding constraint. And
+# recognition draws from the stranger distribution far more often than
+# enrollment does: enrollment compares only against profiles the user just
+# named, while every meeting scores every cluster against every profile, so
+# stranger comparisons grow with (profiles x clusters per meeting). The 576
+# measured here come from 20 people; a full profile list will draw that many
+# in a week, and the left tail of a distribution is the part a small sample
+# under-states.
+RECOGNIZE_MAX_DIST = 0.45
 
 # Names the app itself invents. These are never enrollable (renaming a
 # speaker to "Speaker 2" is the user *undoing* a name) and always
@@ -498,7 +575,7 @@ def apply_recognition(track_state, segments, speakers, cfg):
         centroids = {k: v for k, v in centroids.items() if k in replaceable}
         if not centroids:
             return {}
-        threshold = float(cfg.get("voice_profile_threshold", 0.4))
+        threshold = float(cfg.get("voice_profile_threshold", RECOGNIZE_MAX_DIST))
         names = match(centroids, profiles, threshold)
         # Never introduce a duplicate display name: if "Jess" is already on
         # the map (user-typed on another cluster), recognition backs off.
