@@ -109,6 +109,11 @@ struct LiveSnapshot: Decodable {
     let seq: Int
 }
 
+struct SummaryJob: Decodable {
+    let state: String?      // "processing" | "done" | "error"
+    let message: String?    // live progress from the writer
+}
+
 struct Citation: Decodable, Hashable {
     let t: Double?
     let quote: String?
@@ -160,6 +165,30 @@ enum API {
 
     static func rename(_ id: String, title: String) async -> Bool {
         await post("api/meetings/\(id)/title", body: ["title": title])
+    }
+
+    /// Kick off (re-)summarization. Returns (ok, engineMessage) — the engine
+    /// explains refusals (no transcript yet, no summarizer available, one
+    /// already running).
+    static func summarize(_ id: String) async -> (Bool, String?) {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/meetings/\(id)/summarize"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        req.timeoutInterval = 15
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else {
+            return (false, "The engine didn't answer.")
+        }
+        if (200..<300).contains(code) { return (true, nil) }
+        let err = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
+        return (false, err ?? "Summarize failed (\(code)).")
+    }
+
+    /// The live summary job for one meeting, if any.
+    static func summaryJob(_ id: String) async -> SummaryJob? {
+        struct EngineStatus: Decodable { let summary_jobs: [String: SummaryJob]? }
+        return (try? await get("api/status", as: EngineStatus.self))?.summary_jobs?[id]
     }
 
     /// Returns (ok, engineMessage). The engine refuses while a meeting is

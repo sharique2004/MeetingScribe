@@ -10,8 +10,13 @@ final class MeetingModel: ObservableObject {
     @Published var notes: [MeetingNote] = []
     @Published var waveform: WaveformData?
     @Published var error: String?
+    @Published var summarizing = false
+    @Published var summaryProgress: String?
+    @Published var summaryError: String?
+    private var meetingID: String?
 
     func load(_ id: String) async {
+        meetingID = id
         do {
             detail = try await API.meeting(id)
             error = nil
@@ -25,6 +30,47 @@ final class MeetingModel: ObservableObject {
             notes = (try? await API.notes(id)) ?? []
         }
         waveform = try? await API.waveform(id)
+        // A summary may already be writing (auto-run after transcription, or
+        // kicked off elsewhere) — pick the job up so progress is visible.
+        if let job = await API.summaryJob(id), job.state == "processing" {
+            summarizing = true
+            summaryProgress = job.message
+            watchSummaryJob(id)
+        }
+    }
+
+    func summarize() {
+        guard let id = meetingID, !summarizing else { return }
+        summaryError = nil
+        Task {
+            let (ok, err) = await API.summarize(id)
+            if ok {
+                summarizing = true
+                summaryProgress = "Summarizing…"
+                watchSummaryJob(id)
+            } else {
+                summaryError = err
+            }
+        }
+    }
+
+    private func watchSummaryJob(_ id: String) {
+        Task {
+            while summarizing, meetingID == id {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let job = await API.summaryJob(id) else { continue }
+                summaryProgress = job.message
+                if job.state == "done" {
+                    detail = try? await API.meeting(id)
+                    summarizing = false
+                    summaryProgress = nil
+                } else if job.state == "error" {
+                    summarizing = false
+                    summaryProgress = nil
+                    summaryError = job.message ?? "The summary failed."
+                }
+            }
+        }
     }
 }
 
@@ -40,7 +86,7 @@ struct MeetingScreen: View {
                 ZStack {
                     if mode == .document {
                         MeetingPage(detail: detail, notes: model.notes, player: player,
-                                    mode: $mode) { seekTo in
+                                    model: model, mode: $mode) { seekTo in
                             withAnimation(Motion.enter) { mode = .transcript }
                             if let t = seekTo {
                                 player.prepare(meetingID: detail.id)

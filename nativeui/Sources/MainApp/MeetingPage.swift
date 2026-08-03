@@ -9,6 +9,7 @@ struct MeetingPage: View {
     let detail: MeetingDetail
     let notes: [MeetingNote]
     @ObservedObject var player: Playback
+    @ObservedObject var model: MeetingModel
     @Binding var mode: PageMode
     var onOpenTranscript: (Double?) -> Void
 
@@ -219,17 +220,48 @@ struct MeetingPage: View {
     }
 
     private var emptyBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(detail.turns?.isEmpty == false ? "No summary yet." : "Still audio-only.")
-                .font(MSFont.body)
-                .foregroundStyle(MS.ink2)
-            Text(detail.turns?.isEmpty == false
-                 ? "Recaps are written after a meeting is summarised."
-                 : "Transcription usually takes about a third of the meeting's length.")
-                .font(MSFont.meta)
-                .foregroundStyle(MS.ink3)
+        VStack(alignment: .leading, spacing: 12) {
+            if model.summarizing {
+                summaryProgressRow
+            } else if detail.turns?.isEmpty == false {
+                Text("No summary yet.")
+                    .font(MSFont.body)
+                    .foregroundStyle(MS.ink2)
+                Button {
+                    model.summarize()
+                } label: {
+                    Label("Write the summary", systemImage: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 7)
+                        .background(MS.playheadFill, in: .capsule)
+                }
+                .buttonStyle(PressStyle())
+                Text("Takes a minute or two — the whole transcript is read and distilled on this Mac.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            } else {
+                Text("Still audio-only.")
+                    .font(MSFont.body)
+                    .foregroundStyle(MS.ink2)
+                Text("Transcription usually takes about a third of the meeting's length.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            }
         }
         .padding(.bottom, 28)
+    }
+
+    private var summaryProgressRow: some View {
+        HStack(spacing: 9) {
+            ProgressView().controlSize(.small)
+            Text(model.summaryProgress ?? "Writing the summary…")
+                .font(MSFont.body)
+                .foregroundStyle(MS.ink2)
+                .generationShimmer(true)
+                .contentTransition(.opacity)
+        }
     }
 
     // MARK: - Footer
@@ -248,10 +280,38 @@ struct MeetingPage: View {
 
             CopyTranscriptButton(detail: detail)
 
+            if detail.summary != nil {
+                if model.summarizing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text(model.summaryProgress ?? "Re-analysing…")
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
+                    }
+                } else {
+                    Button {
+                        model.summarize()
+                    } label: {
+                        Label("Re-analyse", systemImage: "arrow.clockwise")
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink2)
+                    }
+                    .buttonStyle(PressStyle())
+                    .help("Rewrite the summary from the transcript")
+                }
+            }
+
             Text(footerStats)
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
             Spacer()
+        }
+        .alert("Couldn't summarise",
+               isPresented: Binding(get: { model.summaryError != nil },
+                                    set: { if !$0 { model.summaryError = nil } })) {
+            Button("OK") { model.summaryError = nil }
+        } message: {
+            Text(model.summaryError ?? "")
         }
     }
 
