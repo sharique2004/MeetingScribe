@@ -77,21 +77,40 @@ final class Library: ObservableObject {
         watchWorkInFlight()
     }
 
+    /// Recording just stopped, so a meeting is on its way that the engine has
+    /// probably not written yet.
+    ///
+    /// onRecordingStopped fires the instant Stop is pressed, and refreshing
+    /// then returns a list that does NOT contain the new meeting: the folder
+    /// and meeting.json are written a moment later. Nothing in that list looks
+    /// unfinished, so watching for in-flight work alone never starts, and the
+    /// meeting simply never appears. Watch on the EVENT, not on the evidence.
+    func expectNewMeeting() {
+        watchTask?.cancel()
+        watchTask = nil
+        watchWorkInFlight(force: true)
+    }
+
     /// Keep the list honest while the engine is still working on something.
     ///
     /// The list is otherwise only fetched at launch, when the engine comes up,
-    /// and the moment recording STOPS, which is before transcription,
-    /// diarization and summarizing have run. A row caught at that instant says
+    /// and from onRecordingStopped, which is before transcription, diarization
+    /// and summarizing have run. A row caught at that instant says
     /// "Processing" and, with nothing to refresh it, said so until the app was
-    /// restarted. Poll only while a row is actually unfinished, so an idle
-    /// library makes no requests at all.
-    private func watchWorkInFlight() {
+    /// restarted. Poll only while there is a reason to, so an idle library
+    /// makes no requests at all.
+    private func watchWorkInFlight(force: Bool = false) {
         let working = meetings.contains { ($0.status ?? "done") != "done" }
-        guard working else { watchTask?.cancel(); watchTask = nil; return }
+        guard working || force else { watchTask?.cancel(); watchTask = nil; return }
         guard watchTask == nil else { return }
+        let known = Set(meetings.map(\.id))
         watchTask = Task { [weak self] in
             defer { self?.watchTask = nil }
             var pending = Set(meetings.filter { ($0.status ?? "done") != "done" }.map(\.id))
+            // When we are waiting for a meeting that does not exist yet, give
+            // the engine a bounded window to produce it rather than polling on
+            // forever if a recording produced nothing at all.
+            var ticksWaitingForArrival = force ? 30 : 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled, let self else { return }
@@ -106,7 +125,14 @@ final class Library: ObservableObject {
                     self.fetchBrief(for: id)
                 }
                 pending = stillWorking
-                if stillWorking.isEmpty { return }
+                if !stillWorking.isEmpty { ticksWaitingForArrival = 0; continue }
+                // Nothing is in flight. Keep waiting only while a meeting we
+                // have not seen before is still expected to turn up.
+                if ticksWaitingForArrival > 0, Set(fresh.map(\.id)).subtracting(known).isEmpty {
+                    ticksWaitingForArrival -= 1
+                    continue
+                }
+                return
             }
         }
     }
@@ -197,7 +223,12 @@ struct ContentView: View {
         .task {
             hud.attach(center: center)
             center.onRecordingStopped = { [weak library] in
-                Task { await library?.refresh() }
+                Task {
+                    await library?.refresh()
+                    // The meeting is not on disk yet, so that refresh cannot
+                    // have seen it. Keep looking until it turns up and lands.
+                    library?.expectNewMeeting()
+                }
             }
             EngineManager.shared.isRecording = { [weak center] in
                 center?.phase == .recording
