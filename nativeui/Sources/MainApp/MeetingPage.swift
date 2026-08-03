@@ -63,6 +63,18 @@ struct MeetingPage: View {
                         .padding(.bottom, 28)
                 }
 
+                if let email = detail.summary?.follow_up_email, email.isUseful {
+                    FollowUpEmailCard(email: email)
+                        .padding(.bottom, 28)
+                }
+
+                if let omitted = detail.summary?.notes_omitted, omitted > 0 {
+                    Text("\(omitted) of your notes didn't fit in the summary pass — they're all still on the transcript.")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink3)
+                        .padding(.bottom, 22)
+                }
+
                 if doc.sections.isEmpty && doc.nextSteps.isEmpty && detail.summary == nil {
                     emptyBody
                 }
@@ -190,13 +202,15 @@ struct MeetingPage: View {
     private func blockView(_ block: DocumentBlock) -> some View {
         switch block {
         case .heading(let text):
-            Text(text).font(MSFont.sectionHeading).foregroundStyle(MS.ink)
+            yourNote { Text(text).font(MSFont.sectionHeading).foregroundStyle(MS.ink) }
         case .userParagraph(let text):
-            Text(text)
-                .font(MSFont.body)
-                .lineSpacing(9)
-                .foregroundStyle(MS.ink)
-                .textSelection(.enabled)
+            yourNote {
+                Text(text)
+                    .font(MSFont.body)
+                    .lineSpacing(9)
+                    .foregroundStyle(MS.ink)
+                    .textSelection(.enabled)
+            }
         case .bullet(_, let text, let evidence):
             EvidenceDisclosure(text: text, evidence: evidence, player: player,
                                onOpenTranscript: onOpenTranscript)
@@ -205,9 +219,25 @@ struct MeetingPage: View {
         }
     }
 
+    /// Your own words wear a quiet pencil in the gutter — so the page reads
+    /// as one document while still showing which lines are yours and which
+    /// the machine wrote around them.
+    private func yourNote<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Image(systemName: "pencil")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(MS.ink4)
+                .frame(width: 20, alignment: .leading)
+                .offset(y: -1)
+                .help("Your note, taken during the meeting")
+            content()
+        }
+        .padding(.leading, -20)
+    }
+
     private func nextStepsView(_ steps: [DocumentBlock]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("NEXT STEPS")
+            Text("TO-DOS")
                 .font(MSFont.kicker)
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
@@ -462,6 +492,97 @@ struct ActionRow: View {
                         }
                         .buttonStyle(PressStyle())
                     }
+                }
+            }
+        }
+    }
+}
+
+/// The draft follow-up email, written as the user sending it. Collapsed to
+/// its subject until opened; one click puts the whole thing on the clipboard
+/// or hands it to Mail.
+struct FollowUpEmailCard: View {
+    let email: FollowUpEmail
+    @State private var open = false
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.22)) { open.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("FOLLOW-UP EMAIL")
+                        .font(MSFont.kicker)
+                        .kerning(0.55)
+                        .foregroundStyle(MS.ink3)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(MS.ink4)
+                        .rotationEffect(.degrees(open ? 90 : 0))
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressStyle())
+
+            if let subject = email.subject, !subject.isEmpty {
+                Text(subject)
+                    .font(MSFont.sectionHeading)
+                    .foregroundStyle(MS.ink)
+                    .textSelection(.enabled)
+            }
+
+            if open {
+                Text(email.body ?? "")
+                    .font(MSFont.body)
+                    .lineSpacing(8)
+                    .foregroundStyle(MS.ink2)
+                    .textSelection(.enabled)
+                    .transition(.offset(y: -4).combined(with: .opacity))
+
+                HStack(spacing: 10) {
+                    Button {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString([email.subject, email.body]
+                            .compactMap { $0 }.joined(separator: "\n\n"), forType: .string)
+                        withAnimation(Motion.micro) { copied = true }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            withAnimation(Motion.exit) { copied = false }
+                        }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy email",
+                              systemImage: copied ? "checkmark" : "doc.on.doc")
+                            .font(MSFont.meta)
+                            .foregroundStyle(copied ? AnyShapeStyle(MS.playhead)
+                                                    : AnyShapeStyle(MS.ink2))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(MS.raised, in: .capsule)
+                            .contentTransition(.symbolEffect(.replace))
+                    }
+                    .buttonStyle(PressStyle())
+
+                    Button {
+                        var c = URLComponents()
+                        c.scheme = "mailto"
+                        c.path = ""
+                        c.queryItems = [
+                            URLQueryItem(name: "subject", value: email.subject ?? ""),
+                            URLQueryItem(name: "body", value: email.body ?? ""),
+                        ]
+                        if let url = c.url { NSWorkspace.shared.open(url) }
+                    } label: {
+                        Label("Open in Mail", systemImage: "envelope")
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink2)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(MS.raised, in: .capsule)
+                    }
+                    .buttonStyle(PressStyle())
                 }
             }
         }

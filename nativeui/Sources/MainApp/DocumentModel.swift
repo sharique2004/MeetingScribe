@@ -90,7 +90,7 @@ enum DocumentBuilder {
                 }))
         }
 
-        // Next steps: action items + follow-ups.
+        // To-dos: committed action items first, then things left for later.
         var nextSteps: [DocumentBlock] = (summary?.action_items ?? []).enumerated().map { i, item in
             .actionItem(id: "ai-\(i)", item: item, evidence: evidence(for: item.task, in: turns))
         }

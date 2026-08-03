@@ -31,6 +31,15 @@ struct ActionItem: Decodable, Hashable {
     let due: String?
 }
 
+struct FollowUpEmail: Decodable, Hashable {
+    let subject: String?
+    let body: String?
+
+    var isUseful: Bool {
+        (body?.trimmingCharacters(in: .whitespacesAndNewlines).count ?? 0) > 40
+    }
+}
+
 struct MeetingSummary: Decodable {
     let headline: String?
     let tldr: String?
@@ -39,6 +48,10 @@ struct MeetingSummary: Decodable {
     let action_items: [ActionItem]?
     let follow_ups: [String]?
     let open_questions: [String]?
+    let follow_up_email: FollowUpEmail?
+    /// Set by the engine when the prompt couldn't carry every note.
+    let notes_omitted: Int?
+    let engine: String?
 }
 
 struct SpeakerStats: Decodable {
