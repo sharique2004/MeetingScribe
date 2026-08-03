@@ -422,6 +422,40 @@ def _norm_text(text):
 
 ECHO_SLACK_S = 1.5  # acoustic echo lands on the mic slightly after the system copy
 
+# Containment bands, shared by the word path and the character path below.
+ECHO_DROP_RATIO = 0.7  # at or above this, the segment is echo and goes away
+ECHO_PARTIAL_RATIO = 0.35  # below this, nothing about the segment looks echoed
+ECHO_MIN_TOKENS = 4  # shorter than this is an interjection, not a sentence
+
+# The CHARACTER path needs more evidence than the word path, and both extra
+# conditions below are MEASURED rather than chosen. Method for both: replay
+# drop_echo over every saved meeting on this machine that has both tracks (17
+# of 41), and score each mic segment twice, once against its real far-end
+# window and once against a DECOY window taken 600 s away, which cannot be
+# echo of it. dist/echo_review_v2.md carries the full tables.
+#
+# COVER is the physical condition. Echo can only exist while the far end is
+# actually producing sound, so a segment the far end was silent through cannot
+# be echo however well the letters line up. Measuring the fraction of each mic
+# segment's own span that far-end speech occupies splits the 39 segments this
+# path deletes cleanly in two: the six that turned out to be the user
+# ANSWERING the far end and reusing its words ("Yeah, I lived in Dubai."
+# against "you used to live in dubai") all sit at or below 0.33, and the next
+# one up sits at 0.66. Nothing lands in between, so the threshold goes in the
+# middle of the empty band. Reading the audio rather than the text agrees:
+# correlating the mic and system energy envelopes over those same segments,
+# the six score a median 0.06 (the mic was not carrying the far-end signal at
+# all) against 0.86 for the segments this gate keeps deleting.
+ECHO_CHAR_MIN_COVER = 0.5
+
+# LENGTH is what is left of the old floor, and it is now set only where the
+# character test has no measured power at all. Conditioned on the cover gate
+# passing, the character test fires on 16.7% of real 4-word windows against
+# 9.1% of decoy windows, so at four words it is barely telling the two apart;
+# at five words it is 38.1% against 2.7%, and it stays that separated at every
+# length above. Below this floor the word path decides alone, as it always did.
+ECHO_CHAR_MIN_TOKENS = 5
+
 
 def _echo_containment(mic_tokens, window_tokens):
     """Fraction of the mic segment's words that also appear, in order, in the
@@ -431,6 +465,82 @@ def _echo_containment(mic_tokens, window_tokens):
     sm = difflib.SequenceMatcher(None, mic_tokens, window_tokens, autojunk=False)
     matched = sum(block.size for block in sm.get_matching_blocks())
     return matched / len(mic_tokens)
+
+
+def _echo_containment_chars(mic_tokens, window_tokens):
+    """Character-level twin of _echo_containment, for MISHEARD echo.
+
+    The word comparison above is all-or-nothing per word, so an echo the
+    recognizer transcribed slightly differently scores low on every word it got
+    wrong and survives as something the user supposedly said. Real example, mic
+    against system:
+
+        "I'm going to take root at heart"   vs   "I'm a tech recruit at heart"
+
+    Four of seven words differ, so word containment lands near 0.4 and the
+    segment is published under the user's name. Comparing characters instead
+    lets a near-miss word contribute the letters it did get right.
+
+    Spaces are dropped before matching, so a word boundary the two transcripts
+    disagree about ("a tech" against "attach") cannot break the run.
+
+    This is deliberately the WEAKER test: letters recur far more than words do,
+    so a long comparison window can align a good fraction of an unrelated
+    sentence. It therefore only ever runs as a fallback, on segments the word
+    path already scored as part echo (see drop_echo).
+    """
+    mic_chars = "".join(mic_tokens)
+    window_chars = "".join(window_tokens)
+    if not mic_chars or not window_chars:
+        return 0.0
+    sm = difflib.SequenceMatcher(None, mic_chars, window_chars, autojunk=False)
+    matched = sum(block.size for block in sm.get_matching_blocks())
+    return matched / len(mic_chars)
+
+
+def _merge_spans(spans):
+    """Sorted, non-overlapping copy of (start, end) pairs.
+
+    Far-end words overlap each other (a recognizer will happily end one word
+    after the next one starts), so their durations cannot just be summed.
+    Merging first is what makes _far_end_cover a true occupancy fraction
+    instead of a number that can run past 1.0.
+    """
+    merged = []
+    for s, e in sorted(spans):
+        if e <= s:
+            continue
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return merged
+
+
+def _far_end_cover(start, end, spans, span_ends):
+    """Fraction of [start, end] that far-end speech occupies, in [0, 1].
+
+    `spans` comes from _merge_spans and `span_ends` is its end times, so the
+    first span that can touch the segment is found by bisection rather than by
+    walking the whole track for every mic segment.
+
+    Note the resolution this has: when the system track carries word
+    timestamps (every meeting recorded by this app does) the spans are words,
+    and the gaps between far-end sentences count as silence. A transcript that
+    only has segment timestamps measures whole segments instead, which reads
+    high, so the gate is at its most permissive on the tracks it knows least
+    about. That is the safe direction for a gate whose job is to STOP the
+    character path, not to trigger it.
+    """
+    if end <= start or not spans:
+        return 0.0
+    total = 0.0
+    for i in range(bisect_right(span_ends, start), len(spans)):
+        s, e = spans[i]
+        if s >= end:
+            break
+        total += min(e, end) - max(s, start)
+    return total / (end - start)
 
 
 def _trim_echo_words(seg, window_tokens):
@@ -496,6 +606,9 @@ def drop_echo(mic_segs, sys_segs):
             sys_words.append((float(s["start"]), float(s["end"]), _norm_text(s["text"])))
     sys_words.sort(key=lambda w: w[0])
     starts = [w[0] for w in sys_words]
+    # When the far end was actually making sound, for the cover gate below.
+    far_end = _merge_spans((w[0], w[1]) for w in sys_words)
+    far_end_ends = [span[1] for span in far_end]
 
     kept, dropped, trimmed = [], 0, 0
     for m in mic_segs:
@@ -511,10 +624,31 @@ def drop_echo(mic_segs, sys_segs):
         ratio = _echo_containment(mic_tokens, window_tokens)
         # Short interjections ("yeah", "okay") must match completely to be
         # treated as echo; real sentences count as echo at 70% containment.
-        threshold = 0.7 if len(mic_tokens) >= 4 else 0.999
+        is_sentence = len(mic_tokens) >= ECHO_MIN_TOKENS
+        threshold = ECHO_DROP_RATIO if is_sentence else 0.999
         if ratio >= threshold:
             dropped += 1
-        elif ratio >= 0.35:
+        elif ratio >= ECHO_PARTIAL_RATIO:
+            # Part echo by word count. Three different things look like this:
+            # the user talking over the tail of a remote sentence (trim the
+            # echoed edge, keep the middle), a whole sentence of echo the
+            # recognizer misheard (drop it), and the user ANSWERING the far end
+            # in the far end's own words (keep it, all of it).
+            #
+            # Characters separate the first two: a misheard echo still tracks
+            # the original letter for letter. They cannot separate the third,
+            # because an answer that reuses the question's words really does
+            # match it. Only the clock can: an answer comes AFTER the far end
+            # stops, so far-end speech covers little or none of it, while echo
+            # is simultaneous with the sound that caused it by definition.
+            char_ratio = 0.0
+            if len(mic_tokens) >= ECHO_CHAR_MIN_TOKENS and _far_end_cover(
+                float(m["start"]), float(m["end"]), far_end, far_end_ends
+            ) >= ECHO_CHAR_MIN_COVER:
+                char_ratio = _echo_containment_chars(mic_tokens, window_tokens)
+            if char_ratio >= ECHO_DROP_RATIO:
+                dropped += 1
+                continue
             cut = _trim_echo_words(m, window_tokens)
             if cut is not None:
                 trimmed += 1
@@ -1508,8 +1642,15 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
         transcripts[key] = segs
         languages[key] = lang
 
-    # --- 2. Echo cleanup (online mode) --------------------------------------------
-    if mode == "online" and transcripts.get("mic") and transcripts.get("system"):
+    # --- 2. Echo cleanup ------------------------------------------------------------
+    # Gated on the EVIDENCE (both tracks carry speech), not on the declared mode.
+    # A hybrid meeting is recorded in-person mode with remote participants on the
+    # call, so it has both a room mic and a live system track; gating on
+    # mode == "online" left exactly that case uncleaned, and the remote voice was
+    # published twice, once as a clean "Remote N" and once as a degraded mic
+    # speaker. A pure in-person meeting has no system speech at all, so it takes
+    # the same path it always did.
+    if transcripts.get("mic") and transcripts.get("system"):
         kept, dropped, trimmed = drop_echo(transcripts["mic"], transcripts["system"])
         transcripts["mic"] = kept
         if dropped or trimmed:
