@@ -214,6 +214,26 @@ timestamp id kept at the end so names can never collide.
 
 Delete a meeting from the UI, or just delete its folder.
 
+### Recording other people
+
+Recording a conversation is your call to make, and in some places it is
+everyone's. Several US states and many countries require every participant to
+consent before a call is recorded. MeetingScribe does not ask anyone for you,
+so tell the room you are recording.
+
+### Remembering voices
+
+When you name a speaker, MeetingScribe saves a mathematical fingerprint of
+that voice, about 200 numbers, in `~/.meetingscribe/voice_profiles.json`, so
+later meetings can label the same person for you. No audio is stored, nothing
+is uploaded, and it never leaves this Mac. Naming is the only thing that
+saves a voice: leaving someone as "Speaker 2" stores nothing.
+
+You can see every saved voice, forget one person, or forget all of them, in
+Settings under Voices, where you can also turn the whole feature off. Deleting
+a meeting also deletes what that meeting taught. To switch it off before you
+ever use it, set `"voice_profiles": false` in `config.json`.
+
 ## Troubleshooting
 
 - **"BlackHole is not installed" (macOS)** — run `brew install blackhole-2ch`

@@ -133,7 +133,7 @@ struct MeetingPage: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $peoplePopover, arrowEdge: .bottom) {
-            SpeakerRibbon(detail: detail)
+            SpeakerRibbon(detail: detail, model: model)
                 .padding(16)
                 .frame(width: 380)
         }

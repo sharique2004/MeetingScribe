@@ -148,6 +148,32 @@ struct MeetingNote: Decodable, Identifiable, Hashable {
 
 private struct NotesEnvelope: Decodable { let notes: [MeetingNote] }
 
+/// One person the engine can recognize by voice across meetings.
+/// `speech_seconds` is wall-clock speech the profile was built from;
+/// `n_samples` how many meetings contributed. No embedding ever crosses this
+/// boundary, and neither does the engine's internal window time — that number
+/// counts each second of speech about twice and has no business in a UI.
+///
+/// `name` is a LABEL, not an identity: two people can both be Jess, so two
+/// profiles can share a name and only `id` tells them apart.
+struct VoiceProfile: Decodable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let speech_seconds: Double?
+    let n_samples: Int
+    let updated: Double?
+}
+
+private struct VoiceProfilesEnvelope: Decodable { let profiles: [VoiceProfile] }
+
+/// The rename response. `voice_profile` is the engine handing back the profile
+/// this rename enrolled into, or nil when nothing was saved. It has to be the
+/// engine's answer: the voice picks the profile, names are allowed to collide,
+/// and the name is stripped and truncated on the way in — so a client that
+/// went looking for it afterwards would be re-deriving all three rules and
+/// could still land on the wrong person.
+struct SpeakerRenameResult: Decodable { let voice_profile: VoiceProfile? }
+
 struct CalendarEvent: Decodable, Hashable {
     let title: String?
     let start: String?
@@ -196,6 +222,42 @@ enum API {
         if (200..<300).contains(code) { return (true, nil) }
         let err = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
         return (false, err ?? "Summarize failed (\(code)).")
+    }
+
+    /// Rename one speaker of a meeting. Returns the profile the engine
+    /// enrolled that person's voice into, if it did — renaming is how
+    /// enrollment fires, so the caller owns telling the user it happened.
+    static func renameSpeaker(_ id: String, key: String,
+                              name: String) async throws -> SpeakerRenameResult {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/meetings/\(id)/speakers"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: ["key": key, "name": name])
+        req.timeoutInterval = 15
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let code = (resp as? HTTPURLResponse)?.statusCode,
+              (200..<300).contains(code) else { throw URLError(.badServerResponse) }
+        return (try? JSONDecoder().decode(SpeakerRenameResult.self, from: data))
+            ?? SpeakerRenameResult(voice_profile: nil)
+    }
+
+    /// Everyone this Mac can currently recognize by voice.
+    static func voiceProfiles() async throws -> [VoiceProfile] {
+        try await get("api/voice-profiles", as: VoiceProfilesEnvelope.self).profiles
+    }
+
+    /// Forget one person's voice, every sample of it. A 404 is success: the
+    /// profile is already gone, which is the state the caller asked for, and
+    /// treating it as failure would strand a "Forget" button that can never
+    /// succeed once the same voice was forgotten from Settings.
+    static func deleteVoiceProfile(_ id: String) async throws {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/voice-profiles/\(id)"))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 10
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let code = (resp as? HTTPURLResponse)?.statusCode,
+              (200..<300).contains(code) || code == 404
+        else { throw URLError(.badServerResponse) }
     }
 
     /// The live summary job for one meeting, if any.

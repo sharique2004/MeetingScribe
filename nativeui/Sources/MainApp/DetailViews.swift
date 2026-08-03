@@ -39,6 +39,14 @@ final class MeetingModel: ObservableObject {
         }
     }
 
+    /// Re-fetch the document after an edit the engine made for us — a
+    /// speaker rename rewrites the speaker map that the page, the ribbon and
+    /// the transcript all read from.
+    func reload() async {
+        guard let id = meetingID, let fresh = try? await API.meeting(id) else { return }
+        detail = fresh
+    }
+
     func summarize() {
         guard let id = meetingID, !summarizing else { return }
         summaryError = nil

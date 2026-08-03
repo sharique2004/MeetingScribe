@@ -29,6 +29,7 @@ import summarize
 import sync
 import tech_vocabulary
 import tidy
+import voice_profiles
 from audio_recorder import MeetingRecorder
 from config import BASE_DIR, RECORDINGS_DIR, load_config
 
@@ -1156,6 +1157,17 @@ def meeting_delete(meeting_id):
             abort(404)
         was_synced = bool((_read_meeting_safe(meeting_id) or {}).get("sync", {}).get("enabled"))
         shutil.rmtree(target, ignore_errors=True)
+        # Delete has to mean delete. The recording and its transcript are gone
+        # above; the voice fingerprints they taught live in a separate file, so
+        # without this they outlive the thing the user deleted. Best effort:
+        # an unwritable profile store must not fail the delete.
+        try:
+            samples, profiles = voice_profiles.forget_meeting(meeting_id)
+            if samples or profiles:
+                app.logger.info("forgot %s voice sample(s) and %s profile(s) from %s",
+                                samples, profiles, meeting_id)
+        except Exception as exc:
+            app.logger.warning("could not forget voice samples for %s: %s", meeting_id, exc)
     finally:
         # Releases the claim and, as before, drops the finished-job entries so
         # a deleted id stops showing up in /api/status. Must run even on the
@@ -1237,9 +1249,37 @@ def rename_speaker(meeting_id):
     meta, denied = _edit_meeting_json(meeting_id, mutate)
     if denied:
         return jsonify(denied[0]), denied[1]
+    # A rename is also a voice enrollment: save this cluster's centroid so the
+    # person is recognized by name in future meetings. Best effort — a meeting
+    # without a usable analysis cache simply doesn't enroll.
+    #
+    # The response carries the PROFILE, not a bare "it enrolled" flag. Which
+    # profile a name lands on is a decision only the engine can make (the voice
+    # picks it, names are allowed to collide, and the name is stripped and
+    # truncated on the way in), so a client that tried to find it afterwards
+    # would be re-deriving all of that and could still pick the wrong person.
+    profile = None
+    if load_config().get("voice_profiles", True):
+        profile_id = voice_profiles.enroll_from_meeting(
+            _dir_for(meeting_id), meta, key, name
+        )
+        if profile_id:
+            profile = voice_profiles.get_profile(profile_id)
     _write_transcript_md(meta)
     _push_synced(meeting_id)
-    return jsonify({"speakers": meta["speakers"]})
+    return jsonify({"speakers": meta["speakers"], "voice_profile": profile})
+
+
+@app.get("/api/voice-profiles")
+def voice_profiles_list():
+    return jsonify({"profiles": voice_profiles.list_profiles()})
+
+
+@app.delete("/api/voice-profiles/<profile_id>")
+def voice_profiles_delete(profile_id):
+    if not voice_profiles.delete_profile(profile_id):
+        return jsonify({"error": "unknown profile"}), 404
+    return jsonify({"ok": True})
 
 
 @app.post("/api/meetings/<meeting_id>/process")

@@ -49,6 +49,14 @@ DEFAULTS = {
     "summary_engine": "claude",
     # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
     "live_captions": True,
+    # Voice profiles: renaming a speaker saves their voice locally, so later
+    # meetings label that person by name automatically. Fully on-device
+    # (voice_profiles.json under DATA_DIR); recognition never overwrites a
+    # name the user typed, only the "Speaker N" defaults.
+    "voice_profiles": True,
+    # Max cosine distance between a meeting's voice and a saved profile to
+    # accept the match. Lower = stricter (fewer, surer auto-names).
+    "voice_profile_threshold": 0.4,
     # Extra words/names the speech recognizer should be biased toward, e.g.
     # ["Kubernetes", "Priya", "InsForge"]. Calendar attendee names are added
     # automatically per meeting.

@@ -34,6 +34,7 @@ import diarization
 import stats as stats_mod
 import swift_helpers
 import tech_vocabulary
+import voice_profiles
 from config import BASE_DIR, MODELS_DIR, load_config
 
 log = logging.getLogger("meetingscribe.pipeline")
@@ -1233,6 +1234,12 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
         speakers.update(old_names)
     elif "you" in speakers and "you" in old_names:
         speakers["you"] = old_names["you"]
+
+    # Voice profiles: clusters matching a previously-named voice get that name
+    # automatically. AFTER the carry-over above, and defaults-only inside, so
+    # recognition can never overwrite a name a human typed — it only fills in
+    # labels that would otherwise read "Speaker N".
+    voice_profiles.apply_recognition(track_state, labelled, speakers, cfg)
 
     meta["speakers"] = speakers
     meta["turns"] = turns
