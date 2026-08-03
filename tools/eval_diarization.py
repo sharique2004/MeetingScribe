@@ -32,6 +32,36 @@ is read-only with respect to recordings/.
     python tools/eval_diarization.py --set FOLD_MAX_FRAGMENTATION=0.15   # sweep
     python tools/eval_diarization.py --baseline out.json --variant-module my_cluster.py
     python tools/eval_diarization.py --no-synthetic  # real corpus only
+    python tools/eval_diarization.py --binding-only  # which fixture binds each constant
+    python tools/eval_diarization.py --stability-only  # perturbation margin + churn
+    python tools/eval_diarization.py --quick         # skip those two (the slow part)
+
+EVERY ACCURACY FIGURE IS PRINTED AS A DELTA OVER DOING NOTHING. Most of this
+corpus carries the same answer — 17 of the 21 truth-backed real fixtures have
+truth 1 — so a CONSTANT PREDICTOR that always answers 1 scores 81% without
+looking at anything. A raw "100%" is therefore a claim about four fixtures, not
+twenty-one. Every headline below is printed beside that constant's score on THE
+FIXTURES ACTUALLY BEING SCORED (derived each run, never a hardcoded 17/21,
+because the corpus grows and a pasted fraction outlives its corpus), and the
+DISCRIMINATING SUBSET — the fixtures whose truth differs from the constant's
+answer — is scored on its own line. That subset is the only signal here that
+separates a diarizer from a constant, so it is visible on every run.
+
+TWO MORE THINGS THE COUNT METRIC CANNOT SEE, both reported by default:
+
+  BINDING FIXTURES   The count metric does not constrain the constants it is
+                     used to justify: FOLD_KEEP_ABOVE_S can be 150 or 1000 with
+                     identical real-corpus accuracy. Each count-deciding
+                     constant is swept through the --set machinery and the
+                     report names WHICH fixtures hold each edge, how wide the
+                     interval is, and flags an edge held by one fixture or by a
+                     fixture whose truth is unknown.
+  STABILITY + CHURN  A seeded perturbation suite over the frozen caches (no
+                     re-embedding, no new labels) reports the count-flip rate
+                     per fixture AND the duration-weighted share of speech that
+                     changes speaker WHILE THE COUNT STAYS THE SAME. The second
+                     is the count-blind-to-attribution detector: attribution can
+                     move a long way with the headline number frozen.
 
 --check GATES EVERY FIXTURE ON DISK, IN BOTH CORPORA. A fixture with no baseline
 entry is reported as UNCOVERED and fails, because the alternative — skipping it
@@ -114,6 +144,8 @@ import importlib.util
 import json
 import re
 import sys
+import time
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -973,6 +1005,143 @@ def accuracy_of(fixtures, res):
     }
 
 
+# ---------------------------------------------------------------------------
+# BASELINE-RELATIVE REPORTING, and the DISCRIMINATING SUBSET.
+#
+# An accuracy percentage over this corpus is not, on its own, a measurement of
+# anything: 17 of the 21 truth-backed real fixtures have truth 1, so a CONSTANT
+# PREDICTOR that always answers 1 scores 81% having looked at nothing. Reporting
+# "100%" beside that is reporting a four-fixture advantage as a twenty-one
+# fixture one.
+#
+# So every headline is printed beside the constant predictor's score and the
+# delta between them, and the delta is quoted in FIXTURES rather than in
+# percentage points, because the number of fixtures IS the size of the evidence.
+#
+# The baseline is DERIVED from the fixtures being scored on each run. Hardcoding
+# 17/21 is exactly the failure the blind_spots() comment describes: a fraction
+# pasted into a design doc outlives the corpus it was measured on, and this
+# corpus grows.
+# ---------------------------------------------------------------------------
+
+def wrapped(items, width):
+    """Comma-joined items, folded to `width`. Keeps a long pseudonym list from
+    running off the right edge of a report people paste into design docs."""
+    lines, cur = [], ""
+    for i, item in enumerate(items):
+        piece = item + ("," if i < len(items) - 1 else "")
+        if cur and len(cur) + 1 + len(piece) > width:
+            lines.append(cur)
+            cur = piece
+        else:
+            cur = piece if not cur else cur + " " + piece
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def truth_histogram(fixtures):
+    """{truth value: how many scorable fixtures carry it}. Unscored are absent."""
+    hist = {}
+    for fx in fixtures:
+        t = scored_truth(fx["key"])
+        if t is None:
+            continue
+        hist[t] = hist.get(t, 0) + 1
+    return hist
+
+
+def constant_baseline(fixtures):
+    """What ALWAYS ANSWERING ONE NUMBER scores on these fixtures.
+
+    The number is the modal truth value, which is the best any constant can do.
+    Ties break to the smallest and the tie is reported: a tie means the corpus
+    has no single modal answer and the advantage figure then depends on which of
+    the tied values you picked, which a reader must be told rather than shown a
+    fraction that hides the choice.
+
+    Returns None when nothing here is scorable, so callers print "no baseline"
+    instead of a 0/0 that reads like a perfect score.
+    """
+    hist = truth_histogram(fixtures)
+    if not hist:
+        return None
+    top = max(hist.values())
+    tied = sorted(v for v, n in hist.items() if n == top)
+    n = sum(hist.values())
+    return {
+        "value": tied[0],
+        "hits": top,
+        "n": n,
+        "pct": 100.0 * top / n,
+        "tied": tied,
+        "hist": hist,
+    }
+
+
+def discriminating(fixtures):
+    """Fixtures whose truth differs from the constant predictor's answer.
+
+    THE ONLY FIXTURES IN THIS CORPUS THAT CAN TELL A DIARIZER FROM A CONSTANT.
+    Every other row is scored identically by doing nothing, so a change that
+    moves only those rows has demonstrated nothing about the clusterer. Today
+    this is the four truth=2 real fixtures (Demo, Room P, Room Q, Room T).
+    """
+    cb = constant_baseline(fixtures)
+    if cb is None:
+        return []
+    return [fx for fx in fixtures
+            if scored_truth(fx["key"]) not in (None, cb["value"])]
+
+
+def hits_of(fixtures, res):
+    """How many of these fixtures the auto count gets right. Unscored excluded."""
+    return sum(1 for fx in fixtures
+               if scored_truth(fx["key"]) is not None
+               and res[fx["key"]]["auto"] == scored_truth(fx["key"]))
+
+
+def print_baseline_relative(sub, res, indent, show_titles=False):
+    """The lines that turn an accuracy figure into a claim about a delta."""
+    cb = constant_baseline(sub)
+    if cb is None:
+        print("%sno truth-backed fixture here, so there is no baseline to beat and no"
+              " accuracy\n%sto quote." % (indent, indent))
+        return
+    hits = hits_of(sub, res)
+    print(
+        "%sauto %d/%d (%.1f%%) | constant-%s baseline %d/%d (%.1f%%) | advantage "
+        "%+d fixtures"
+        % (indent, hits, cb["n"], 100.0 * hits / cb["n"],
+           cb["value"], cb["hits"], cb["n"], cb["pct"], hits - cb["hits"])
+    )
+    if len(cb["tied"]) > 1:
+        print("%s  truth has NO single modal value here (%s all tie at %d fixtures); the"
+              % (indent, ", ".join(str(v) for v in cb["tied"]), cb["hits"]))
+        print("%s  baseline above uses %s, and the advantage depends on that choice."
+              % (indent, cb["value"]))
+    disc = discriminating(sub)
+    if not disc:
+        print("%sdiscriminating subset (truth != %s): EMPTY. Every truth-backed fixture"
+              % (indent, cb["value"]))
+        print("%s  here carries the same answer, so nothing in this corpus separates a"
+              % indent)
+        print("%s  diarizer from a constant." % indent)
+        return
+    dhits = hits_of(disc, res)
+    print("%sdiscriminating subset (truth != %s): %d/%d   <- the only signal here that a"
+          % (indent, cb["value"], dhits, len(disc)))
+    print("%s  constant cannot produce:" % indent)
+    for line in wrapped([label_of(fx["key"]) for fx in disc], 74):
+        print("%s    %s" % (indent, line))
+    for fx in disc:
+        key = fx["key"]
+        if res[key]["auto"] != scored_truth(key):
+            print("%s  MISS %-40s auto %d, truth %d"
+                  % (indent, row_name(key, show_titles), res[key]["auto"],
+                     scored_truth(key)))
+
+
 def print_accuracy(fixtures, res, show_titles=False):
     """THE HEADLINE: how many meetings get the speaker count right.
 
@@ -995,6 +1164,7 @@ def print_accuracy(fixtures, res, show_titles=False):
             % (corpus, CORPUS_DIR[corpus], len(a["hits"]), len(a["scorable"]),
                pct, a["n"])
         )
+        print_baseline_relative(sub, res, "             ", show_titles)
         t = a["tiers"]
         print("             %s" % CORPUS_BLURB[corpus])
         print(
@@ -1021,6 +1191,9 @@ def print_accuracy(fixtures, res, show_titles=False):
     print("  measures real ECAPA embeddings against mostly INFERRED truth; the synthetic")
     print("  corpus measures generated vectors against CONSTRUCTED truth. Neither")
     print("  substitutes for the other — see blind spot (c).")
+    print("  Each figure is printed beside what a CONSTANT PREDICTOR scores on the same")
+    print("  fixtures, because most of this corpus carries the same answer: the delta, in")
+    print("  fixtures, is the whole claim, and the discriminating subset is its evidence.")
 
 
 def print_header(fixtures, res, threshold, overrides, variant_path, show_titles=False):
@@ -1197,6 +1370,15 @@ def print_baseline_table(fixtures, res, show_titles=False):
         a = accuracy_of(sub, res)
         print("ACCURACY vs truth (%s): %d of %d truth-backed fixtures correct; %d wrong."
               % (corpus, len(a["hits"]), len(a["scorable"]), len(a["misses"])))
+        cb = constant_baseline(sub)
+        if cb is not None:
+            disc = discriminating(sub)
+            print("         vs doing nothing: constant-%s scores %d of %d (%.1f%%), so the"
+                  " advantage is\n         %+d fixtures; on the %d discriminating "
+                  "fixture(s) the auto count is %d/%d."
+                  % (cb["value"], cb["hits"], cb["n"], cb["pct"],
+                     len(a["hits"]) - cb["hits"], len(disc),
+                     hits_of(disc, res), len(disc)))
     print("         The baseline pins current behaviour; it does not claim current")
     print("         behaviour is correct.")
     return mismatches, uncovered
@@ -1253,7 +1435,613 @@ def print_ab_table(fixtures, base, var, show_titles=False):
             len(fixtures) - scorable,
         )
     )
+    # The same delta discipline the ACCURACY block uses: an A/B that moves only
+    # fixtures a constant already gets right has moved nothing that matters.
+    for corpus in CORPUS_ORDER:
+        sub = of_corpus(fixtures, corpus)
+        if not sub:
+            continue
+        cb = constant_baseline(sub)
+        if cb is None:
+            continue
+        disc = discriminating(sub)
+        print(
+            "  %-10s A %d/%d vs B %d/%d | constant-%s %d/%d | discriminating subset "
+            "(truth != %s): A %d/%d, B %d/%d"
+            % (corpus, hits_of(sub, base), cb["n"], hits_of(sub, var), cb["n"],
+               cb["value"], cb["hits"], cb["n"], cb["value"],
+               hits_of(disc, base), len(disc), hits_of(disc, var), len(disc))
+        )
     return changed, better, worse
+
+
+# ---------------------------------------------------------------------------
+# A TRANSPARENT FIT CACHE, so the sweep below can afford to be thorough.
+#
+# The binding sweep re-runs cluster() a few hundred times over the SAME frozen
+# embedding arrays, moving only a fold constant. The agglomerative linkage fit
+# does not depend on those constants, and it is roughly half of a run's cost and
+# nearly all of it on the largest fixture. Memoising the fit turns a ten-minute
+# sweep into a two-second one.
+#
+# It caches the FIT and nothing else: cluster() is called unmodified, so what the
+# sweep measures is the real function rather than a re-implementation of it. The
+# key is the array identity plus the estimator's full parameter set, so a fit
+# with any different parameter is a different entry — a cache that silently
+# returned a fit taken under other parameters is exactly how a sweep would come
+# to report an interval that does not exist.
+#
+# Only arrays the caller REGISTERS (the frozen fixture embeddings) are cached.
+# Anything else — a perturbed copy from the stability suite — passes straight
+# through, so the cache cannot grow with the perturbation count.
+# ---------------------------------------------------------------------------
+
+class FitCache:
+    def __init__(self, arrays):
+        self.hold = list(arrays)  # keeps the arrays alive so id() cannot be reused
+        self.allowed = {id(a) for a in self.hold}
+        self.store = {}
+        self.hits = 0
+        self.misses = 0
+        self._skc = None
+        self._real = None
+
+    def __enter__(self):
+        import sklearn.cluster as skc
+        outer = self
+        real = skc.AgglomerativeClustering
+
+        class Cached(real):
+            def fit_predict(self, X, y=None):
+                if id(X) not in outer.allowed:
+                    return real.fit_predict(self, X, y)
+                key = (id(X),) + tuple(sorted(
+                    (k, repr(v)) for k, v in self.get_params().items()))
+                if key in outer.store:
+                    outer.hits += 1
+                else:
+                    outer.misses += 1
+                    outer.store[key] = real.fit_predict(self, X, y)
+                return np.array(outer.store[key], copy=True)
+
+        self._skc, self._real = skc, real
+        skc.AgglomerativeClustering = Cached
+        return self
+
+    def __exit__(self, *exc):
+        self._skc.AgglomerativeClustering = self._real
+        return False
+
+
+# ---------------------------------------------------------------------------
+# BINDING-FIXTURE REPORT.
+#
+# THE COUNT METRIC DOES NOT CONSTRAIN THE CONSTANTS IT IS USED TO JUSTIFY.
+# FOLD_KEEP_ABOVE_S can be 150 or 1000 with identical real-corpus accuracy,
+# because the only fixture that moves between those two values is the one with
+# NO truth. MAX_AUTO_SPEAKERS can be anything in a wide band with no fixture
+# changing at all. A constant that no scorable fixture pins is a constant chosen
+# by taste, and the report should say so rather than let "21/21" imply the value
+# was measured.
+#
+# So each count-deciding constant is swept ALONE through the same --set
+# machinery the documented workflow uses, and each edge of its count-stable
+# interval is reported with:
+#
+#   * WHICH fixtures move first past that edge, and from what count to what,
+#   * the interval width,
+#   * whether the move is visible to ACCURACY at all, and how far out it stays
+#     invisible,
+#   * FLAG when an edge is held by a SINGLE fixture,
+#   * FLAG when a binding fixture's truth is UNKNOWN — an edge set by a fixture
+#     nothing can score is an edge set by the clusterer's own opinion of itself.
+#
+# THERE IS DELIBERATELY NO LEAVE-ONE-OUT INTERSECTION GATE HERE, and this is not
+# an omission. Dropping a fixture can only REMOVE constraints, so every
+# leave-one-out interval contains the full-data interval and their intersection
+# is identically the full-data interval. A gate on that quantity can never fire:
+# it would print a reassuring green line that is true by construction and
+# carries no information. The single-fixture FLAG above is the honest version of
+# the same idea.
+# ---------------------------------------------------------------------------
+
+# name, low search bound, high search bound, bisection tolerance, cast.
+# The bounds are a SEARCH RANGE, not a claim about legal values: an edge found
+# at a bound means the counts never moved anywhere inside the range, which is
+# reported as "unbounded within" rather than as an edge.
+SWEEP_SPECS = (
+    ("FOLD_KEEP_ABOVE_S", 0.0, 1000.0, 0.5, float),
+    ("FOLD_MAX_FRAGMENTATION", 0.0, 1.0, 0.005, float),
+    ("FOLD_MAX_DURATION_RATIO", 0.0, 1.0, 0.005, float),
+    ("MIN_CLUSTER_S", 0.0, 600.0, 0.5, float),
+    ("MAX_AUTO_SPEAKERS", 1, 24, 1, int),
+    # THRESHOLD is not a module attribute; it is passed to cluster(), and every
+    # value of it invalidates the fit cache, so it is swept at a coarser
+    # tolerance than the rest. The tolerance is printed beside the interval.
+    ("THRESHOLD", 0.35, 0.95, 0.02, float),
+)
+
+
+def sweep_counts(fixtures, cluster_fn, threshold, name, value):
+    """Auto counts for every fixture with ONE tunable moved, via --set's own path."""
+    if name == "THRESHOLD":
+        return {fx["key"]: run_cluster(fx, cluster_fn, None, value)[0]
+                for fx in fixtures}
+    with Overrides({name: value}):
+        return {fx["key"]: run_cluster(fx, cluster_fn, None, threshold)[0]
+                for fx in fixtures}
+
+
+def accuracy_signature(fixtures, counts):
+    """Per-corpus hit counts for a count map.
+
+    Two configurations with the same signature are INDISTINGUISHABLE to the
+    headline accuracy figure however much else moved between them, which is the
+    whole point of this section.
+    """
+    sig = []
+    for corpus in CORPUS_ORDER:
+        sub = of_corpus(fixtures, corpus)
+        if not sub:
+            continue
+        sig.append((corpus, sum(
+            1 for fx in sub
+            if scored_truth(fx["key"]) is not None
+            and counts[fx["key"]] == scored_truth(fx["key"]))))
+    return tuple(sig)
+
+
+def _bisect_edge(counts_at, live_counts, live, bound, tol, cast):
+    """Outermost value between `live` and `bound` where EVERY count is unchanged.
+
+    Returns (edge, past, past_counts); `past` is None when the counts never moved
+    anywhere in the search range, which is itself the finding.
+
+    Bisection assumes the equal-count region is CONTIGUOUS around the live value.
+    That is an assumption about the fold rule, not a proof about it. It fails
+    safe: a non-contiguous region would make the value found here an inner edge,
+    never an outer one, so a printed interval is a LOWER BOUND on its width and
+    the "held by one fixture" flag can only be pessimistic.
+    """
+    bound = cast(bound)
+    bound_counts = counts_at(bound)
+    if bound_counts == live_counts:
+        return bound, None, None
+    good, bad, bad_counts = cast(live), bound, bound_counts
+    while abs(bad - good) > tol:
+        mid = cast((good + bad) / 2.0)
+        if mid == good or mid == bad:
+            break
+        c = counts_at(mid)
+        if c == live_counts:
+            good = mid
+        else:
+            bad, bad_counts = mid, c
+    return good, bad, bad_counts
+
+
+def _accuracy_reach(fixtures, counts_at, live_sig, start, bound, probes, cast):
+    """How far past a count edge the ACCURACY SIGNATURE stays identical.
+
+    SAMPLED, not bisected. Accuracy is not monotone in any of these constants, so
+    bisecting for "where accuracy changes" would report a crossing and call it a
+    boundary. The sample count is printed with the answer so the reader knows
+    exactly how weak the claim is.
+
+    Returns (farthest value still invisible, first sampled value that was
+    visible or None, number of samples).
+    """
+    farthest, first_visible = None, None
+    n = max(int(probes), 1)
+    span = cast(bound) - start
+    for i in range(1, n + 1):
+        v = cast(start + span * (float(i) / n))
+        if v == start:
+            continue
+        if accuracy_signature(fixtures, counts_at(v)) == live_sig:
+            if farthest is None or abs(v - start) >= abs(farthest - start):
+                farthest = v
+        elif first_visible is None:
+            first_visible = v
+    return farthest, first_visible, n
+
+
+def binding_report(fixtures, cluster_fn, threshold, res, probes=2):
+    """Sweep every count-deciding constant and locate what pins it. Returns rows."""
+    live_counts = {fx["key"]: res[fx["key"]]["auto"] for fx in fixtures}
+    live_sig = accuracy_signature(fixtures, live_counts)
+    rows = []
+    for name, lo, hi, tol, cast in SWEEP_SPECS:
+        live = threshold if name == "THRESHOLD" else getattr(diarization, name, None)
+        if live is None:
+            rows.append({"name": name, "missing": True})
+            continue
+        live = cast(live)
+        seen = {}
+
+        def counts_at(v, _n=name, _seen=seen, _cast=cast):
+            v = _cast(v)
+            if v not in _seen:
+                _seen[v] = sweep_counts(fixtures, cluster_fn, threshold, _n, v)
+            return _seen[v]
+
+        # Re-measured at the live value rather than assumed equal to the run's
+        # own results: if the sweep path and the report path ever disagree, the
+        # intervals below are measuring something else and must say so.
+        row = {"name": name, "live": live, "tol": tol, "cast": cast,
+               "consistent": counts_at(live) == live_counts, "edges": {}}
+        for side, bound in (("lower", lo), ("upper", hi)):
+            edge, past, past_counts = _bisect_edge(
+                counts_at, live_counts, live, bound, tol, cast)
+            info = {"edge": edge, "past": past, "bound": cast(bound), "binding": []}
+            if past is not None:
+                info["binding"] = [(k, live_counts[k], past_counts[k])
+                                   for k in sorted(past_counts)
+                                   if past_counts[k] != live_counts[k]]
+                info["acc_visible"] = (
+                    accuracy_signature(fixtures, past_counts) != live_sig)
+                if not info["acc_visible"]:
+                    info["reach"] = _accuracy_reach(
+                        fixtures, counts_at, live_sig, past, bound, probes, cast)
+            row["edges"][side] = info
+        row["width"] = row["edges"]["upper"]["edge"] - row["edges"]["lower"]["edge"]
+        row["evals"] = len(seen)
+        rows.append(row)
+    return rows, live_sig
+
+
+def _num(v):
+    return str(v) if isinstance(v, int) else "%.4g" % v
+
+
+def print_binding_report(rows, show_titles=False):
+    print("=" * 100)
+    print("BINDING FIXTURES — what actually holds each count-deciding constant in place")
+    print("=" * 100)
+    print("Each constant is swept ALONE through the --set machinery, every other constant at")
+    print("its live value, over every fixture loaded this run. An EDGE is the outermost value")
+    print("at which every fixture still produces the count it produces today; the fixtures")
+    print("named are the ones that move first past it. Edges are located by bisection to the")
+    print("tolerance shown, so each printed interval is a LOWER bound on the true one.")
+    print()
+    flagged = 0
+    for row in rows:
+        if row.get("missing"):
+            print("%-24s NOT PRESENT in diarization.py — nothing to sweep."
+                  % row["name"])
+            continue
+        print("%-24s live %-8s count-stable [%s, %s]  width %s  (bisected to %s)"
+              % (row["name"], _num(row["live"]),
+                 _num(row["edges"]["lower"]["edge"]),
+                 _num(row["edges"]["upper"]["edge"]),
+                 _num(row["width"]), _num(row["tol"])))
+        if not row["width"]:
+            print("    width 0: NO other value of this constant reproduces today's counts,")
+            print("    so it is pinned exactly — by whichever fixtures the edges name below.")
+        if not row["consistent"]:
+            print("    !! the sweep path does not reproduce this run's counts at the live")
+            print("       value. Every interval on this line is measuring something else.")
+        for side in ("lower", "upper"):
+            info = row["edges"][side]
+            if info["past"] is None:
+                print("    %-5s edge: NONE — no fixture changes its count anywhere %s to %s,"
+                      % (side, "down" if side == "lower" else "up",
+                         _num(info["bound"])))
+                print("           so this side is UNBOUNDED WITHIN the search range: nothing")
+                print("           in this corpus argues against moving the live value that way.")
+                continue
+            names = ", ".join(
+                "%s %d->%d" % (label_of(k), a, b) for k, a, b in info["binding"])
+            print("    %-5s edge %-8s past %-8s : %s"
+                  % (side, _num(info["edge"]), _num(info["past"]), names))
+            flags = []
+            if len(info["binding"]) == 1:
+                flags.append("FLAG this edge is held by a SINGLE fixture")
+            unknown = [k for k, _, _ in info["binding"] if scored_truth(k) is None]
+            if unknown:
+                flags.append("FLAG binding fixture truth UNKNOWN (%s)"
+                             % ", ".join(label_of(k) for k in unknown))
+            for f in flags:
+                flagged += 1
+                print("           %s" % f)
+            if info["acc_visible"]:
+                print("           accuracy CHANGES here, so this edge is visible to the "
+                      "headline number.")
+            else:
+                far, first, n = info["reach"]
+                if first is None and far is not None:
+                    print("           accuracy is UNCHANGED at the edge and at all %d sampled"
+                          " points out to %s:" % (n, _num(far)))
+                    print("           this constant's %s side is INVISIBLE to the number this"
+                          " harness reports." % side)
+                elif first is not None:
+                    print("           accuracy is unchanged at the edge%s; the nearest sampled"
+                          % ("" if far is None else " and out to %s" % _num(far)))
+                    print("           point where it moves at all is %s (%d samples)."
+                          % (_num(first), n))
+                else:
+                    print("           accuracy is unchanged at the edge (%d samples)." % n)
+        print()
+    print("%d flag(s) raised. Flags are INFORMATIONAL: --check does not gate on them, "
+          "because" % flagged)
+    print("  a constant held by one fixture is not a bug, it is a statement about how much")
+    print("  evidence the constant has. Widening a flagged interval needs a fixture, not a")
+    print("  code change.")
+    print("NOT COMPUTED, on purpose: a leave-one-out interval intersection. Dropping a")
+    print("  fixture only REMOVES constraints, so every leave-one-out interval contains the")
+    print("  full-data interval and their intersection is identically the interval printed")
+    print("  above. A gate on it could never fire, and would read as evidence.")
+
+
+# ---------------------------------------------------------------------------
+# STABILITY MARGIN + SAME-COUNT ATTRIBUTION CHURN.
+#
+# Two questions the accuracy figure cannot answer, both answerable from the
+# FROZEN caches with no new labels and no re-embedding:
+#
+#   (1) STABILITY MARGIN. How close is each fixture's count to flipping? A
+#       fixture that answers 1 and would still answer 1 under a large
+#       perturbation is evidence; a fixture that answers 1 and flips under a
+#       0.01 cosine nudge is a coin landing on its edge, and the accuracy table
+#       scores the two identically.
+#   (2) SAME-COUNT ATTRIBUTION CHURN. Holding the count FIXED, how much speech
+#       moves to a different speaker? This is the count-blind-to-attribution
+#       detector, and it is the point of this whole block: the product ships
+#       labelled turns, the harness scores a count, and this is the only number
+#       here that can show attribution moving while the headline does not.
+#
+# The perturbations are deterministic. Each trial's generator is seeded from
+# (CRC32 of the pseudonym, arm index, trial index), so a run reproduces exactly,
+# a fixture's trials do not depend on how many other fixtures were loaded, and
+# adding a fixture does not perturb anybody else's numbers.
+# ---------------------------------------------------------------------------
+
+STABILITY_DISPLACEMENTS = (0.01, 0.02, 0.05)
+STABILITY_DROPOUT = 0.05
+STABILITY_SEEDS = 3
+CHURN_LOUD = 0.05  # churn above this is called out by name in the summary
+
+
+def _perturb(embeddings, eps, rng):
+    """Rotate every window vector by EXACTLY `eps` of cosine distance.
+
+    Gaussian noise PROJECTED ORTHOGONAL to each vector and rescaled, rather than
+    plain additive noise, so the displacement the report names is the
+    displacement actually applied: cos(v, v') == 1 - eps for every row, not on
+    average and not up to the vector's norm. An "isotropic noise at sigma"
+    number would have to be translated by the reader before it meant anything
+    about the cosine metric cluster() uses.
+    """
+    E = np.asarray(embeddings, dtype=np.float64)
+    norms = np.linalg.norm(E, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    unit = E / norms
+    noise = rng.standard_normal(E.shape)
+    noise -= (noise * unit).sum(axis=1, keepdims=True) * unit
+    nn = np.linalg.norm(noise, axis=1, keepdims=True)
+    nn[nn == 0] = 1.0
+    cos = max(1.0 - float(eps), 1e-6)
+    tan = np.sqrt(max(1.0 / (cos * cos) - 1.0, 0.0))
+    return E + (noise / nn) * norms * tan
+
+
+def _keep_mask(n, rate, rng, floor=4):
+    """Window-dropout mask. Never drops a fixture below `floor` windows: a
+    2-window fixture reduced to 1 measures the n==1 shortcut in cluster(), not
+    the clustering."""
+    keep = rng.random(n) >= float(rate)
+    if int(keep.sum()) < min(floor, n):
+        keep = np.ones(n, dtype=bool)
+    return keep
+
+
+def _churn(base_labels, trial_labels, durations):
+    """Duration-weighted share of speech that changed speaker, count held fixed.
+
+    Cluster ids are arbitrary, so the two labelings are first matched
+    one-to-one by maximum duration overlap (Hungarian); churn is the duration
+    NOT covered by that best possible matching. A pure relabelling therefore
+    scores 0 and only real movement scores above it.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    base_labels = list(base_labels)
+    trial_labels = list(trial_labels)
+    durations = list(durations)
+    total = float(sum(durations))
+    if total <= 0:
+        return 0.0
+    ub = sorted(set(base_labels))
+    ut = sorted(set(trial_labels))
+    bi = {lab: i for i, lab in enumerate(ub)}
+    ti = {lab: i for i, lab in enumerate(ut)}
+    m = np.zeros((len(ub), len(ut)), dtype=np.float64)
+    for b, t, d in zip(base_labels, trial_labels, durations):
+        m[bi[b], ti[t]] += d
+    r, c = linear_sum_assignment(-m)
+    return max(0.0, 1.0 - float(m[r, c].sum()) / total)
+
+
+def stability_suite(fixtures, cluster_fn, threshold, seeds=STABILITY_SEEDS,
+                    displacements=STABILITY_DISPLACEMENTS, dropout=STABILITY_DROPOUT):
+    """Run the seeded perturbation arms. Returns (arms, {key: row})."""
+    arms = [("cos%.3f" % d, "noise", d) for d in displacements]
+    arms.append(("drop%d%%" % round(100 * dropout), "dropout", dropout))
+    rows = {}
+    for fx in fixtures:
+        key = fx["key"]
+        durations = _durations(fx["windows"])
+        base_n, base_labels = run_cluster(fx, cluster_fn, None, threshold)
+        row = {"base": base_n, "arms": {}, "churn": [], "flips": 0, "trials": 0}
+        crc = zlib.crc32(key.encode("utf-8"))
+        for ai, (name, kind, param) in enumerate(arms):
+            flips = 0
+            for trial in range(seeds):
+                rng = np.random.default_rng([crc, ai, trial])
+                emb = np.asarray(fx["embeddings"], dtype=np.float64)
+                keep = None
+                if kind == "noise":
+                    pert, dur = _perturb(emb, param, rng), durations
+                else:
+                    keep = _keep_mask(len(emb), param, rng)
+                    pert = emb[keep]
+                    dur = [d for d, k in zip(durations, keep) if k]
+                labels = cluster_fn(pert, n_speakers=None, threshold=threshold,
+                                    durations=dur)
+                row["trials"] += 1
+                if len(set(labels)) != base_n:
+                    flips += 1
+                    row["flips"] += 1
+                else:
+                    # The reference for a dropout trial is the base labelling
+                    # RESTRICTED to the surviving windows: the question is
+                    # whether the survivors changed speaker, not what happened
+                    # to windows nobody clustered.
+                    ref = (base_labels if keep is None
+                           else [lab for lab, k in zip(base_labels, keep) if k])
+                    row["churn"].append(_churn(ref, labels, dur))
+            row["arms"][name] = (flips, seeds)
+        rows[key] = row
+    return arms, rows
+
+
+def _margin(row, arms):
+    """Largest tested cosine displacement at which the count never flipped."""
+    noise = [(a[2], row["arms"][a[0]][0]) for a in arms if a[1] == "noise"]
+    noise.sort()
+    best = None
+    for disp, flips in noise:
+        if flips:
+            break
+        best = disp
+    if best is None:
+        return "<%.3f" % noise[0][0] if noise else "-"
+    if best == noise[-1][0]:
+        return ">=%.3f" % best
+    return "%.3f" % best
+
+
+def print_stability(arms, rows, fixtures, seeds, show_titles=False, elapsed=None):
+    print("=" * 100)
+    print("STABILITY MARGIN + SAME-COUNT ATTRIBUTION CHURN")
+    print("=" * 100)
+    print("Seeded perturbations of the FROZEN cached embeddings: no re-embedding, no audio,")
+    print("no new labels. Noise arms rotate every window vector by EXACTLY the named cosine")
+    print("displacement (noise projected orthogonal to the vector, then rescaled); the drop")
+    print("arm deletes windows at random. Seeds are derived from (fixture, arm, trial), so")
+    print("this table reproduces exactly and one fixture's numbers do not depend on another.")
+    print("SUBSAMPLED: %d seed(s) per arm, %d arms, %d trials per fixture. Widen with"
+          % (seeds, len(arms), seeds * len(arms)))
+    print("  --stability-seeds N (cost is linear in N)%s."
+          % ("" if elapsed is None else "; this run took %.0f s" % elapsed))
+    print()
+    hdr = ("%-47s %4s " % ("meeting", "base")
+           + " ".join("%9s" % a[0] for a in arms)
+           + " %8s %7s %7s" % ("margin", "churn~", "churn^"))
+    print(hdr)
+    print("-" * len(hdr))
+    loud, quiet, flipped = [], [], []
+    for fx in fixtures:
+        key = fx["key"]
+        row = rows[key]
+        churn = row["churn"]
+        mean = (sum(churn) / len(churn)) if churn else None
+        peak = max(churn) if churn else None
+        if row["flips"]:
+            flipped.append(key)
+        if peak is not None and peak > CHURN_LOUD:
+            loud.append((key, peak))
+        elif peak:
+            quiet.append((key, peak))
+        print("%-47s %4d " % (row_name(key, show_titles), row["base"])
+              + " ".join("%9s" % ("%d/%d" % row["arms"][a[0]]) for a in arms)
+              + " %8s %7s %7s"
+              % (_margin(row, arms),
+                 "-" if mean is None else "%.1f%%" % (100 * mean),
+                 "-" if peak is None else "%.1f%%" % (100 * peak)))
+    print()
+    print("columns: base=count at the live constants | one cell per arm = count FLIPS/trials")
+    print("         margin=largest tested displacement with zero flips ('>=' means it never")
+    print("               flipped at any tested displacement; '<' means it flipped at the")
+    print("               smallest one, i.e. the count is sitting on a clustering boundary)")
+    print("         churn~ / churn^ = mean and worst duration-weighted share of speech that")
+    print("               moved to a DIFFERENT speaker in trials where the COUNT WAS")
+    print("               UNCHANGED, after matching cluster ids one-to-one by best overlap.")
+    print()
+    total = len(fixtures)
+    print("STABILITY MARGIN: %d of %d fixtures never flipped the count at any tested"
+          % (total - len(flipped), total))
+    print("  perturbation; %d flipped at least once%s"
+          % (len(flipped), "." if not flipped else ":"))
+    for line in wrapped([label_of(k) for k in flipped], 88):
+        print("    %s" % line)
+    print("  The accuracy table scores a fixture that would survive a large nudge and one")
+    print("  sitting on a boundary identically. This column is the difference.")
+    if loud:
+        loud.sort(key=lambda p: -p[1])
+        print("ATTRIBUTION CHURN WITH THE COUNT UNCHANGED: %d fixture(s) move more than %.0f%%"
+              % (len(loud), 100 * CHURN_LOUD))
+        print("  of their speech onto a different speaker while the count this harness scores")
+        print("  stays IDENTICAL:")
+        for key, peak in loud:
+            print("    - %-40s worst %.1f%% of speech re-attributed, count unchanged"
+                  % (row_name(key, show_titles), 100 * peak))
+        print("  Nothing in the ACCURACY block above can see any of this. It is the whole")
+        print("  reason this section exists, and the reason count accuracy is not a measure")
+        print("  of the thing the product actually ships.")
+        if quiet:
+            quiet.sort(key=lambda p: -p[1])
+            print("  Another %d fixture(s) re-attribute speech below that line, listed so the"
+                  % len(quiet))
+            print("  threshold reads as a threshold and not as a floor:")
+            for line in wrapped(["%s %.1f%%" % (label_of(k), 100 * v)
+                                 for k, v in quiet], 88):
+                print("    %s" % line)
+    else:
+        print("ATTRIBUTION CHURN WITH THE COUNT UNCHANGED: no fixture exceeded %.0f%% at these"
+              % (100 * CHURN_LOUD))
+        print("  perturbation sizes. That is a statement about THESE arms and THIS seed count,")
+        print("  not a proof of stable attribution — widen with --stability-seeds and larger")
+        print("  displacements before quoting it.")
+
+
+def run_binding_section(fixtures, res, args):
+    """Sweep + print the binding report, timed, with the fit cache installed."""
+    t0 = time.time()
+    with FitCache([fx["embeddings"] for fx in fixtures]) as cache:
+        rows, _ = binding_report(fixtures, diarization.cluster, args.threshold, res,
+                                 probes=max(1, args.sweep_probes))
+    print_binding_report(rows, args.show_titles)
+    print("swept %d configuration(s) over %d fixtures in %.0f s (%d linkage fits reused"
+          % (sum(r.get("evals", 0) for r in rows), len(fixtures), time.time() - t0,
+             cache.hits))
+    print("  from cache; the fit does not depend on the fold constants, only the sweep's")
+    print("  post-fit arithmetic does).")
+    print()
+
+
+def run_stability_section(fixtures, args):
+    """Run + print the perturbation suite, timed."""
+    seeds = max(1, args.stability_seeds)
+    t0 = time.time()
+    with FitCache([fx["embeddings"] for fx in fixtures]):
+        arms, rows = stability_suite(fixtures, diarization.cluster, args.threshold,
+                                     seeds=seeds)
+    print_stability(arms, rows, fixtures, seeds, args.show_titles,
+                    elapsed=time.time() - t0)
+    print()
+
+
+def print_not_measured(why):
+    """Absence must read as absence, never as a pass — the same rule the golden
+    regression follows on a clean clone."""
+    print("=" * 100)
+    print("BINDING FIXTURES / STABILITY + CHURN: NOT MEASURED THIS RUN")
+    print("=" * 100)
+    print("  %s" % why)
+    print("  Nothing below or above has been checked for a single-fixture-bound constant")
+    print("  or for attribution moving underneath an unchanged count.")
+    print()
 
 
 def check_golden(fixtures, res):
@@ -1311,6 +2099,22 @@ def main(argv=None):
                     help="print real fixture slugs instead of the pseudonyms. Local "
                          "use only — the slugs are meeting titles with participant "
                          "names in them, and this report gets pasted into docs.")
+    ap.add_argument("--quick", action="store_true",
+                    help="skip the binding sweep and the stability suite. Together "
+                         "they are ~100 s of a default run over the full corpus (they "
+                         "re-cluster it a few hundred times); everything else is ~5 s. "
+                         "The report then says NOT MEASURED where their findings would "
+                         "be, rather than omitting them.")
+    ap.add_argument("--binding-only", action="store_true",
+                    help="accuracy block plus the binding-fixture report, nothing else")
+    ap.add_argument("--stability-only", action="store_true",
+                    help="accuracy block plus the perturbation margin / churn report")
+    ap.add_argument("--stability-seeds", type=int, default=STABILITY_SEEDS,
+                    help="seeds per perturbation arm (default %d; cost is linear)"
+                         % STABILITY_SEEDS)
+    ap.add_argument("--sweep-probes", type=int, default=2,
+                    help="samples used to ask how far past a count edge ACCURACY "
+                         "stays unchanged (default 2)")
     args = ap.parse_args(argv)
 
     overrides = parse_set(args.sets)
@@ -1366,6 +2170,23 @@ def main(argv=None):
     # Evaluated before the header so ACCURACY — the number the header leads with
     # — is a measurement of this run, not of a previous one.
     base = evaluate(fixtures, diarization.cluster, args.threshold)
+
+    # --binding-only / --stability-only still print ACCURACY first. Every number
+    # in those two sections is a statement ABOUT the accuracy figure, and a
+    # section quoted without it is a section quoted without its subject.
+    if args.binding_only or args.stability_only:
+        print_accuracy(fixtures, base, args.show_titles)
+        print()
+        if not fixtures:
+            print("no fixtures loaded, so there is nothing to sweep or perturb.")
+            print("\nexit 0")
+            return 0
+        if args.binding_only:
+            run_binding_section(fixtures, base, args)
+        if args.stability_only:
+            run_stability_section(fixtures, args)
+        print("\nexit 0")
+        return 0
 
     print_header(fixtures, base, args.threshold, overrides, args.variant_module,
                  args.show_titles)
@@ -1441,6 +2262,14 @@ def main(argv=None):
                           "%d with no truth (never scored)"
                           % (corpus, len(a["hits"]), len(a["scorable"]),
                              len(a["unscored"])))
+                    cb = constant_baseline(sub)
+                    if cb is not None:
+                        disc = discriminating(sub)
+                        print("                      %-10s constant-%s baseline %d of %d,"
+                              " advantage %+d fixtures; discriminating %d/%d"
+                              % ("", cb["value"], cb["hits"], cb["n"],
+                                 len(a["hits"]) - cb["hits"],
+                                 hits_of(disc, base), len(disc)))
             wrong = pinned_but_wrong(fixtures)
             print()
             if wrong:
@@ -1506,6 +2335,28 @@ def main(argv=None):
         if exit_code == 0:
             print("GATE PASSED")
         by_key = None  # an A/B run has two result maps, so no baseline to save
+
+    # The two Phase-1 sections. They run on EVERY default report, because the
+    # findings they carry — a constant held by one unscorable fixture, speech
+    # re-attributed under a frozen count — are exactly the findings a headline
+    # accuracy figure hides, and a section nobody runs is a section nobody reads.
+    print()
+    if not fixtures:
+        print_not_measured("no fixtures were loaded.")
+    elif ab_mode:
+        print_not_measured(
+            "this is an A/B run. Both sections describe ONE configuration, and running\n"
+            "  them here would attach a variant's intervals to the base run's numbers.\n"
+            "  Run them on their own: tools/eval_diarization.py --binding-only "
+            "--stability-only")
+    elif args.quick:
+        print_not_measured(
+            "--quick was passed, which skips the binding sweep and the perturbation\n"
+            "  suite. They are the slow part of a default run; they are also the only\n"
+            "  part that looks past the count.")
+    else:
+        run_binding_section(fixtures, base, args)
+        run_stability_section(fixtures, args)
 
     payload = {
         "shape": "ab" if ab_mode else "by_key",
