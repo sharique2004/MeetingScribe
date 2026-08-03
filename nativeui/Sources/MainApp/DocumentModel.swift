@@ -1,0 +1,137 @@
+// The interleaver: turns a meeting's summary + the user's own timestamped
+// notes into one document of blocks. The thesis is two inks, one flow —
+// the human's notes structure the page at full ink; the machine's writing
+// nests beneath at secondary ink. Every AI claim tries to bind to the
+// transcript turn that produced it, so evidence can unfold in place.
+import Foundation
+
+enum DocumentBlock: Identifiable {
+    case heading(String)                                  // from a short user note
+    case userParagraph(String)                            // a long user note
+    case bullet(id: String, text: String, evidence: Turn?)
+    case actionItem(id: String, item: ActionItem, evidence: Turn?)
+
+    var id: String {
+        switch self {
+        case .heading(let s): return "h-\(s)"
+        case .userParagraph(let s): return "p-\(s.prefix(60))"
+        case .bullet(let id, _, _): return id
+        case .actionItem(let id, _, _): return id
+        }
+    }
+}
+
+struct DocumentSection: Identifiable {
+    let id: String
+    let title: String?        // nil = untitled overview flow
+    var blocks: [DocumentBlock]
+}
+
+enum DocumentBuilder {
+
+    static func build(detail: MeetingDetail, notes: [MeetingNote]) -> (sections: [DocumentSection], nextSteps: [DocumentBlock]) {
+        let turns = detail.turns ?? []
+        let summary = detail.summary
+
+        // Timed short notes become headings; long ones stay paragraphs.
+        let timedNotes = notes.filter { $0.t != nil }.sorted { ($0.t ?? 0) < ($1.t ?? 0) }
+
+        var sections: [DocumentSection] = []
+
+        // Windows: each note owns [its t, next note's t).
+        var windows: [(note: MeetingNote, lo: Double, hi: Double)] = []
+        for (i, n) in timedNotes.enumerated() {
+            let lo = n.t ?? 0
+            let hi = i + 1 < timedNotes.count ? (timedNotes[i + 1].t ?? .infinity) : .infinity
+            windows.append((n, lo, hi))
+        }
+
+        // Bind each AI key point to a turn, then to a note window.
+        var overview: [DocumentBlock] = []
+        var perWindow: [Int: [DocumentBlock]] = [:]
+        for (i, point) in (summary?.key_points ?? []).enumerated() {
+            let ev = evidence(for: point, in: turns)
+            let block = DocumentBlock.bullet(id: "kp-\(i)", text: point, evidence: ev)
+            if let t = ev?.start, let wi = windows.firstIndex(where: { t >= $0.lo && t < $0.hi }) {
+                perWindow[wi, default: []].append(block)
+            } else {
+                overview.append(block)
+            }
+        }
+
+        if !overview.isEmpty {
+            sections.append(DocumentSection(id: "overview", title: windows.isEmpty ? nil : "Overview",
+                                            blocks: overview))
+        }
+        for (i, w) in windows.enumerated() {
+            var blocks: [DocumentBlock] = []
+            let text = w.note.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isHeading = text.count < 60
+            if !isHeading { blocks.append(.userParagraph(text)) }
+            blocks.append(contentsOf: perWindow[i] ?? [])
+            guard !(blocks.isEmpty && !isHeading) else { continue }
+            sections.append(DocumentSection(
+                id: "note-\(i)",
+                title: isHeading ? headingCase(text) : nil,
+                blocks: blocks))
+        }
+
+        // Decisions and open questions: their own sections, same grammar.
+        if let decisions = summary?.decisions, !decisions.isEmpty {
+            sections.append(DocumentSection(id: "decisions", title: "Decisions",
+                blocks: decisions.enumerated().map { i, d in
+                    .bullet(id: "dec-\(i)", text: d, evidence: evidence(for: d, in: turns))
+                }))
+        }
+        if let questions = summary?.open_questions, !questions.isEmpty {
+            sections.append(DocumentSection(id: "questions", title: "Open questions",
+                blocks: questions.enumerated().map { i, q in
+                    .bullet(id: "q-\(i)", text: q, evidence: evidence(for: q, in: turns))
+                }))
+        }
+
+        // Next steps: action items + follow-ups.
+        var nextSteps: [DocumentBlock] = (summary?.action_items ?? []).enumerated().map { i, item in
+            .actionItem(id: "ai-\(i)", item: item, evidence: evidence(for: item.task, in: turns))
+        }
+        for (i, f) in (summary?.follow_ups ?? []).enumerated() {
+            nextSteps.append(.actionItem(id: "fu-\(i)",
+                                         item: ActionItem(owner: nil, task: f, due: nil),
+                                         evidence: evidence(for: f, in: turns)))
+        }
+
+        return (sections, nextSteps)
+    }
+
+    /// A short user note becomes a heading: sentence-cased, no trailing period.
+    private static func headingCase(_ s: String) -> String {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.hasSuffix(".") { t.removeLast() }
+        guard let first = t.first else { return t }
+        return String(first).uppercased() + t.dropFirst()
+    }
+
+    /// Nearest transcript turn by content-word overlap; nil when nothing
+    /// vouches for the claim (the hover glyph simply doesn't appear).
+    static func evidence(for claim: String, in turns: [Turn]) -> Turn? {
+        guard !turns.isEmpty else { return nil }
+        let claimWords = contentWords(claim)
+        guard claimWords.count >= 2 else { return nil }
+        var best: (turn: Turn, score: Double)?
+        for turn in turns {
+            let turnWords = contentWords(turn.text)
+            guard !turnWords.isEmpty else { continue }
+            let overlap = Double(claimWords.intersection(turnWords).count)
+            let score = overlap / Double(claimWords.count)
+            if score > (best?.score ?? 0) { best = (turn, score) }
+        }
+        guard let best, best.score >= 0.28 else { return nil }
+        return best.turn
+    }
+
+    private static func contentWords(_ s: String) -> Set<String> {
+        Set(s.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 3 })
+    }
+}
