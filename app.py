@@ -1245,6 +1245,14 @@ def rename_speaker(meeting_id):
         if not key or key not in meta.get("speakers", {}) or not name:
             return ({"error": "bad speaker key or name"}, 400)
         meta["speakers"][key] = name
+        # A human has spoken, so whatever speaker_names inferred about this
+        # cluster is now history, and history that still claims a quote
+        # "proves" the old name. Drop it rather than leave it to be shown
+        # next to a name it does not support.
+        evidence = meta.get("speaker_names")
+        if isinstance(evidence, dict) and evidence.pop(key, None) is not None:
+            if not evidence:
+                meta.pop("speaker_names", None)
 
     meta, denied = _edit_meeting_json(meeting_id, mutate)
     if denied:

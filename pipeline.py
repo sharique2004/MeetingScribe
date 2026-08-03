@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 
 import diarization
+import speaker_names
 import stats as stats_mod
 import swift_helpers
 import tech_vocabulary
@@ -1240,6 +1241,14 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     # recognition can never overwrite a name a human typed — it only fills in
     # labels that would otherwise read "Speaker N".
     voice_profiles.apply_recognition(track_state, labelled, speakers, cfg)
+
+    # Then the conversation itself: "Hi, I'm Marcus", "Thanks, Priya". AFTER
+    # voice profiles, so a remembered voice always beats an inference, and
+    # defaults-only inside for the same reason recognition is. Every name it
+    # applies carries an anchored quote, recorded on meta["speaker_names"];
+    # it never raises, and a Mac without the on-device model simply keeps the
+    # "Speaker N" labels.
+    speaker_names.apply_inferred_names(meta, turns, speakers, cfg, progress_cb)
 
     meta["speakers"] = speakers
     meta["turns"] = turns

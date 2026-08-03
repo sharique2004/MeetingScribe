@@ -59,6 +59,29 @@ DEFAULTS = {
     # against this machine's corpus, not chosen: voice_profiles.RECOGNIZE_MAX_
     # DIST carries the measurement and must hold the same number.
     "voice_profile_threshold": 0.45,
+    # Read real names off the conversation ("Hi, I'm Marcus", "Thanks, Priya")
+    # and put them on speaker labels that would otherwise say "Speaker N".
+    # Runs on the engine chosen above, only on formulaic labels, never over a
+    # name the user typed, and only where an anchored quote from the
+    # transcript proves it.
+    #
+    # OFF until three things measured on the 41 meetings here are decided,
+    # because each of them is a product call and none is an engineering one:
+    #   1. It is not deterministic. Four passes over the same corpus produced
+    #      9, 9, 12 and 11 names. A name that appears, then vanishes when the
+    #      user hits Reprocess, is worse than a label that never claimed to
+    #      know. The engine runs at temperature 0.2 and nothing in the gate
+    #      log explains the variance.
+    #   2. It spells the name the way the recognizer heard it. Of 11 names on
+    #      this corpus none was the wrong PERSON, but 4 were a mangled
+    #      spelling of the right one ("Katty" for Katy, "Sharik Khatri" for
+    #      Sharique Khatri). Showing someone their own name misspelled may be
+    #      worse than "Speaker 1".
+    #   3. It costs 15 to 93 seconds of processing on meetings that reach the
+    #      model, on every recording.
+    # Nothing shows the evidence yet either: meta["speaker_names"] carries the
+    # anchored quote behind every name, and no UI reads it.
+    "speaker_names": False,
     # Extra words/names the speech recognizer should be biased toward, e.g.
     # ["Kubernetes", "Priya", "InsForge"]. Calendar attendee names are added
     # automatically per meeting.
