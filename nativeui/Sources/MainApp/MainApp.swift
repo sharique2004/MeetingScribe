@@ -122,6 +122,7 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 244, ideal: 272, max: 320)
         } detail: {
             detailColumn
+                .navigationTitle("")   // the wordmark in the toolbar is the title
         }
         .tint(MS.interactive)
         .environmentObject(library)
@@ -136,8 +137,9 @@ struct ContentView: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MS.ink)
                 }
-                .padding(.leading, 2)
+                .fixedSize()
             }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 RecordToolbarButton(center: center)
             }

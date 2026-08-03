@@ -393,19 +393,19 @@ private struct IntelligenceStep: View {
         StepPage(
             kicker: "Step 5 of 5",
             title: "Who writes your summaries.",
-            subtitle: "After each meeting, MeetingScribe writes the recap, decisions and action items. It uses the best writer available on this Mac."
+            subtitle: "After each meeting, MeetingScribe writes the recap, to-dos and a follow-up email — and answers questions about it. Apple Intelligence does this on-device, so nothing needs installing."
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 if checked {
-                    CheckRow(done: claudeFound,
-                             text: claudeFound
-                             ? "Claude found — summaries use your Claude, on your account"
-                             : "Claude not installed — add Claude Code anytime for the strongest summaries")
                     CheckRow(done: appleReady,
                              text: appleReady
-                             ? "Apple Intelligence ready — private, on-device summaries"
+                             ? "Apple Intelligence ready — nothing to install"
                              : (appleMessage ?? "Apple Intelligence unavailable on this Mac"))
-                    if !claudeFound && !appleReady {
+                    CheckRow(done: claudeFound,
+                             text: claudeFound
+                             ? "Claude also found — switch to it in Settings for richer writing"
+                             : "Claude Code not installed — optional, not needed")
+                    if !appleReady && !claudeFound {
                         Text("Recording and transcription work fully today; summaries switch on the moment either becomes available.")
                             .font(MSFont.meta)
                             .foregroundStyle(MS.ink3)

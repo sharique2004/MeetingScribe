@@ -17,7 +17,16 @@ final class Settings: ObservableObject {
 
     private init() {
         let cfg = Self.read(path)
-        summaryEngine = (cfg["summary_engine"] as? String) ?? "claude"
+        // Apple Intelligence is the default: on-device, fast, and it means a
+        // fresh install needs nothing installed to write summaries or answer
+        // questions. The engine's own default is Claude, so an absent key is
+        // written through rather than merely assumed.
+        if let existing = cfg["summary_engine"] as? String {
+            summaryEngine = existing
+        } else {
+            summaryEngine = "apple"
+            write("summary_engine", "apple")
+        }
     }
 
     private static func read(_ url: URL) -> [String: Any] {
@@ -48,13 +57,13 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("SUMMARIES")
+            Text("INTELLIGENCE")
                 .font(MSFont.kicker)
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
                 .padding(.top, 26)
 
-            Text("Who writes them")
+            Text("Who writes your summaries and answers")
                 .font(.system(size: 20, weight: .semibold, design: .serif))
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
@@ -65,8 +74,9 @@ struct SettingsView: View {
                     title: "Apple Intelligence",
                     detail: appleReady == false
                         ? (appleMessage ?? "Not available on this Mac")
-                        : "On-device and fast — usually under a minute. Nothing leaves this Mac.",
+                        : "Built in, on-device, and fast — usually under a minute. Nothing to install, nothing leaves this Mac.",
                     available: appleReady ?? true,
+                    recommended: true,
                     selected: settings.summaryEngine == "apple") {
                         settings.summaryEngine = "apple"
                     }
@@ -74,16 +84,17 @@ struct SettingsView: View {
                     id: "claude",
                     title: "Claude",
                     detail: claudeFound
-                        ? "The strongest writing, using the Claude on this Mac. Takes a minute or two."
-                        : "Claude Code isn't installed on this Mac.",
+                        ? "Richer writing and reads the whole of a long meeting, but takes a minute or two and needs Claude Code installed."
+                        : "Optional — install Claude Code to enable this.",
                     available: claudeFound,
+                    recommended: false,
                     selected: settings.summaryEngine == "claude") {
                         settings.summaryEngine = "claude"
                     }
             }
             .padding(.top, 18)
 
-            Text("Applies to the next summary you generate. Re-analyse any meeting to rewrite it with the engine you pick.")
+            Text("Applies to summaries and to Ask. Re-analyse any meeting to rewrite it with the engine you pick.")
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
                 .padding(.top, 16)
@@ -112,6 +123,7 @@ private struct EngineOption: View {
     let title: String
     let detail: String
     let available: Bool
+    var recommended = false
     let selected: Bool
     let choose: () -> Void
 
@@ -134,6 +146,13 @@ private struct EngineOption: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MS.raised, in: .capsule)
+                        } else if recommended {
+                            Text("recommended")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(MS.playhead)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(MS.playheadFill.opacity(0.14), in: .capsule)
                         }
                     }
                     Text(detail)
