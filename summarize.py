@@ -41,6 +41,8 @@ log = logging.getLogger("meetingscribe.summarize")
 MAX_CHUNK_CHARS = 10000    # transcript text per model call (4K-token context)
 MAX_TOTAL_CHARS = 240000   # sanity cap for pathological transcripts
 MAP_WORKERS = 3            # map chunks summarized concurrently (= llm MAX_INFLIGHT)
+OPENING_ANCHOR_LINES = 14  # first turns kept verbatim for the reduce call
+OPENING_ANCHOR_CHARS = 1200
 
 _ACTION_ITEM = {
     "type": "object", "name": "ActionItem", "properties": [
@@ -138,6 +140,196 @@ _REDUCE_TAIL = (
 
 REDUCE_INSTRUCTIONS = _REDUCE_FOR_LOCAL_USER + _REDUCE_TAIL
 REDUCE_INSTRUCTIONS_NO_LOCAL_USER = _REDUCE_NO_LOCAL_USER + _REDUCE_TAIL
+
+# The on-device model reads the schema's headline description ("a punchy 6-10
+# word headline stating the single most important outcome") and writes
+# "Expedia Group Interview Summary" anyway — it names the TOPIC, which is the
+# one thing the reader already knows, because the meeting's title is right
+# above it. A frontier model infers the intent from the example; this one
+# needs the failure spelled out as a prohibition, which is what small models
+# follow reliably. Appended on the Apple path only, so the Claude path is
+# byte-identical to what it was.
+# NO EXAMPLES IN HERE, DELIBERATELY. An earlier version of this string carried
+# three sample headlines to show the shape wanted. The on-device model copied
+# one into the summary of a real meeting — a job interview came back as
+# "Interview moved to Tuesday; Bob owns rollback", and the tldr then explained
+# the rollback. A small model reads a vivid example as material, not as form.
+# Everything here is therefore a rule about the meeting in front of it.
+APPLE_REDUCE_EXTRA = (
+    " The headline must state what HAPPENED in this meeting or what was DECIDED "
+    "in it, not what it was about. Never write a headline of the form "
+    "'X Summary', 'Discussion about X', 'X Meeting' or 'Overview of X' — the "
+    "reader is already looking at the meeting's title, so naming the topic "
+    "again tells them nothing. Use only facts from the notes below."
+    # Measured failures on this model, each stated as a rule because that is
+    # what it follows: on one 33-minute call it invented five of nine action
+    # items, on another it addressed the follow-up email to a person who was
+    # never in the room, and it reported a decision with the two speakers'
+    # roles swapped.
+    " An action item is ONLY something a named person actually committed to "
+    "doing after this meeting. Do not turn a topic that was discussed, a "
+    "suggestion nobody accepted, or something already done during the meeting "
+    "into an action item. If nobody committed to anything, return an empty "
+    "list — an empty list is correct and expected, an invented task is not. "
+    " Keep who did what straight: when the notes say one person asked the "
+    "other to do something, do not swap them. "
+    " Address the follow-up email only to people who actually spoke in this "
+    "meeting, using the names in the notes; if no other participant is named, "
+    "open it with 'Hi,' and no name."
+)
+
+HEADLINE_SCHEMA = {
+    "type": "object", "name": "Headline", "properties": [
+        {"name": "headline", "type": "string",
+         "description": "6-10 words naming the outcome of the meeting"},
+    ],
+}
+
+# Example-free (see APPLE_REDUCE_EXTRA), and the meeting's TITLE is deliberately
+# not in this prompt either. Passing it with "do not echo it" achieved the
+# opposite twice over: the model echoed it anyway, and on the long meeting the
+# combination tripped Apple Intelligence's content guardrail outright. Withhold
+# the title and echoing it stops being reachable.
+HEADLINE_INSTRUCTIONS = (
+    "Below are facts from one meeting. Write a single headline of 6 to 10 words "
+    "naming its most important OUTCOME: what happened, what was agreed, or what "
+    "happens next. Use only these facts. Write it as a statement, not a topic "
+    "label, and do not use the words summary, overview, discussion or notes. "
+    "Return the headline only."
+)
+
+# Headlines that say nothing: the topic echoed back, or a filing label.
+_DEAD_HEADLINE = re.compile(
+    r"^\s*(summary|notes|recap|overview|minutes)\b|"
+    r"\b(summary|recap|overview|discussion|meeting|notes|call|sync|interview)\s*$",
+    re.I)
+
+
+def _headline_is_dead(headline, title):
+    """True when a headline tells the reader nothing they didn't have."""
+    text = str(headline or "").strip()
+    if len(text.split()) < 3:
+        return True
+    if _DEAD_HEADLINE.search(text):
+        return True
+    # Echoing the meeting's own title, in whole or in large part.
+    def words(s):
+        return {w for w in re.findall(r"[a-z0-9]+", s.lower()) if len(w) > 3}
+    head, name = words(text), words(title or "")
+    if head and name and len(head & name) / len(head) >= 0.6:
+        return True
+    return False
+
+
+ACTION_SUPPORT_RATIO = 0.6   # of a task's distinctive words must have been said
+ACTION_MIN_WORDS = 2         # below this there is nothing to judge
+
+
+def _drop_unsupported_actions(summary, meta):
+    """Remove action items whose words were never spoken in the meeting.
+
+    The on-device model invents plausible follow-ups in the MAP phase — on one
+    33-minute call, "Provide guidance on using Exa.io", "Explore other tools
+    for web scraping" and "Review the login process for improvements", none of
+    which anybody said. The reduce cannot catch that (it never sees the
+    transcript) and instructions do not stop it, but the transcript itself
+    settles it: a task the meeting really produced is built from words the
+    meeting really contains.
+
+    Measured on that call, whole-transcript vocabulary coverage separated the
+    two cleanly — every genuine item scored 0.60 or higher, every invented one
+    0.50 or lower — so the threshold sits in that gap. Paraphrase survives
+    (the words are still the meeting's); invention does not.
+
+    Deliberately conservative: it only ever DROPS, never rewrites, and a task
+    too short to have distinctive vocabulary is kept rather than guessed at.
+    """
+    items = summary.get("action_items") or []
+    if not items:
+        return summary
+    spoken = set()
+    for turn in (meta.get("turns") or []):
+        spoken |= _content_words(str(turn.get("text") or ""))
+    # The user's own notes are theirs to turn into tasks, so words they typed
+    # count as said — a task from a note nobody spoke aloud is exactly what
+    # _NOTES_OWNER promises to keep.
+    for note in (meta.get("notes") or []):
+        if isinstance(note, dict):
+            spoken |= _content_words(str(note.get("text") or ""))
+    if not spoken:
+        return summary
+
+    kept, dropped = [], []
+    for item in items:
+        task = str((item or {}).get("task") or "") if isinstance(item, dict) else ""
+        words = _content_words(task)
+        if len(words) < ACTION_MIN_WORDS:
+            kept.append(item)
+            continue
+        if len(words & spoken) / len(words) >= ACTION_SUPPORT_RATIO:
+            kept.append(item)
+        else:
+            dropped.append(task)
+    if dropped:
+        log.info("dropped %d unsupported action item(s): %s", len(dropped), dropped)
+    summary["action_items"] = kept
+    return summary
+
+
+def _content_words(text):
+    """The distinctive words of a phrase — what makes it about something."""
+    return {w for w in re.findall(r"[a-z0-9']+", text.lower())
+            if len(w) > 3 and w not in _ACTION_STOPWORDS}
+
+
+_ACTION_STOPWORDS = {
+    "about", "after", "again", "also", "another", "back", "because", "been",
+    "before", "being", "both", "come", "could", "does", "doing", "done", "down",
+    "during", "each", "else", "even", "ever", "every", "from", "further", "give",
+    "going", "have", "here", "into", "just", "keep", "like", "make", "many",
+    "more", "most", "much", "must", "need", "next", "once", "only", "other",
+    "over", "same", "should", "some", "such", "take", "than", "that", "their",
+    "them", "then", "there", "these", "they", "thing", "things", "this", "those",
+    "through", "time", "under", "until", "using", "very", "want", "well", "were",
+    "what", "when", "where", "which", "while", "will", "with", "would", "your",
+}
+
+
+def _apple_headline(summary, title, progress_cb=lambda msg: None):
+    """Rewrite a dead headline with one narrow on-device call.
+
+    The reduce call has to produce eight fields at once, and the on-device
+    model spends its attention on the long ones — the headline comes back as
+    the topic ("Expedia Group Interview Summary") or as the title echoed
+    verbatim. Asked for nothing but the headline, with the failure modes named,
+    the same model does it well. One extra call of ~40 tokens buys the line the
+    user reads first, so it is worth more than it costs.
+    """
+    if not _headline_is_dead(summary.get("headline"), title):
+        return summary
+    facts = []
+    if summary.get("tldr"):
+        facts.append(f"What happened: {summary['tldr']}")
+    for label, key in (("Decisions", "decisions"), ("Key points", "key_points")):
+        items = [str(x) for x in (summary.get(key) or [])][:4]
+        if items:
+            facts.append(label + ":\n- " + "\n- ".join(items))
+    tasks = [a.get("task") for a in (summary.get("action_items") or [])[:3]
+             if isinstance(a, dict) and a.get("task")]
+    if tasks:
+        facts.append("Next steps:\n- " + "\n- ".join(tasks))
+    try:
+        raw = local_llm.generate(HEADLINE_INSTRUCTIONS, "\n\n".join(facts),
+                                 HEADLINE_SCHEMA, max_tokens=60)
+    except local_llm.LocalLLMError as exc:
+        log.info("headline rewrite failed (%s) — keeping the original", exc)
+        return summary
+    candidate = str((raw or {}).get("headline") or "").strip().strip('"')
+    # Only accept an improvement: a second dead headline is not worth trading
+    # the first one for.
+    if candidate and not _headline_is_dead(candidate, title):
+        summary["headline"] = _strip(candidate, 120)
+    return summary
 
 
 # --------------------------------------------- how to use the user's notes --
@@ -1302,13 +1494,23 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         notes_text = _condense([b for b in blocks if b.strip()], title, progress_cb,
                                limit=budget)
         progress_cb("Writing the summary…")
+        # The opening of a meeting is where it says what it IS — who these
+        # people are and why they are talking. Condensing eight portions down
+        # to one prompt is exactly where that framing gets squeezed out, and a
+        # reduce that has lost it writes a confident summary of whatever the
+        # later portions happened to dwell on: a 62-minute job interview came
+        # back as "Expedia is transitioning to cloud code". The first minute
+        # rides along verbatim so the model always knows what it is summarizing.
+        opening = "\n".join(lines[:OPENING_ANCHOR_LINES])[:OPENING_ANCHOR_CHARS]
         source = (
             f'Notes covering the whole meeting "{title}", in order. {speaker_note}\n\n'
-            f"{notes_text}"
+            f"HOW THE MEETING OPENED (verbatim, for context — this is what the "
+            f"meeting is):\n{opening}\n\n"
+            f"NOTES FROM THE WHOLE MEETING, IN ORDER:\n{notes_text}"
         )
 
     instructions = (REDUCE_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta)
-                    else REDUCE_INSTRUCTIONS)
+                    else REDUCE_INSTRUCTIONS) + APPLE_REDUCE_EXTRA
     if notes_block:
         source += "\n\n" + notes_block
         instructions += _notes_guidance(meta, brief=True)
@@ -1327,6 +1529,8 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     summary = _coerce(raw if isinstance(raw, dict) else {})
     summary["engine"] = "apple-intelligence"
+    _drop_unsupported_actions(summary, meta)
+    _apple_headline(summary, title, progress_cb)
     _mark_unaddressed_cues(summary, raw, meta)
     _mark_notes_omitted(summary, meta)
     return _store_summary(meta, meta_path, meeting_dir, summary)

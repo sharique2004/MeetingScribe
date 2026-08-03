@@ -41,6 +41,7 @@ import signal
 import subprocess
 import tempfile
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import local_llm
@@ -141,6 +142,32 @@ MAX_PROMPT_CHARS = 120000
 # absence from a fraction of the meeting.
 APPLE_PROMPT_CHARS = 11000
 APPLE_PROMPT_LADDER = (APPLE_PROMPT_CHARS, 8000, 5500)
+
+# ---- the sweep: how the on-device path reads a meeting it cannot hold ----
+#
+# Everything above describes ONE call, and the recall table above is the cost
+# of that choice: half the evidence unread on a long meeting, because no
+# excerpt of 11k chars can represent an hour of speech. Retrieval picks the
+# excerpt well; it still cannot answer "did anyone ever mention X" or "how did
+# it end", because proving absence needs the whole transcript and the end is
+# what a middle-weighted excerpt drops first.
+#
+# So on the on-device path a meeting that does not fit is SWEPT instead of
+# sampled: the transcript is cut into portions that each fit comfortably, every
+# portion is read concurrently for whatever bears on the question, and the
+# findings are reduced into one answer. That is the same map-reduce summarize.py
+# already uses for summaries, and it costs the same thing it costs there —
+# several small calls instead of one — in exchange for reading 100% of the
+# meeting instead of ~50%.
+#
+# SWEEP_CHARS is deliberately below the single-call budget: a portion prompt
+# also carries the question, and its findings are written back out. Leaving
+# that headroom keeps every map call inside the 4096-token context, so the
+# ladder-and-retry dance never has to run per portion.
+APPLE_SWEEP_CHARS = 6500
+APPLE_SWEEP_WORKERS = 3     # = local_llm MAX_INFLIGHT; more just queues
+APPLE_SWEEP_MAX_PORTIONS = 40   # ~4.5 hours of speech; a guard, not a policy
+APPLE_FINDING_CHARS = 700   # per-portion findings kept for the reduce call
 
 SKELETON_SHARE = 0.25      # of the budget reserved for whole-meeting coverage
 NEIGHBOUR_TURNS = 1        # turns of context kept either side of a hit
@@ -1122,6 +1149,298 @@ def _coverage_note(entries, kept, answer, absence=False):
 
 # --------------------------------------------------------------------- main --
 
+SWEEP_SCHEMA = {
+    "type": "object", "name": "PortionFindings", "properties": [
+        {"name": "relevant", "type": "boolean",
+         "description": "true only if THIS portion contains something that helps answer the question"},
+        {"name": "findings", "type": "string",
+         "description": "what this portion says about the question, in 1-3 sentences; "
+                        "empty string when relevant is false"},
+        {"name": "citations", "type": "array", "max": 2,
+         "items": {"type": "object", "name": "Citation", "properties": [
+             {"name": "t", "type": "integer",
+              "description": "start time of the cited line in WHOLE SECONDS — "
+                             "convert its [m:ss] prefix, e.g. [12:07] is 727"},
+             {"name": "quote", "type": "string",
+              "description": "a short fragment copied verbatim from that same line"},
+         ]},
+         "description": "lines from THIS portion that support the findings; empty when there are none"},
+    ],
+}
+
+SWEEP_MAP_INSTRUCTIONS = (
+    "You are reading ONE PORTION of a longer meeting transcript, looking only for "
+    "what bears on the user's question. Report what THIS portion says about it and "
+    "nothing else. "
+    "Set relevant to false — the expected result for most portions — unless the "
+    "specific subject of the question is ACTUALLY PRESENT in the lines below. "
+    "A question naming a person, company, product or number is about that exact "
+    "thing: if those words do not appear here, this portion is not relevant, no "
+    "matter how similar its topic seems. Never assume the question's premise is "
+    "true, and never restate the question as though it were a finding. "
+    "You are seeing a fraction of the meeting, so NEVER conclude that the meeting "
+    "as a whole does not cover something. "
+    "Quote only lines that appear in this portion, and copy their [m:ss] time exactly."
+)
+
+SWEEP_REDUCE_INSTRUCTIONS = (
+    "Below are findings gathered from EVERY part of one meeting's transcript, in "
+    "order, by readers who each saw one portion. Together they cover the whole "
+    "meeting. Answer the user's question from them: state the answer directly, in "
+    "plain English, without mentioning portions, readers, or this process. "
+    "Write 1-4 sentences carrying the SPECIFICS — who said or did what, which "
+    "numbers, names and outcomes the findings contain. A bare 'Yes' or 'No' is "
+    "never an acceptable answer: if the answer is yes, say yes and then say what "
+    "was actually said about it. "
+    "Where the findings disagree, resolve them into ONE account, preferring the "
+    "more specific — never present competing possibilities as a list. Do not "
+    "repeat the same fact twice. "
+    "Do not accept the question's premise: if the findings do not show the thing "
+    "it asks about actually happening, say so rather than describing it. "
+    "If the findings genuinely contain nothing about the question, say plainly that "
+    "the meeting does not cover it — the whole meeting was read, so that is a real "
+    "answer, not a limitation."
+)
+
+
+def _sweep_apple(meta, entries, question, history, fallback, progress_cb):
+    """Read the WHOLE meeting on-device, one portion at a time. -> (raw, kept).
+
+    Map: every portion is read concurrently for what bears on the question.
+    Reduce: the findings become one answer. Citations survive the trip because
+    each portion cites its own lines and answer_question() validates them
+    against the real turns afterwards.
+    """
+    portions = _sweep_portions(entries, APPLE_SWEEP_CHARS)
+    if len(portions) > APPLE_SWEEP_MAX_PORTIONS:
+        # Absurdly long meeting: read the ends rather than spending an hour of
+        # model time. Still far more of the meeting than any single excerpt.
+        head = APPLE_SWEEP_MAX_PORTIONS // 2
+        portions = portions[:head] + portions[-(APPLE_SWEEP_MAX_PORTIONS - head):]
+
+    total = len(portions)
+    done = {"n": 0}
+    lock = threading.Lock()
+
+    def read_portion(index_portion):
+        i, portion_entries = index_portion
+        portion = "\n".join(e["line"] for e in portion_entries)
+        prompt = (f"Question: {question}\n\n"
+                  f"PORTION {i + 1} of {total} of the transcript:\n{portion}")
+        try:
+            raw = local_llm.generate(SWEEP_MAP_INSTRUCTIONS, prompt,
+                                     SWEEP_SCHEMA, max_tokens=400)
+        except local_llm.LocalLLMError as exc:
+            log.info("sweep portion %d/%d failed: %s", i + 1, total, exc)
+            raw = {}
+        with lock:
+            done["n"] += 1
+            progress_cb(f"Reading the meeting… {done['n']}/{total}")
+        if not isinstance(raw, dict) or not raw.get("relevant"):
+            return None
+        findings = str(raw.get("findings") or "").strip()
+        if not findings:
+            return None
+        # A portion reader cites its own lines, but it writes the timestamp
+        # from memory and often paraphrases the words. Both are re-derived
+        # here against the turns that were actually in front of it, so what
+        # leaves this function points at a real moment of the meeting or does
+        # not leave at all.
+        cites = [c for c in (_anchor_citation(c, portion_entries)
+                             for c in (raw.get("citations") or [])) if c]
+        return {"i": i, "findings": findings[:APPLE_FINDING_CHARS], "citations": cites}
+
+    progress_cb(f"Reading the meeting… 0/{total}")
+    with ThreadPoolExecutor(max_workers=APPLE_SWEEP_WORKERS) as pool:
+        results = [r for r in pool.map(read_portion, enumerate(portions)) if r]
+
+    if not results:
+        # Nothing anywhere in the meeting bears on the question — and this
+        # time that statement is earned, because everything was read.
+        return {"answer": "The meeting doesn't cover that.", "citations": []}, entries
+
+    citations = [c for r in results for c in r["citations"] if isinstance(c, dict)]
+
+    blocks = [f"FINDINGS FROM THE MEETING (in order):"]
+    for n, r in enumerate(results, 1):
+        blocks.append(f"{n}. {r['findings']}")
+    findings_text = "\n".join(blocks)
+
+    history_text = _history_block(history)
+    progress_cb("Writing the answer…")
+    base = SWEEP_REDUCE_INSTRUCTIONS
+    if fallback:
+        base += (" No speaker is the local user: every voice was captured on one "
+                 "microphone, so never claim a speaker is the person asking.")
+    source_parts = [_header(meta, False)]
+    if history_text:
+        source_parts.append(history_text)
+    source_parts.append(findings_text)
+    source_parts.append(f"QUESTION: {question}")
+    source = "\n\n".join(source_parts)
+
+    for budget in (len(source), 8000, 5500):
+        try:
+            raw = local_llm.generate(base, source[:budget], ASK_SCHEMA, max_tokens=700)
+            break
+        except local_llm.LocalLLMError as exc:
+            if exc.code != "context_overflow":
+                raise RuntimeError(str(exc)) from exc
+            log.info("sweep reduce did not fit at %d chars — shortening", budget)
+    else:
+        raise RuntimeError("The findings were too long for the on-device model.")
+
+    answer = raw if isinstance(raw, dict) else {}
+    # A yes/no question tempts this model into answering "Yes." and stopping,
+    # which is responsive and useless. The repair is ANOTHER REDUCE, not a
+    # concatenation of the findings: pasting them together produced answers
+    # like "The case study is AWS. The case study is Nevius. The case study is
+    # not specified in this portion." — three portion-level guesses, printed
+    # as one self-contradicting paragraph. Portion findings are raw material
+    # for a synthesis; they are never an answer.
+    text = str(answer.get("answer") or "").strip()
+    if len(text) < 40 and results:
+        log.info("sweep reduce returned %r — asking again for the specifics", text)
+        retry_instructions = (
+            SWEEP_REDUCE_INSTRUCTIONS +
+            " Your previous attempt answered in a few words and was rejected. "
+            "Write the substance this time: name the people, things and outcomes "
+            "the findings contain, in complete sentences. Resolve any "
+            "disagreement between findings into ONE account — never list "
+            "competing possibilities.")
+        try:
+            retry = local_llm.generate(retry_instructions, source[:8000],
+                                       ASK_SCHEMA, max_tokens=700)
+            retry_text = str((retry or {}).get("answer") or "").strip()
+            if len(retry_text) > len(text):
+                answer["answer"] = retry_text
+        except local_llm.LocalLLMError as exc:
+            log.info("sweep reduce retry failed: %s", exc)
+
+    # The reduce call never saw the transcript — it was handed prose. Anything
+    # it offers as a citation is therefore invented, however plausible the
+    # timestamp looks, so it is discarded, and the portions' own anchored
+    # citations are ranked against the ANSWER before travelling on: a citation
+    # is the user's only way to check a claim, so it has to point at the
+    # evidence for THIS answer rather than prove the sweep visited every chunk.
+    answer["citations"] = _rank_citations(citations, answer.get("answer"), entries)
+    return answer, entries
+
+
+def _rank_citations(citations, answer, entries):
+    """Keep the citations whose turns actually bear on the answer.
+
+    Evenly spreading citations across the meeting made them proof-of-coverage
+    — one per portion, mostly unrelated to what was said. Here each candidate
+    is scored by how much of the answer's own vocabulary appears in the turn it
+    points at, and only real support survives.
+    """
+    text = str(answer or "")
+    answer_words = {w for w in re.findall(r"[a-z0-9']+", text.lower())
+                    if len(w) > 3 and w not in _STOPWORDS}
+    if not answer_words:
+        return citations[:MAX_CITATIONS]
+    by_start = {}
+    for e in entries:
+        by_start.setdefault(int(e["start"]), e)
+
+    scored = []
+    for c in citations:
+        entry = by_start.get(int(c.get("t", -1)))
+        if entry is None:
+            continue
+        words = {w for w in re.findall(r"[a-z0-9']+", entry["text"].lower())
+                 if len(w) > 3 and w not in _STOPWORDS}
+        if not words:
+            continue
+        overlap = len(answer_words & words)
+        if overlap:
+            scored.append((overlap / len(words | answer_words), c))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    kept = [c for _, c in scored[:MAX_CITATIONS]]
+    # Chronological order reads as a trail through the meeting rather than a
+    # ranking the user cannot see.
+    kept.sort(key=lambda c: c.get("t", 0))
+    return kept
+
+
+def _sweep_portions(entries, limit):
+    """The whole transcript as consecutive lists of entries, each under `limit`
+    characters. Entries travel with their portion so a citation can be checked
+    against exactly what its reader saw."""
+    portions, current, size = [], [], 0
+    for entry in entries:
+        line_len = len(entry["line"]) + 1
+        if current and size + line_len > limit:
+            portions.append(current)
+            current, size = [], 0
+        current.append(entry)
+        size += line_len
+    if current:
+        portions.append(current)
+    return portions
+
+
+def _anchor_citation(citation, portion_entries):
+    """A portion reader's citation -> one anchored to a real turn, or None.
+
+    The model's "t" is a guess (it reads [m:ss] prefixes and often reports a
+    line number or a rounded value) and its quote is frequently a paraphrase.
+    Neither is trusted: the quote is matched back to the turns that were in
+    the prompt, and the winning turn supplies the timestamp. A citation that
+    matches nothing is dropped rather than pointed somewhere plausible.
+    """
+    if not isinstance(citation, dict):
+        return None
+    quote = str(citation.get("quote") or "").strip()
+    if not quote:
+        return None
+    quote_norm = _norm(quote)
+    quote_words = {w for w in re.findall(r"[a-z0-9']+", quote.lower())
+                   if len(w) > 3 and w not in _STOPWORDS}
+
+    best, best_score = None, 0.0
+    for entry in portion_entries:
+        text_norm = _norm(entry["text"])
+        if quote_norm and quote_norm in text_norm:
+            score = 1.0                      # verbatim: nothing beats it
+        elif not quote_words:
+            continue
+        else:
+            words = {w for w in re.findall(r"[a-z0-9']+", entry["text"].lower())
+                     if len(w) > 3 and w not in _STOPWORDS}
+            if not words:
+                continue
+            score = len(quote_words & words) / len(quote_words)
+        if score > best_score:
+            best, best_score = entry, score
+
+    # 0.5 keeps honest paraphrases ("they couldn't log in with Google") and
+    # rejects a summary sentence that merely shares a topic with a line.
+    if best is None or best_score < 0.5:
+        return None
+    # Hand back the model's fragment only when it really is in that turn;
+    # otherwise the turn speaks for itself and _validate_citations pins an
+    # excerpt rather than attributing a paraphrase to a speaker.
+    verbatim = quote if quote_norm and quote_norm in _norm(best["text"]) else ""
+    return {"t": int(best["start"]), "quote": verbatim}
+
+
+def _history_block(history):
+    """Prior turns of this conversation, rendered for a prompt (or "")."""
+    messages = [m for m in (history or []) if isinstance(m, dict)][-MAX_HISTORY_MESSAGES:]
+    if not messages:
+        return ""
+    out = []
+    for m in messages:
+        role = "User" if str(m.get("role")) == "user" else "You"
+        text = str(m.get("content") or m.get("text") or "").strip()
+        if text:
+            out.append(f"{role}: {text}")
+    block = "\n".join(out)[:MAX_HISTORY_CHARS]
+    return f"EARLIER IN THIS CONVERSATION:\n{block}" if block else ""
+
+
 def _ask_apple(meta, entries, question, history, fallback, progress_cb):
     """One on-device answer. -> (raw, kept, partial).
 
@@ -1183,9 +1502,20 @@ def answer_question(meeting_dir, question, history=None, progress_cb=lambda msg:
         ok, reason = local_llm.available()
         if not ok:
             raise RuntimeError(local_llm.reason_message(reason))
-        progress_cb("Answering on this Mac…")
-        raw, kept, partial = _ask_apple(meta, entries, question, history,
-                                        fallback, progress_cb)
+        # Does the whole transcript fit in one on-device call? If it does, one
+        # call is both faster and better — the model sees the meeting whole.
+        # If it does not, sweep every portion rather than answering from an
+        # excerpt: on the gold set a single call reads ~50% of a long meeting,
+        # and "nobody mentioned X" from half a meeting is not an answer.
+        transcript_chars = sum(len(e["line"]) + 1 for e in entries)
+        if transcript_chars <= APPLE_PROMPT_CHARS - len(question) - 800:
+            progress_cb("Answering on this Mac…")
+            raw, kept, partial = _ask_apple(meta, entries, question, history,
+                                            fallback, progress_cb)
+        else:
+            raw, kept = _sweep_apple(meta, entries, question, history,
+                                     fallback, progress_cb)
+            partial = False   # every portion was read
 
     # NOT truncated. This used to end in [:4000], which on the streaming path
     # was visible vandalism: the deltas draw the whole answer on screen, then
