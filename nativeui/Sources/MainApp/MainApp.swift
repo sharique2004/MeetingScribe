@@ -63,13 +63,51 @@ final class Library: ObservableObject {
     @Published var briefs: [String: String] = [:]
     private var metaFetches = Set<String>()
     private var searchTask: Task<Void, Never>?
+    private var watchTask: Task<Void, Never>?
+    private var query = ""
 
     func refresh(query: String = "") async {
+        self.query = query
         do {
             meetings = try await API.meetings(query: query)
             loadError = nil
         } catch {
             loadError = "The engine isn't answering. Nothing is lost — it just isn't listening yet."
+        }
+        watchWorkInFlight()
+    }
+
+    /// Keep the list honest while the engine is still working on something.
+    ///
+    /// The list is otherwise only fetched at launch, when the engine comes up,
+    /// and the moment recording STOPS, which is before transcription,
+    /// diarization and summarizing have run. A row caught at that instant says
+    /// "Processing" and, with nothing to refresh it, said so until the app was
+    /// restarted. Poll only while a row is actually unfinished, so an idle
+    /// library makes no requests at all.
+    private func watchWorkInFlight() {
+        let working = meetings.contains { ($0.status ?? "done") != "done" }
+        guard working else { watchTask?.cancel(); watchTask = nil; return }
+        guard watchTask == nil else { return }
+        watchTask = Task { [weak self] in
+            defer { self?.watchTask = nil }
+            var pending = Set(meetings.filter { ($0.status ?? "done") != "done" }.map(\.id))
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                guard let fresh = try? await API.meetings(query: self.query) else { continue }
+                self.meetings = fresh
+                let stillWorking = Set(fresh.filter { ($0.status ?? "done") != "done" }.map(\.id))
+                // Only the rows that finished ON THIS TICK: their brief and
+                // badges were fetched while the transcript did not exist yet.
+                for id in pending.subtracting(stillWorking) {
+                    self.metaFetches.remove(id)
+                    self.meta[id] = nil
+                    self.fetchBrief(for: id)
+                }
+                pending = stillWorking
+                if stillWorking.isEmpty { return }
+            }
         }
     }
 
