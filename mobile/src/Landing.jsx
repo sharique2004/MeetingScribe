@@ -115,7 +115,7 @@ const DEMO_ACTIONS = [
 const TERM_OUTPUT = [
   { text: "downloading MeetingScribe.app (310 MB)", cls: "" },
   { text: "installed to /Applications", cls: "ok" },
-  { text: "cleared quarantine, no Gatekeeper prompts", cls: "ok" },
+  { text: "Gatekeeper verified the app (Developer ID + notarized)", cls: "ok" },
   { text: "opening MeetingScribe", cls: "ok" },
 ];
 
@@ -430,19 +430,14 @@ export default function Landing({ onOpenApp, phone = false }) {
           <h3 className="lp-installsub">Prefer the disk image?</h3>
           <ol>
             <li>Open the DMG and drag <b>MeetingScribe</b> into <b>Applications</b>.</li>
-            <li>First launch shows <b>"Apple could not verify…"</b> with no Open
-              button. It's a free indie app without Apple's paid signing.
-              Click <b>Done</b>.</li>
-            <li>Open <b>System Settings → Privacy &amp; Security</b>, scroll to
-              <b> Security</b>, click <b>Open Anyway</b>, and authenticate.</li>
-            <li>Launch <b>MeetingScribe</b> again and confirm. After that it
-              opens normally.</li>
+            <li>Double-click it. That's it: releases are signed with a Developer
+              ID and notarized by Apple, so there are no security warnings.</li>
           </ol>
           <p className="lp-installnote">
-            First run downloads the speech models and walks you through setup:
-            Claude sign in for summaries, and the optional{" "}
-            <a href="https://existential.audio/blackhole/" target="_blank" rel="noreferrer">BlackHole</a>{" "}
-            driver for hearing the other side of calls without speakerphone.
+            First run downloads the speech models and walks you through setup.
+            System audio (the other side of a call) is captured without any
+            driver; macOS asks once for System Audio Recording permission on
+            your first recording.
           </p>
           <a className="lp-btn primary" href={DMG_URL} download>
             <DownloadGlyph /> Download the DMG
