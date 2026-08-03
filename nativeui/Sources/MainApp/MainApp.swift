@@ -127,6 +127,17 @@ struct ContentView: View {
         .environmentObject(library)
         .environmentObject(center)
         .toolbar {
+            ToolbarItem(placement: .navigation) {
+                HStack(spacing: 7) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(MS.playhead)
+                    Text("MeetingScribe")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(MS.ink)
+                }
+                .padding(.leading, 2)
+            }
             ToolbarItem(placement: .primaryAction) {
                 RecordToolbarButton(center: center)
             }
@@ -198,9 +209,6 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: $route) {
-            brandRow
-                .listRowSeparator(.hidden)
-                .selectionDisabled()
             Label("Today", systemImage: "sun.horizon")
                 .font(MSFont.chrome)
                 .tag(DetailRoute.today)
@@ -285,21 +293,6 @@ struct SidebarView: View {
                 deleteError = err
             }
         }
-    }
-
-    /// The app wears its name: a small mint waveform mark and the wordmark,
-    /// sized like a sidebar header rather than a logo.
-    private var brandRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "waveform")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(MS.playhead)
-            Text("MeetingScribe")
-                .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(MS.ink)
-            Spacer()
-        }
-        .padding(.vertical, 2)
     }
 
     private var liveRow: some View {

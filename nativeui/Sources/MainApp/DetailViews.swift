@@ -113,7 +113,7 @@ struct MeetingScreen: View {
                     .background(MS.content)
             }
         }
-        .navigationTitle("MeetingScribe")
+        .navigationTitle("")
         .task {
             await model.load(meetingID)
             if let id = model.detail?.id { player.prepare(meetingID: id) }
