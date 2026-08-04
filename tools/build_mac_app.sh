@@ -29,7 +29,7 @@ set -euo pipefail
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="MeetingScribe"
 BUNDLE_ID="com.meetingscribe.app"
-VERSION="2.0"
+VERSION="${MS_VERSION:-3.1}"
 VENV_PY="$HOME/.meetingscribe/venv/bin/python"
 ENT="$PROJECT/tools/entitlements"
 
@@ -55,12 +55,23 @@ DEST_DIR="${1:-/Applications}"
 mkdir -p "$DEST_DIR"
 DEST="$DEST_DIR/$APP_NAME.app"
 
+# Which front end goes in the bundle. The SwiftUI app in nativeui/ is what
+# ships; macapp/ is the retired AppKit + WKWebView shell, kept building so a
+# macOS 26 regression can be bisected against it. MS_SHELL=legacy selects it.
 echo "Compiling the native app…"
 BUILD_DIR="$(mktemp -d)"
 trap 'rm -rf "$BUILD_DIR"' EXIT
-xcrun swiftc -O -parse-as-library \
-    "$PROJECT"/macapp/Sources/MeetingScribe/*.swift \
-    -o "$BUILD_DIR/$APP_NAME"
+if [ "${MS_SHELL:-native}" = "legacy" ]; then
+    echo "  front end: macapp (legacy WKWebView shell)"
+    xcrun swiftc -O -parse-as-library \
+        "$PROJECT"/macapp/Sources/MeetingScribe/*.swift \
+        -o "$BUILD_DIR/$APP_NAME"
+else
+    echo "  front end: nativeui (SwiftUI)"
+    xcrun swiftc -O -parse-as-library -target arm64-apple-macos26.0 \
+        "$PROJECT"/nativeui/Sources/MainApp/*.swift \
+        -o "$BUILD_DIR/$APP_NAME"
+fi
 
 echo "Assembling ${DEST}…"
 rm -rf "$DEST"

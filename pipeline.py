@@ -38,7 +38,14 @@ import stats as stats_mod
 import swift_helpers
 import tech_vocabulary
 import voice_profiles
-from config import BASE_DIR, MODELS_DIR, load_config
+from config import (
+    BASE_DIR,
+    MODELS_DIR,
+    ModelDownloadError,
+    ensure_hf_files,
+    hf_download_plan,
+    load_config,
+)
 
 log = logging.getLogger("meetingscribe.pipeline")
 
@@ -159,6 +166,11 @@ PARAKEET_V3_LANGS = {
 # library's token-merge stitch the seams).
 PARAKEET_CHUNK_S = 120.0
 PARAKEET_OVERLAP_S = 15.0
+# The two files parakeet_mlx.from_pretrained asks the Hub for. model.safetensors
+# is 2.4 GB of the 2.4 GB, and on a fresh install it is the single longest thing
+# that happens before the user's first transcript exists.
+PARAKEET_FILES = ("config.json", "model.safetensors")
+PARAKEET_LABEL = "the speech model"
 
 # Apple SpeechAnalyzer helper (macOS 26+). Source ships in tools/; the
 # compiled binary is cached outside the synced project folder.
@@ -339,7 +351,69 @@ def _is_vocab_echo(text, prompt):
     return hits / len(words) >= 0.9
 
 
-def _get_parakeet(repo):
+def _parakeet_where():
+    """Where parakeet_mlx keeps its checkpoints, as hf_hub_download kwargs.
+    from_pretrained passes this same cache_dir straight to hf_hub_download, so
+    a prefetch aimed here is exactly what it will find already downloaded."""
+    return {"cache_dir": str(MODELS_DIR / "parakeet")}
+
+
+def asr_download_size(cfg):
+    """(bytes still to download, bytes in total) for the Parakeet checkpoint
+    this config would use, or (None, None) when Parakeet is not the engine or
+    the Hub is unreachable. (0, total) once it is on disk."""
+    if not _parakeet_available(cfg):
+        return None, None
+    lang = _parakeet_lang(cfg)
+    repo = PARAKEET_REPO_EN if lang in (None, "en") else PARAKEET_REPO_MULTI
+    return hf_download_plan(repo, PARAKEET_FILES, **_parakeet_where())
+
+
+def download_asr_model(cfg, progress_cb=None):
+    """Fetch the Parakeet checkpoint NOW, into the folder _get_parakeet reads.
+
+    For a caller that wants the 2.4 GB to arrive somewhere the user expects a
+    wait (onboarding) instead of in the middle of their first meeting. Returns
+    the bytes downloaded, raises ModelDownloadError, and is idempotent and cheap
+    once the model is on disk. Returns 0 without fetching anything when this
+    machine would not use Parakeet at all, because pre-downloading a checkpoint
+    that will never be loaded is 2.4 GB of the user's bandwidth for nothing.
+
+    progress_cb(done_bytes, total_bytes, label): the numeric form, for a caller
+    drawing its own bar rather than printing the pipeline's one-line strings.
+    """
+    if not _parakeet_available(cfg):
+        return 0
+    lang = _parakeet_lang(cfg)
+    repo = PARAKEET_REPO_EN if lang in (None, "en") else PARAKEET_REPO_MULTI
+    return ensure_hf_files(repo, PARAKEET_FILES, label=PARAKEET_LABEL,
+                           bytes_cb=progress_cb, **_parakeet_where())
+
+
+def model_download_sizes(cfg=None):
+    """What a first run still has to fetch, per model:
+    [{"name", "label", "pending", "total"}], sizes in bytes (None = unknown).
+
+    Exists so the caller can quote a real total ("2.5 GB to download") instead
+    of the static "First launch sets up its environment once" that a fresh
+    install stares at for ten minutes. Read-only: it costs one HEAD per file
+    and downloads nothing.
+    """
+    cfg = dict(load_config()) if cfg is None else cfg
+    out = []
+    pending, total = asr_download_size(cfg)
+    if total or pending:
+        out.append({"name": resolve_model(cfg, "parakeet"), "label": PARAKEET_LABEL,
+                    "pending": pending, "total": total})
+    pending, total = diarization.embedder_download_size()
+    if total or pending:
+        out.append({"name": "spkrec-ecapa-voxceleb",
+                    "label": diarization.ECAPA_LABEL,
+                    "pending": pending, "total": total})
+    return out
+
+
+def _get_parakeet(repo, progress_cb=None):
     """The Parakeet model singleton. Callers MUST hold _PARAKEET_LOCK for
     their whole use of the returned model, not just this call: two meetings
     can process concurrently (each on its own request thread), the swap
@@ -351,7 +425,15 @@ def _get_parakeet(repo):
     if _PARAKEET is None or _PARAKEET_REPO != repo:
         from parakeet_mlx import from_pretrained
 
-        _PARAKEET = from_pretrained(repo, cache_dir=str(MODELS_DIR / "parakeet"))
+        # Fetch the checkpoint ourselves so the 2.4 GB is visible and bounded.
+        # from_pretrained reports nothing while it downloads, and it wraps both
+        # of its hf_hub_download calls in a bare `except Exception` that then
+        # re-reads `repo` as a local directory — so a network failure there
+        # surfaces as a baffling FileNotFoundError about a path nobody named,
+        # instead of "your connection dropped, try again".
+        ensure_hf_files(repo, PARAKEET_FILES, label=PARAKEET_LABEL,
+                        progress_cb=progress_cb, **_parakeet_where())
+        _PARAKEET = from_pretrained(repo, **_parakeet_where())
         _PARAKEET_REPO = repo
     return _PARAKEET
 
@@ -404,7 +486,7 @@ def _transcribe_parakeet(path, label, cfg, progress_cb):
     # otherwise race the singleton (or swap the en/multilingual checkpoint
     # under this thread) — see _get_parakeet.
     with _PARAKEET_LOCK:
-        model = _get_parakeet(repo)
+        model = _get_parakeet(repo, progress_cb)
         sr = model.preprocessor_config.sample_rate
         if sr != diarization.EMBED_SR:  # never true for the shipped models
             raise RuntimeError(f"unexpected Parakeet sample rate {sr}")
@@ -1455,6 +1537,17 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 precomputed=None if cached is None else cached[:2],
                 state=state,
             )
+        except ModelDownloadError as exc:
+            # The transcript is already written and is the valuable half, so a
+            # model that did not arrive costs speaker labels, not the meeting.
+            # It says so in as many words rather than hiding behind the generic
+            # "diarization failed": the user can fix a download.
+            warnings.append(
+                f"{DIARIZATION_WARNING_PREFIX} could not run on the {key} track. "
+                f"{exc} Everyone on it shares one label until then."
+            )
+            new_segs = [dict(s, speaker_idx=0) for s in segs]
+            n_found = 1
         except Exception as exc:
             warnings.append(
                 f"{DIARIZATION_WARNING_PREFIX} failed on {key} track ({exc}); "

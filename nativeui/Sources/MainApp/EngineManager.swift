@@ -53,9 +53,25 @@ final class EngineManager: ObservableObject {
         return nil
     }
 
+    /// The interpreter to run the engine with.
+    ///
+    /// A downloaded copy carries its own relocatable CPython at
+    /// Contents/Resources/python (tools/build_dmg_bundle.sh puts it there), so
+    /// it runs with no install step: no system Python, no pip, no bootstrap.
+    /// Only a developer build, which has no such runtime, falls back to the
+    /// ~/.meetingscribe venv.
+    private var enginePython: String? {
+        if let bundled = Bundle.main.resourceURL?
+            .appendingPathComponent("python/bin/python3").path,
+           FileManager.default.isExecutableFile(atPath: bundled) {
+            return bundled
+        }
+        let venv = dataDir.appendingPathComponent("venv/bin/python").path
+        return FileManager.default.isExecutableFile(atPath: venv) ? venv : nil
+    }
+
     private func spawn() {
-        let python = dataDir.appendingPathComponent("venv/bin/python").path
-        guard FileManager.default.isExecutableFile(atPath: python) else {
+        guard let python = enginePython else {
             state = .failed("The Python environment is missing — run setup.sh once, then relaunch.")
             return
         }
@@ -102,10 +118,11 @@ final class EngineManager: ObservableObject {
         }
     }
 
-    var venvExists: Bool {
-        FileManager.default.isExecutableFile(
-            atPath: dataDir.appendingPathComponent("venv/bin/python").path)
-    }
+    /// Whether an interpreter exists at all, so onboarding knows if the
+    /// one-time setup is needed. A downloaded copy ships its own runtime and
+    /// must never be asked to install a 2 GB environment it already has;
+    /// only a developer build without a venv should see that step.
+    var venvExists: Bool { enginePython != nil }
 
     /// First-run setup: run the bundled bootstrap script (creates the venv,
     /// installs the engine's dependencies), streaming its output.

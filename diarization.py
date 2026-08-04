@@ -11,7 +11,12 @@ import sys
 
 import numpy as np
 
-from config import MODELS_DIR
+from config import (
+    MODELS_DIR,
+    ModelDownloadError,
+    ensure_hf_files,
+    hf_download_plan,
+)
 
 log = logging.getLogger("meetingscribe.diarization")
 
@@ -243,7 +248,58 @@ def _pick_device():
     return "cpu"
 
 
-def _load_embedder(device):
+ECAPA_REPO = "speechbrain/spkrec-ecapa-voxceleb"
+# The files EncoderClassifier.from_hparams pulls for this checkpoint:
+# hyperparams.yaml names the other four in its pretrainer block. Listed here so
+# the download can be counted and reported BEFORE speechbrain starts fetching
+# them one silent file at a time; embedding_model.ckpt is 83 MB of the 89.
+# Anything speechbrain wants that is not here still downloads, just without
+# progress, and anything here that a future checkpoint drops is skipped on 404.
+ECAPA_FILES = ("hyperparams.yaml", "embedding_model.ckpt",
+               "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.txt")
+ECAPA_LABEL = "the speaker model"
+
+
+def _ecapa_savedir():
+    return MODELS_DIR / "ecapa"
+
+
+def _copy_skip_cache():
+    """speechbrain's COPY_SKIP_CACHE strategy, or None when it has no such
+    concept. Plain copies instead of symlinks — creating symlinks on Windows
+    requires admin rights and fails with WinError 1314."""
+    try:
+        from speechbrain.utils.fetching import LocalStrategy
+    except ImportError:  # speechbrain < 1.0
+        return None
+    return LocalStrategy.COPY_SKIP_CACHE
+
+
+def _ecapa_where(strategy):
+    """Where this speechbrain will put the files, as hf_hub_download kwargs.
+
+    COPY_SKIP_CACHE means it downloads STRAIGHT INTO savedir (it passes
+    local_dir=savedir), bypassing the shared HuggingFace cache; without it the
+    files land in the cache under HF_HOME and are copied out. The prefetch has
+    to aim at whichever of the two the load will read, or the "already
+    downloaded" files are in the wrong place and the user pays twice.
+    """
+    if strategy is not None:
+        return {"local_dir": str(_ecapa_savedir())}
+    return {}
+
+
+def embedder_download_size():
+    """(bytes still to download, bytes in total) for the speaker model.
+
+    (0, total) once it is on disk, (None, None) with no network. Lets a caller
+    show a real total before committing the user to the wait.
+    """
+    return hf_download_plan(ECAPA_REPO, ECAPA_FILES,
+                            **_ecapa_where(_copy_skip_cache()))
+
+
+def _load_embedder(device, progress_cb=None):
     try:
         from speechbrain.inference.speaker import EncoderClassifier
     except ImportError:  # speechbrain < 1.0
@@ -254,28 +310,51 @@ def _load_embedder(device):
     if not hasattr(EncoderClassifier, "device_type"):
         EncoderClassifier.device_type = "cpu"
     kwargs = {
-        "source": "speechbrain/spkrec-ecapa-voxceleb",
-        "savedir": str(MODELS_DIR / "ecapa"),
+        "source": ECAPA_REPO,
+        "savedir": str(_ecapa_savedir()),
         "run_opts": {"device": device},
     }
-    try:
-        # Plain copies instead of symlinks — creating symlinks on Windows
-        # requires admin rights and fails with WinError 1314.
-        from speechbrain.utils.fetching import LocalStrategy
+    # Fetch first, report the megabytes, THEN hand a fully cached directory to
+    # speechbrain: from_hparams reports nothing at all while it downloads, and
+    # on a fresh install this is 89 MB of dead air.
+    strategy = _copy_skip_cache()
+    if strategy is not None:
+        _prefetch_ecapa(progress_cb, strategy)
+        try:
+            return EncoderClassifier.from_hparams(local_strategy=strategy, **kwargs)
+        except TypeError:  # from_hparams predates the local_strategy argument
+            pass
+    _prefetch_ecapa(progress_cb, None)
+    return EncoderClassifier.from_hparams(**kwargs)
 
-        return EncoderClassifier.from_hparams(
-            local_strategy=LocalStrategy.COPY_SKIP_CACHE, **kwargs
-        )
-    except (ImportError, TypeError):  # older speechbrain without LocalStrategy
-        return EncoderClassifier.from_hparams(**kwargs)
+
+def _prefetch_ecapa(progress_cb, strategy, bytes_cb=None):
+    return ensure_hf_files(ECAPA_REPO, ECAPA_FILES, label=ECAPA_LABEL,
+                           progress_cb=progress_cb, bytes_cb=bytes_cb,
+                           **_ecapa_where(strategy))
 
 
-def _get_embedder():
+def download_speaker_model(progress_cb=None):
+    """Fetch the speaker model NOW, into the folder _load_embedder reads.
+
+    For a caller that wants the download to happen somewhere the user expects a
+    wait (onboarding) rather than in the middle of their first meeting. Returns
+    the bytes downloaded, raises ModelDownloadError, and is idempotent and cheap
+    once the model is on disk.
+
+    progress_cb(done_bytes, total_bytes, label): the numeric form, for a caller
+    drawing its own bar. Use _prefetch_ecapa / the pipeline path for the
+    one-string form.
+    """
+    return _prefetch_ecapa(None, _copy_skip_cache(), bytes_cb=progress_cb)
+
+
+def _get_embedder(progress_cb=None):
     global _EMBEDDER
     if _EMBEDDER is None:
         device = _pick_device()
         try:
-            _EMBEDDER = _load_embedder(device)
+            _EMBEDDER = _load_embedder(device, progress_cb)
             if device != "cpu":  # prove the GPU path works before trusting it
                 import torch
 
@@ -283,11 +362,16 @@ def _get_embedder():
                     _EMBEDDER.encode_batch(
                         torch.zeros(1, EMBED_SR), wav_lens=torch.ones(1)
                     )
+        except ModelDownloadError:
+            # A download that did not finish is not a GPU problem, and the CPU
+            # retry below would spend another three attempts arriving at the
+            # same answer. The message already says what to do.
+            raise
         except Exception as exc:
             if device == "cpu":
                 raise
             log.warning("GPU (%s) embedder failed (%s); using CPU", device, exc)
-            _EMBEDDER = _load_embedder("cpu")
+            _EMBEDDER = _load_embedder("cpu", progress_cb)
     return _EMBEDDER
 
 
@@ -314,7 +398,9 @@ def embed_windows(audio, windows, progress_cb=None):
     """ECAPA embedding for each (start, end) window. Returns (N, D) L2-normalised."""
     import torch
 
-    model = _get_embedder()
+    # progress_cb reaches the loader, not just the embedding loop: on a fresh
+    # install the first thing this call does is download 89 MB.
+    model = _get_embedder(progress_cb)
     embeddings = []
     total = len(windows)
     with torch.no_grad():

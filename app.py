@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -21,6 +22,7 @@ from flask import Flask, abort, jsonify, redirect, request, send_from_directory
 
 import ai_cli
 import ask
+import diarization
 import insforge_client
 import live_captions
 import local_llm
@@ -32,7 +34,8 @@ import tech_vocabulary
 import tidy
 import voice_profiles
 from audio_recorder import MeetingRecorder
-from config import BASE_DIR, RECORDINGS_DIR, load_config
+from config import (BASE_DIR, MODELS_DIR, RECORDINGS_DIR, ModelDownloadError,
+                    human_bytes, load_config)
 
 try:  # macOS only - raises ImportError elsewhere
     import macos_audio
@@ -512,6 +515,578 @@ def cli_engines():
         "engines": ai_cli.detect_all(),
         "active": summarize._pick_engine(),
     })
+
+
+# ----------------------------------------------------- first-run models ----
+#
+# THE AMBUSH THIS EXISTS TO REMOVE
+# --------------------------------
+# A fresh install ships no speech models. Parakeet (~2.4 GB) is pulled from
+# HuggingFace by pipeline._get_parakeet, the ECAPA speaker embedder (~89 MB) by
+# diarization._load_embedder, and the neural diarizer's CoreML bundle (~22 MB)
+# by the fluid-diarizer helper — all of them LAZILY, on the first meeting the
+# user records. On a real fresh install that meeting sat on one static
+# "Loading model…" for as long as a multi-gigabyte transfer takes: "working"
+# and "hung" looked identical, and a stalled connection simply never ended.
+#
+# pipeline.py and diarization.py now report those downloads and retry a stalled
+# one, so the lazy path is legible too. This is the other half: the wait no
+# longer has to happen during a meeting at all. These two routes move it to
+# onboarding, where a wait is expected, and report it in bytes:
+#
+#   GET  /api/models/status    what this Mac has, what it still needs, how big
+#                              that is, and the live progress of a run. Cheap
+#                              and safe to poll; never blocks on the network
+#                              (the survey that does runs on its own thread and
+#                              the route reports state "checking" meanwhile).
+#   POST /api/models/prefetch  start the download. 409 while one is running.
+#                              Same shape as /api/sync/all: one global job, a
+#                              POST to start it and a GET to watch it.
+#
+# NOTHING HERE IS LOAD-BEARING. Skip the step, or never call these at all, and
+# the lazy path is exactly what it was: the models download on first use. This
+# only moves *when*, and makes the wait legible while it happens.
+#
+# STATES, as reported by both routes:
+#   checking     the survey has not finished (or a run is still surveying)
+#   ready        every required model is already on this Mac
+#   missing      something is missing and no run is in flight
+#   downloading  a run is in flight
+#   done         a run finished and every required model is present
+#   error        a run failed; `error` says why and a retry is allowed
+
+MODEL_JOB = {}  # the single prefetch run — one global job, like SYNC_ALL
+_MODEL_JOB_LOCK = threading.Lock()
+# What has to be fetched, worked out once per relevant config (see _survey_key).
+_MODEL_SURVEY = {}
+_MODEL_SURVEY_LOCK = threading.Lock()
+_MODEL_SURVEY_THREAD = None
+_MODEL_SIZE_CACHE = {}
+
+# Used only where nothing can be asked about a size (offline, or a component
+# with no download plan of its own). Measured on this machine, 2026-08-04.
+_FALLBACK_BYTES = {"asr": 2_471_596_000, "speakers": 89_100_000, "turns": 22_000_000}
+# How often the sampler reads the byte counter, and how long without a single
+# new byte counts as stalled. A stalled transfer is the "it never stopped" half
+# of the bug report: it has to be SAYABLE, not just endured.
+_MODEL_SAMPLE_S = 0.4
+_MODEL_STALL_S = 45.0
+
+
+def _dir_bytes(path):
+    """Bytes really occupied under `path` (missing path -> 0).
+
+    lstat, not getsize: the HuggingFace cache stores one blob per file and
+    points snapshots/<sha>/<name> at it with a SYMLINK, so following links
+    counts every model twice — parakeet measured 4.9 GB against the 2.3 GB
+    `du` reports, and the progress bar would have finished at 50%.
+    """
+    total = 0
+    for root, _dirs, files in os.walk(str(path)):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:  # a temp file the downloader just replaced
+                pass
+    return total
+
+
+def _hf_size(repo, files=None):
+    """Exact download size from HuggingFace, or None if it can't be asked.
+
+    The fallback for the components with no download plan of their own
+    (config.hf_download_plan is the better answer wherever it exists — it
+    counts only what is still MISSING). A short timeout because this sits
+    behind a UI that is waiting on it: an unreachable hub must cost a few
+    seconds and then degrade, never hold the survey open.
+    """
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(repo, files_metadata=True, timeout=8)
+    except Exception as exc:  # noqa: BLE001 — offline is an ordinary case here
+        app.logger.info("could not size %s from HuggingFace: %s", repo, exc)
+        return None
+    total = sum(int(s.size or 0) for s in (info.siblings or [])
+                if files is None or s.rfilename in files)
+    return total or None
+
+
+def _cached_file(repo, names, cache_dir):
+    """Is any of `names` already in the HuggingFace cache under `cache_dir`?"""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:
+        return False
+    for name in names:
+        try:
+            hit = try_to_load_from_cache(repo, name, cache_dir=cache_dir)
+        except Exception:  # noqa: BLE001 — a cache probe must never raise out
+            hit = None
+        if isinstance(hit, str) and os.path.exists(hit):
+            return True
+    return False
+
+
+# THE FETCHERS. Each one performs exactly the download its lazy loader would
+# perform later, into exactly the folder that loader reads, so a pre-fetched
+# model makes the first meeting instant rather than merely warm.
+#
+# The two that matter are pipeline.py's and diarization.py's own entry points:
+#
+#   pipeline.download_asr_model(cfg, bytes_cb)   -> bytes fetched
+#   diarization.download_speaker_model(bytes_cb) -> bytes fetched
+#       bytes_cb(done_bytes, total_bytes, label). Raises ModelDownloadError,
+#       whose str() is user-facing. Idempotent and cheap once on disk, and
+#       they retry a stalled transfer themselves (see config.ensure_hf_files).
+#   pipeline.asr_download_size(cfg) / diarization.embedder_download_size()
+#       -> (bytes still to fetch, bytes in total), or (None, None) offline.
+#
+# Everything below is for the components those two do not cover: the Whisper
+# backends a machine without Parakeet falls back to, and the CoreML diarizer,
+# which is fetched by a Swift helper and has no Python-side counter at all.
+
+
+def _fetch_snapshot(repo):
+    from huggingface_hub import snapshot_download
+
+    snapshot_download(repo)
+
+
+def _fetch_faster_whisper(model):
+    from faster_whisper.utils import download_model
+
+    download_model(model, cache_dir=str(MODELS_DIR / "whisper"))
+
+
+def _fetch_neural_turns():
+    """The CoreML diarizer fetches AND compiles its models the first time the
+    helper runs, so the only way to pre-fetch it is to run it once. Three
+    seconds of quiet noise is enough; the answer is thrown away."""
+    import numpy as np
+    import soundfile as sf
+
+    import diarization_neural
+
+    fd, path = tempfile.mkstemp(suffix=".wav", prefix="ms-warmup-")
+    os.close(fd)
+    try:
+        noise = np.random.default_rng(0).normal(0, 0.02, 16000 * 3).astype("float32")
+        sf.write(path, noise, 16000)
+        diarization_neural.diarize_turns(path, num_speakers=1, timeout=900)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+# A COMPONENT SPEC, once, so the three below read the same way:
+#   key, label, detail, required   what the UI says about it
+#   dir                            where its bytes land (the sampler watches it)
+#   present()                      is it already here? LOCAL PROBES ONLY — this
+#                                  runs on every status poll, so it must never
+#                                  touch the network
+#   plan()                         (pending, total) bytes, or (None, None); one
+#                                  network call, survey-time only
+#   fetch(bytes_cb)                do the download; raise on failure
+#   reports_bytes                  fetch() drives bytes_cb, so progress is the
+#                                  library's own count instead of a disk sample
+#   fallback                       the size to quote when nothing else answers
+
+
+def _asr_spec(cfg):
+    """The transcription model, or None when the chosen backend has none to
+    download (Apple SpeechAnalyzer's models are part of macOS)."""
+    backend = pipeline.pick_backend(cfg)
+    if backend == "apple":
+        return None
+    if backend == "parakeet":
+        lang = pipeline._parakeet_lang(cfg)
+        repo = (pipeline.PARAKEET_REPO_EN if lang in (None, "en")
+                else pipeline.PARAKEET_REPO_MULTI)
+        cache = str(MODELS_DIR / "parakeet")
+        return {
+            "key": "asr", "label": "Speech model",
+            "detail": repo.rsplit("/", 1)[1], "required": True,
+            "dir": MODELS_DIR / "parakeet", "repo": repo,
+            "files": pipeline.PARAKEET_FILES,
+            "fallback": _FALLBACK_BYTES["asr"], "reports_bytes": True,
+            "present": lambda: _cached_file(repo, ("model.safetensors",), cache),
+            "plan": lambda: pipeline.asr_download_size(cfg),
+            "fetch": lambda cb: pipeline.download_asr_model(cfg, cb),
+        }
+    if backend == "mlx":
+        model = pipeline.resolve_model(cfg, "mlx")
+        repo = pipeline.MLX_REPOS.get(model, model)
+        return {
+            "key": "asr", "label": "Speech model", "detail": model, "required": True,
+            "dir": MODELS_DIR / "hf", "repo": repo, "files": None,
+            "fallback": _FALLBACK_BYTES["asr"], "reports_bytes": False,
+            "present": lambda: _cached_file(
+                repo, ("weights.npz", "model.safetensors"), None),
+            "plan": None,
+            "fetch": lambda _cb: _fetch_snapshot(repo),
+        }
+    model = pipeline.resolve_model(cfg, "faster")
+    # faster-whisper's own name -> repo table lives behind an import of
+    # ctranslate2, which is far too heavy for a status poll; the naming is
+    # stable and the fetch below goes through faster_whisper itself anyway.
+    repo = model if "/" in model else f"Systran/faster-whisper-{model}"
+    cache = str(MODELS_DIR / "whisper")
+    return {
+        "key": "asr", "label": "Speech model", "detail": model, "required": True,
+        "dir": MODELS_DIR / "whisper", "repo": repo, "files": None,
+        "fallback": _FALLBACK_BYTES["asr"], "reports_bytes": False,
+        "present": lambda: _cached_file(repo, ("model.bin",), cache),
+        "plan": None,
+        "fetch": lambda _cb: _fetch_faster_whisper(model),
+    }
+
+
+def _speaker_spec():
+    """ECAPA voice embeddings — how many people spoke, and which is which.
+
+    Presence is checked in BOTH places speechbrain can leave the files: it
+    downloads straight into savedir under LocalStrategy.COPY_SKIP_CACHE, and
+    into the shared HuggingFace cache on a build that has no such strategy
+    (diarization._ecapa_where decides). Checking only one of them would report
+    "not downloaded" for a model that is right there.
+    """
+    savedir = MODELS_DIR / "ecapa"
+
+    def present():
+        if all((savedir / n).exists() for n in diarization.ECAPA_FILES):
+            return True
+        return _cached_file(diarization.ECAPA_REPO, ("embedding_model.ckpt",), None)
+
+    return {
+        "key": "speakers", "label": "Speaker voice model",
+        "detail": "ECAPA-TDNN", "required": True,
+        "dir": savedir, "repo": diarization.ECAPA_REPO,
+        "files": diarization.ECAPA_FILES,
+        "fallback": _FALLBACK_BYTES["speakers"], "reports_bytes": True,
+        "present": present,
+        "plan": diarization.embedder_download_size,
+        "fetch": diarization.download_speaker_model,
+    }
+
+
+def _turn_spec(cfg):
+    """The neural turn-placer. Optional in the strongest sense: the classic
+    assignment ships as the fallback for every failure this can have, so a
+    machine that never gets these models transcribes exactly as well."""
+    if cfg.get("diarization_engine", "auto") == "classic":
+        return None
+    import diarization_neural
+    import swift_helpers
+
+    # find_binary NEVER compiles (see swift_helpers) — a poll must not sit
+    # behind a `swift build`. No helper means nothing worth pre-fetching.
+    if swift_helpers.find_binary("fluid-diarizer") is None:
+        return None
+    models = diarization_neural.MODELS_SUBDIR
+    return {
+        "key": "turns", "label": "Speaker turn model",
+        "detail": "community-1 on the Neural Engine", "required": False,
+        "dir": models, "repo": None, "files": None,
+        "fallback": _FALLBACK_BYTES["turns"], "reports_bytes": False,
+        "present": lambda: any(models.glob("*/Segmentation.mlmodelc/coremldata.bin")),
+        "plan": None,
+        "fetch": lambda _cb: _fetch_neural_turns(),
+    }
+
+
+def _spec_size(spec):
+    """Bytes this component still has to fetch.
+
+    The library's own plan first — it counts what is MISSING, so a half-finished
+    download is quoted at what is left rather than at the whole file again.
+    """
+    plan = spec.get("plan")
+    if plan is not None:
+        try:
+            pending, total = plan()
+        except Exception as exc:  # noqa: BLE001 — a size is never worth failing on
+            app.logger.info("could not size %s: %s", spec["key"], exc)
+            pending = total = None
+        if pending:
+            return pending
+        if pending == 0 and total:
+            return total  # nothing pending: quote the size it occupies
+    if spec.get("repo") is None:
+        return spec["fallback"]
+    key = (spec["repo"], spec.get("files"))
+    if key not in _MODEL_SIZE_CACHE:
+        _MODEL_SIZE_CACHE[key] = _hf_size(spec["repo"], spec.get("files")) or spec["fallback"]
+    return _MODEL_SIZE_CACHE[key]
+
+
+def _survey_key(cfg):
+    return (cfg.get("whisper_backend"), cfg.get("language"),
+            cfg.get("whisper_model"), cfg.get("diarization_engine"))
+
+
+def _survey(force=False):
+    """What this Mac still has to fetch, and how big it is.
+
+    BLOCKING — it asks HuggingFace for sizes and pick_backend() may compile the
+    Apple Speech helper on a source checkout. Every caller runs it on a worker
+    thread; the routes report state "checking" until it lands.
+    """
+    cfg = load_config()
+    key = _survey_key(cfg)
+    with _MODEL_SURVEY_LOCK:
+        if not force and _MODEL_SURVEY.get("key") == key:
+            return _MODEL_SURVEY["specs"]
+    specs = [s for s in (_asr_spec(cfg), _speaker_spec(), _turn_spec(cfg)) if s]
+    for spec in specs:
+        # A model already here is reported at its size ON DISK, not at what it
+        # would have cost to download: this step must never quote a download
+        # figure for something it is not going to download.
+        spec["size"] = (_dir_bytes(spec["dir"]) or spec["fallback"]
+                        if spec["present"]() else _spec_size(spec))
+    with _MODEL_SURVEY_LOCK:
+        _MODEL_SURVEY.update(key=key, specs=specs)
+    return specs
+
+
+def _survey_in_background():
+    global _MODEL_SURVEY_THREAD
+    cfg_key = _survey_key(load_config())
+    with _MODEL_SURVEY_LOCK:
+        if _MODEL_SURVEY.get("key") == cfg_key:
+            return
+        if _MODEL_SURVEY_THREAD is not None and _MODEL_SURVEY_THREAD.is_alive():
+            return
+        _MODEL_SURVEY_THREAD = threading.Thread(
+            target=_survey_quietly, daemon=True, name="model-survey")
+        _MODEL_SURVEY_THREAD.start()
+
+
+def _survey_quietly():
+    try:
+        _survey()
+    except Exception as exc:  # noqa: BLE001 — a failed survey must not wedge
+        app.logger.warning("model survey failed: %s", exc)
+
+
+def _model_view():
+    """The body both routes return. Presence is re-read from disk on every
+    call, so a model that arrived by any other route (the lazy path, a manual
+    copy, a second MeetingScribe) shows up here immediately."""
+    with _MODEL_JOB_LOCK:  # snapshot the top level; see status() for why
+        job = dict(MODEL_JOB)
+    running = job.get("state") in ("checking", "downloading")
+    with _MODEL_SURVEY_LOCK:
+        specs = _MODEL_SURVEY.get("specs")
+    if specs is None:
+        return {"state": "checking", "ready": False, "stalled": False,
+                "message": "Checking what this Mac already has", "error": None,
+                "downloaded_bytes": 0, "total_bytes": 0, "components": []}
+
+    live = job.get("components") or {}
+    scope = job.get("scope")
+    components, downloaded, total, ready = [], 0, 0, True
+    for spec in specs:
+        present = spec["present"]()
+        entry = live.get(spec["key"], {})
+        size = int(spec["size"])
+        got = size if present else min(size, int(entry.get("bytes") or 0))
+        if not present and spec["required"]:
+            ready = False
+        # Totals cover the components THIS RUN took on (or, with no run, the
+        # ones still missing) — so the bar is over the work actually being
+        # waited for and never dilutes it with 2.4 GB that is already here.
+        counted = spec["key"] in scope if scope is not None else not present
+        if counted:
+            downloaded += got
+            total += size
+        components.append({
+            "key": spec["key"], "label": spec["label"], "detail": spec["detail"],
+            "required": bool(spec["required"]), "present": present,
+            "state": ("present" if present else entry.get("state") or "pending"),
+            "bytes": got, "total_bytes": size,
+            "error": entry.get("error"),
+        })
+
+    if running:
+        state = job["state"]
+    elif job.get("state") == "error":
+        state = "error"
+    elif ready:
+        state = "done" if job.get("state") == "done" else "ready"
+    else:
+        state = "missing"
+    # The job's own words, EXCEPT where the disk contradicts them: a finished
+    # run whose models are somehow not here must not still be saying "ready".
+    message = job.get("message")
+    if state == "missing" or not message:
+        message = ("Everything is already on this Mac" if ready
+                   else f"{human_bytes(total)} to download")
+    return {"state": state, "ready": ready, "stalled": bool(job.get("stalled")),
+            "message": message, "error": job.get("error"),
+            "downloaded_bytes": downloaded, "total_bytes": total,
+            "components": components}
+
+
+def _download_one(spec):
+    """Fetch one component, keeping a real byte count on screen throughout.
+
+    Two sources, in order of honesty. pipeline.download_asr_model and
+    diarization.download_speaker_model count the bytes they transfer and hand
+    them over (`reports_bytes`), which is exact and survives a resume. The rest
+    have no counter, so progress is read from the only place it is visible:
+    bytes landing in the target folder. That under-reports a resumed download
+    (the part already there is the baseline) but still moves and still finishes
+    at 100%, and a fresh install — the case this whole path exists for — is
+    exact either way.
+
+    One sampler either way, because it also owns the stall flag: bytes that
+    stop moving is what "it never stopped" looked like from the outside, and
+    saying so is the whole point.
+    """
+    key = spec["key"]
+    entry = MODEL_JOB["components"][key]
+    baseline = _dir_bytes(spec["dir"])
+    size = int(spec["size"])
+    reports = bool(spec.get("reports_bytes"))
+    entry.update(state="downloading", bytes=0)
+    stop = threading.Event()
+
+    def line(got):
+        return (f"Downloading the {spec['label'].lower()}, "
+                f"{human_bytes(got)} of {human_bytes(size)}")
+
+    def report(done, total, _label=None):
+        # Count and sentence updated together, from the same event: read a tick
+        # apart they disagree, and a progress display that contradicts itself
+        # is not believed for the rest of the download.
+        got = min(int(total or size) or size, max(0, int(done or 0)))
+        entry["bytes"] = got
+        MODEL_JOB["message"] = line(got)
+
+    def sample():
+        last, changed = -1, time.monotonic()
+        while not stop.wait(_MODEL_SAMPLE_S):
+            if reports:
+                got = int(entry["bytes"])  # the library owns the number
+            else:
+                got = min(size, max(0, _dir_bytes(spec["dir"]) - baseline))
+                entry["bytes"] = got
+                MODEL_JOB["message"] = line(got)
+            if got != last:
+                last, changed = got, time.monotonic()
+            MODEL_JOB["stalled"] = (time.monotonic() - changed) > _MODEL_STALL_S
+
+    MODEL_JOB["message"] = line(0)
+    watcher = threading.Thread(target=sample, daemon=True, name=f"model-bytes-{key}")
+    watcher.start()
+    try:
+        spec["fetch"](report)
+    finally:
+        stop.set()
+        MODEL_JOB["stalled"] = False
+    entry.update(state="done", bytes=size)
+
+
+def _landed_anyway(spec):
+    """The fetch raised, but the model is on disk regardless -> count it.
+
+    The neural turn model has no download-only entry point: it is fetched by
+    RUNNING the helper, which also performs real inference, and that inference
+    can legitimately refuse the synthetic warm-up audio ("noSpeechDetected")
+    long after the models were downloaded and compiled for the Neural Engine.
+    The disk is the authority everywhere else in this file and it is the
+    authority here: a failure that left the model behind is not a failure.
+    """
+    if not spec["present"]():
+        return False
+    MODEL_JOB["components"][spec["key"]].update(
+        state="done", bytes=int(spec["size"]), error=None)
+    return True
+
+
+def _fail_component(spec, message, detail):
+    """Record one component's failure. A REQUIRED one fails the run; an
+    optional one is logged and left behind, because the classic path already
+    covers everything it does and half a transcript is not on the table."""
+    MODEL_JOB["components"][spec["key"]].update(
+        state="error" if spec["required"] else "skipped", error=detail)
+    if spec["required"]:
+        MODEL_JOB.update(state="error", stalled=False,
+                         message=message, error=detail)
+    else:
+        app.logger.warning("could not pre-fetch %s: %s", spec["key"], detail)
+
+
+def _run_model_prefetch():
+    try:
+        specs = _survey()
+    except Exception:
+        detail = traceback.format_exc().strip().splitlines()[-1]
+        MODEL_JOB.update(state="error", stalled=False,
+                         message="Could not work out what this Mac needs",
+                         error=detail)
+        return
+    todo = [s for s in specs if not s["present"]()]
+    MODEL_JOB.update(state="downloading", scope=[s["key"] for s in todo],
+                     components={s["key"]: {"state": "pending", "bytes": 0}
+                                 for s in todo})
+    if not todo:
+        MODEL_JOB.update(state="done", message="Everything is already on this Mac")
+        return
+    for spec in todo:
+        try:
+            _download_one(spec)
+        except ModelDownloadError as exc:
+            # str() is already user-facing copy, and it names the model, the
+            # size, what failed and the fact that a retry resumes — far better
+            # than anything this route could compose from a traceback.
+            if not _landed_anyway(spec):
+                _fail_component(spec, str(exc), str(exc))
+                if spec["required"]:
+                    return
+        except Exception:
+            if not _landed_anyway(spec):
+                detail = traceback.format_exc().strip().splitlines()[-1]
+                _fail_component(
+                    spec, f"Could not download the {spec['label'].lower()}", detail)
+                if spec["required"]:
+                    return
+    # "Done" is a claim about the disk, so check the disk. A fetch that returned
+    # without leaving the model behind is a failure the user must be told about,
+    # not a green tick over a first meeting that will download it all again.
+    absent = [s for s in specs if s["required"] and not s["present"]()]
+    if absent:
+        MODEL_JOB.update(
+            state="error", stalled=False,
+            message=f"The {absent[0]['label'].lower()} is still missing",
+            error="the download finished but the model is not on disk")
+        return
+    MODEL_JOB.update(state="done", stalled=False, message="Models ready on this Mac")
+
+
+@app.get("/api/models/status")
+def models_status():
+    """What this Mac has, what it needs, and how a run is going. Poll freely."""
+    _survey_in_background()
+    return jsonify(_model_view())
+
+
+@app.post("/api/models/prefetch")
+def models_prefetch():
+    """Download the models now instead of during the user's first meeting."""
+    with _MODEL_JOB_LOCK:
+        if MODEL_JOB.get("state") in ("checking", "downloading"):
+            return jsonify({"error": "Already downloading"}), 409
+        MODEL_JOB.clear()
+        MODEL_JOB.update(state="checking", stalled=False, error=None,
+                         message="Checking what this Mac already has",
+                         components={}, scope=[])
+    threading.Thread(target=_run_model_prefetch, daemon=True,
+                     name="model-prefetch").start()
+    return jsonify(_model_view())
 
 
 @app.get("/api/calendar/today")

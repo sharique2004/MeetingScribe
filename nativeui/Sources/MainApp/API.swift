@@ -128,6 +128,48 @@ struct SummaryJob: Decodable {
     let message: String?    // live progress from the writer
 }
 
+/// One model the engine needs on disk before it can transcribe.
+/// `state` is "pending" | "downloading" | "done" | "present" | "skipped" |
+/// "error"; `present` is the engine's answer about the disk and outranks it.
+struct ModelComponent: Decodable, Identifiable, Hashable {
+    let key: String
+    let label: String
+    let detail: String?
+    let required: Bool?
+    let present: Bool?
+    let state: String?
+    let bytes: Int64?
+    let total_bytes: Int64?
+    var id: String { key }
+
+    var done: Bool { present == true || state == "done" }
+}
+
+/// What a fresh install still has to download before its first meeting.
+///
+/// `state` is "checking" (the engine is still working it out) | "ready"
+/// (everything is already here) | "missing" | "downloading" | "done" |
+/// "error". `ready` is the one field worth branching on for "can this Mac
+/// transcribe right now"; the rest is how to say it.
+struct ModelStatus: Decodable {
+    let state: String
+    let ready: Bool?
+    let message: String?
+    let downloaded_bytes: Int64?
+    let total_bytes: Int64?
+    /// No new bytes for the best part of a minute. The download is not
+    /// cancelled, it is worth saying out loud.
+    let stalled: Bool?
+    let error: String?
+    let components: [ModelComponent]?
+
+    var busy: Bool { state == "checking" || state == "downloading" }
+    var fraction: Double {
+        guard let total = total_bytes, total > 0 else { return 0 }
+        return min(1, max(0, Double(downloaded_bytes ?? 0) / Double(total)))
+    }
+}
+
 struct Citation: Decodable, Hashable {
     let t: Double?
     let quote: String?
@@ -259,6 +301,28 @@ enum API {
         guard let code = (resp as? HTTPURLResponse)?.statusCode,
               (200..<300).contains(code) || code == 404
         else { throw URLError(.badServerResponse) }
+    }
+
+    /// What the engine still has to download before it can transcribe.
+    /// nil only when the engine isn't answering — every other outcome,
+    /// including "nothing to do", comes back as a ModelStatus.
+    static func modelStatus() async -> ModelStatus? {
+        try? await get("api/models/status", as: ModelStatus.self)
+    }
+
+    /// Fetch the models now rather than during the user's first meeting.
+    /// A 409 (one already running) is success from the caller's point of
+    /// view: the download the caller wanted is happening.
+    @discardableResult
+    static func prefetchModels() async -> Bool {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/models/prefetch"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        req.timeoutInterval = 10
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else { return false }
+        return (200..<300).contains(code) || code == 409
     }
 
     /// The live summary job for one meeting, if any.

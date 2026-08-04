@@ -1,7 +1,20 @@
 # Exact package set for the self-contained .app bundle.
 # Generated from the known-good runtime (~/.meetingscribe/venv, Python 3.11.15)
-# the bundled python-build-standalone runtime, so builds are reproducible.
 # with 'python -m pip freeze'. tools/build_dmg_bundle.sh installs these into
+# the bundled python-build-standalone runtime, so builds are reproducible.
+#
+# DELIBERATELY ABSENT, even though a pip freeze of the dev venv lists them.
+# Both were verified to be required by nothing: no other distribution here
+# declares them outside an optional extra, so pip will not pull them back in.
+#   transformers  52.6 MB. Reachable only through ctranslate2/converters/
+#                 transformers.py, which is the OFFLINE MODEL CONVERTER and
+#                 wraps its `import transformers` in try/except ImportError.
+#                 No shipped module imports it; faster-whisper declares it
+#                 under extra == "conversion" and speechbrain under
+#                 extra == "dev".
+#   pytest        1.7 MB with pluggy + iniconfig. A test runner has no job
+#                 inside a shipped app; the repo battery runs against
+#                 ~/.meetingscribe/venv, not this runtime.
 annotated-doc==0.0.4
 anyio==4.13.0
 audioread==3.1.0
@@ -26,7 +39,6 @@ httpx==0.28.1
 huggingface_hub==1.18.0
 HyperPyYAML==1.2.3
 idna==3.18
-iniconfig==2.3.0
 itsdangerous==2.2.0
 Jinja2==3.1.6
 joblib==1.5.3
@@ -50,7 +62,6 @@ onnxruntime==1.26.0
 packaging==26.2
 parakeet-mlx==0.5.2
 platformdirs==4.11.0
-pluggy==1.6.0
 pooch==1.9.0
 protobuf==7.35.0
 pycparser==3.0
@@ -63,7 +74,6 @@ pyobjc-framework-CoreAudio==12.2.1
 pyobjc-framework-CoreMedia==12.2.1
 pyobjc-framework-CoreText==12.2.1
 pyobjc-framework-Quartz==12.2.1
-pytest==9.1.1
 python-dotenv==1.2.2
 PyYAML==6.0.3
 regex==2026.5.9
@@ -87,7 +97,6 @@ tokenizers==0.22.2
 torch==2.12.0
 torchaudio==2.11.0
 tqdm==4.68.2
-transformers==5.13.1
 typer==0.25.1
 typing_extensions==4.15.0
 urllib3==2.7.0

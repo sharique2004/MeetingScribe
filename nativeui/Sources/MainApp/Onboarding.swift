@@ -1,7 +1,8 @@
-// First run: six quiet steps from a fresh download to full capacity —
+// First run: seven quiet steps from a fresh download to full capacity —
 // welcome, the engine (with one-time setup if the Python environment is
-// missing), microphone, system audio (proven with a real 3-second test),
-// calendar, and AI summaries (Claude if present, Apple Intelligence
+// missing), the speech models (the 2.4 GB download that used to ambush the
+// first real meeting), microphone, system audio (proven with a real 3-second
+// test), calendar, and AI summaries (Claude if present, Apple Intelligence
 // otherwise). Every permission is asked in context, never in a wall.
 import SwiftUI
 import AVFoundation
@@ -12,7 +13,7 @@ struct OnboardingFlow: View {
     @StateObject private var engine = EngineManager.shared
     @State private var step = 0
 
-    private let stepCount = 6
+    private let stepCount = 7
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,9 +21,10 @@ struct OnboardingFlow: View {
                 switch step {
                 case 0: WelcomeStep(next: advance)
                 case 1: EngineStep(engine: engine, next: advance)
-                case 2: MicrophoneStep(next: advance)
-                case 3: SystemAudioStep(center: center, next: advance)
-                case 4: CalendarStep(next: advance)
+                case 2: ModelsStep(next: advance)
+                case 3: MicrophoneStep(next: advance)
+                case 4: SystemAudioStep(center: center, next: advance)
+                case 5: CalendarStep(next: advance)
                 default: IntelligenceStep(finish: finish)
                 }
             }
@@ -156,7 +158,7 @@ private struct EngineStep: View {
 
     var body: some View {
         StepPage(
-            kicker: "Step 1 of 5",
+            kicker: "Step 1 of 6",
             title: "Starting the engine.",
             subtitle: "The transcription engine runs privately on this Mac. First launch sets up its environment once."
         ) {
@@ -175,7 +177,11 @@ private struct EngineStep: View {
                     }
                 case .failed(let message):
                     if !engine.venvExists && !bootstrapping {
-                        Text("One-time setup is needed (about 2 GB of speech models and libraries).")
+                        // Named honestly: bootstrap.sh installs Python
+                        // libraries and no models at all. Promising "speech
+                        // models" here is what let the real 2.4 GB model
+                        // download turn up unannounced during a meeting.
+                        Text("One-time setup is needed. It installs about 2 GB of libraries on this Mac. The speech models come next.")
                             .font(MSFont.body)
                             .foregroundStyle(MS.ink2)
                         ContinueButton(label: "Run setup") { runBootstrap() }
@@ -237,13 +243,228 @@ private struct EngineStep: View {
     }
 }
 
+/// The 2.4 GB that used to arrive uninvited.
+///
+/// A fresh install carries no speech models: Parakeet, the ECAPA speaker
+/// embedder and the neural turn-placer were all fetched LAZILY, blocking and
+/// silent, in the middle of the user's first real meeting. One static line of
+/// text for a multi-gigabyte transfer is indistinguishable from a hang, which
+/// is exactly how it was reported: "it just kept processing and never stopped".
+///
+/// This step moves that wait to the one place a wait is expected, shows it in
+/// bytes, and is skippable in every state. Skipping changes nothing except
+/// when the download happens: the lazy path is untouched and still works.
+private struct ModelsStep: View {
+    let next: () -> Void
+    @State private var status: ModelStatus?
+    @State private var starting = false
+    /// Consecutive polls the engine didn't answer. The engine step can be
+    /// skipped, and a step that can't reach the engine must say so and step
+    /// aside rather than spin.
+    @State private var silentProbes = 0
+
+    var body: some View {
+        StepPage(
+            kicker: "Step 2 of 6",
+            title: "The models, once.",
+            subtitle: "Transcription happens on this Mac, so the speech models live here too. Fetching them now means your first meeting starts the moment you press record, instead of waiting on a download."
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                if let status {
+                    body(for: status)
+                } else if silentProbes >= 3 {
+                    unreachable
+                } else {
+                    spinner("Checking what this Mac already has…")
+                }
+            }
+        }
+        .task { await watch() }
+    }
+
+    // MARK: States
+
+    @ViewBuilder
+    private func body(for status: ModelStatus) -> some View {
+        switch status.state {
+        case "checking":
+            spinner(status.message ?? "Checking what this Mac already has…")
+        case "downloading":
+            downloading(status)
+        case "ready", "done":
+            CheckRow(done: true, text: status.state == "done"
+                     ? "Models ready on this Mac"
+                     : "Models already on this Mac, nothing to download")
+            componentRows(status)
+            ContinueButton(action: next).padding(.top, 12)
+        case "error":
+            Text(status.message ?? "The download didn't finish.")
+                .font(MSFont.body)
+                .foregroundStyle(MS.ink2)
+            if let detail = status.error {
+                Text(detail)
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+                    .lineLimit(2)
+            }
+            HStack(spacing: 12) {
+                ContinueButton(label: "Try again", enabled: !starting) { start() }
+                SkipLink(label: "Skip, download on my first meeting", action: next)
+            }
+        default:  // "missing"
+            componentRows(status)
+            Text("It downloads once and stays on this Mac. You can skip and let your first meeting fetch it instead.")
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+            HStack(spacing: 12) {
+                ContinueButton(label: "Download \(modelSize(status.total_bytes)) now",
+                               enabled: !starting) { start() }
+                SkipLink(label: "Skip for now", action: next)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func downloading(_ status: ModelStatus) -> some View {
+        DownloadBar(fraction: status.fraction)
+        HStack(alignment: .firstTextBaseline) {
+            Text(activeLine(status))
+                .font(MSFont.body)
+                .foregroundStyle(MS.ink2)
+            Spacer(minLength: 12)
+            Text("\(Int(status.fraction * 100))%")
+                .clockFont(11)
+                .foregroundStyle(MS.ink3)
+        }
+        componentRows(status)
+        if status.stalled == true {
+            Text("No new data for a while. Check the connection, or carry on and let it finish in the background.")
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+        }
+        SkipLink(label: "Continue, this keeps downloading", action: next)
+            .padding(.top, 6)
+    }
+
+    @ViewBuilder
+    private var unreachable: some View {
+        Text("The engine isn't answering, so there's nothing to fetch from here. The models download on their own the first time you record.")
+            .font(MSFont.body)
+            .foregroundStyle(MS.ink2)
+        ContinueButton(action: next).padding(.top, 12)
+    }
+
+    @ViewBuilder
+    private func spinner(_ text: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(text).font(MSFont.body).foregroundStyle(MS.ink2)
+        }
+    }
+
+    @ViewBuilder
+    private func componentRows(_ status: ModelStatus) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(status.components ?? []) { c in
+                CheckRow(done: c.done, text: line(for: c))
+            }
+        }
+    }
+
+    private func line(for c: ModelComponent) -> String {
+        c.state == "skipped" ? "\(c.label), left for later"
+                             : "\(c.label), \(modelSize(c.total_bytes))"
+    }
+
+    /// The one line carrying live numbers, composed HERE rather than taken
+    /// from the engine's own message: two renderings of one byte count on one
+    /// screen ("0 KB of 78 MB" beside "78.2 MB") is how a progress display
+    /// stops being believed. The engine's wording is the fallback.
+    private func activeLine(_ status: ModelStatus) -> String {
+        guard let c = (status.components ?? []).first(where: { $0.state == "downloading" })
+        else { return status.message ?? "Downloading…" }
+        return "Downloading the \(c.label.lowercased()), "
+            + "\(modelSize(c.bytes)) of \(modelSize(c.total_bytes))"
+    }
+
+    // MARK: Engine
+
+    private func start() {
+        starting = true
+        Task {
+            await API.prefetchModels()
+            status = await API.modelStatus() ?? status
+            starting = false
+        }
+    }
+
+    /// Poll while this step is on screen. Cancelled the moment it isn't, so
+    /// skipping costs nothing and the download itself keeps going in the
+    /// engine, where it belongs.
+    private func watch() async {
+        while !Task.isCancelled {
+            let fresh = await API.modelStatus()
+            silentProbes = fresh == nil ? silentProbes + 1 : 0
+            if let fresh {
+                withAnimation(Motion.seek) { status = fresh }
+            }
+            let busy = fresh?.busy ?? (status == nil)
+            try? await Task.sleep(nanoseconds: busy ? 700_000_000 : 2_000_000_000)
+        }
+    }
+}
+
+private struct DownloadBar: View {
+    let fraction: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(MS.ink4.opacity(0.25))
+                Capsule()
+                    .fill(MS.playheadFill)
+                    .frame(width: max(geo.size.width * min(1, max(0, fraction)), 3))
+            }
+        }
+        .frame(height: 6)
+        .animation(Motion.seek, value: fraction)
+    }
+}
+
+private struct SkipLink: View {
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(label, action: action)
+            .buttonStyle(.plain)
+            .font(MSFont.meta)
+            .foregroundStyle(MS.ink3)
+    }
+}
+
+/// Decimal units, matching the engine's own arithmetic, so the app and the
+/// progress line it renders never quote two different numbers for one file.
+private let modelByteFormatter: ByteCountFormatter = {
+    let f = ByteCountFormatter()
+    f.countStyle = .file
+    f.allowedUnits = [.useMB, .useGB]
+    // Off, or a download that has not moved yet reads "Zero KB of 78.2 MB".
+    f.allowsNonnumericFormatting = false
+    return f
+}()
+
+private func modelSize(_ bytes: Int64?) -> String {
+    modelByteFormatter.string(fromByteCount: max(0, bytes ?? 0))
+}
+
 private struct MicrophoneStep: View {
     let next: () -> Void
     @State private var status = AVCaptureDevice.authorizationStatus(for: .audio)
 
     var body: some View {
         StepPage(
-            kicker: "Step 2 of 5",
+            kicker: "Step 3 of 6",
             title: "Your microphone.",
             subtitle: "Your side of every meeting comes from the mic. Audio is written straight to disk on this Mac — nowhere else."
         ) {
@@ -289,7 +510,7 @@ private struct SystemAudioStep: View {
 
     var body: some View {
         StepPage(
-            kicker: "Step 3 of 5",
+            kicker: "Step 4 of 6",
             title: "The other side of the call.",
             subtitle: "To hear everyone else, macOS asks once for System Audio access. We'll run a three-second test recording — approve the prompt when it appears, and it never asks again."
         ) {
@@ -346,7 +567,7 @@ private struct CalendarStep: View {
 
     var body: some View {
         StepPage(
-            kicker: "Step 4 of 5",
+            kicker: "Step 5 of 6",
             title: "Meetings, by name.",
             subtitle: "With calendar access, recordings name themselves after the event you're in, and MeetingScribe nudges you to record when a meeting starts. Optional — everything works without it."
         ) {
@@ -391,7 +612,7 @@ private struct IntelligenceStep: View {
 
     var body: some View {
         StepPage(
-            kicker: "Step 5 of 5",
+            kicker: "Step 6 of 6",
             title: "Who writes your summaries.",
             subtitle: "After each meeting, MeetingScribe writes the recap, to-dos and a follow-up email — and answers questions about it. Apple Intelligence does this on-device, so nothing needs installing."
         ) {

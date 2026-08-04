@@ -1,8 +1,12 @@
 """Shared paths and user configuration for MeetingScribe."""
 
 import json
+import logging
 import os
+import time
 from pathlib import Path
+
+log = logging.getLogger("meetingscribe.config")
 
 # Code lives here (templates, tools, the Python modules). When MeetingScribe
 # runs from inside the downloaded .app bundle, this is read-only.
@@ -21,6 +25,28 @@ CONFIG_PATH = DATA_DIR / "config.json"
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 # Keep all model downloads (Whisper, speaker embeddings) under DATA_DIR.
 os.environ.setdefault("HF_HOME", str(MODELS_DIR / "hf"))
+# The next two are read ONCE, at huggingface_hub's own import, into
+# huggingface_hub.constants — which is why they are set here, in the module
+# every entry point imports first, and not next to the download helpers below.
+#
+# Per-read socket timeout for model downloads. 20 s is generous for a
+# slow-but-alive link; a link that is alive but pointless is caught by the
+# stall check in _DownloadSession instead.
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "20")
+# Take the plain HTTP transfer path, not Xet. MEASURED on this machine, same
+# 83 MB checkpoint, cold cache, two runs each:
+#     xet    22.2 s / 19.1 s   2 progress callbacks   worst silence 21.6 s
+#     http   19.1 s / 15.9 s   8 progress callbacks   worst silence  4.2 s
+# hf_xet downloads into its own chunk cache and reconstructs the file at the
+# very end, so it reports the WHOLE file in a single callback and writes
+# nothing to the destination until it is done: there is no hook, and no bytes
+# on disk, to show progress from. On the 83 MB speaker model that is 20 s of a
+# frozen number; on the 2.4 GB speech model it would be the entire download.
+# The plain path emits one update per 10 MB chunk. It was not slower here, and
+# Xet's advantage (chunk dedup across revisions) is worth nothing to a user who
+# downloads each checkpoint exactly once. Set HF_HUB_DISABLE_XET=0 to opt back
+# in and lose the progress reporting.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 DEFAULTS = {
     # Whisper model: "auto", or tiny / base / small / medium / large-v3 /
@@ -115,3 +141,320 @@ def load_config():
 
 for _d in (DATA_DIR, RECORDINGS_DIR, MODELS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
+
+
+# --- Model downloads ----------------------------------------------------------
+# A fresh install fetches ~2.5 GB before its first meeting can be processed: the
+# Parakeet speech model (2.4 GB) in pipeline._get_parakeet and the ECAPA speaker
+# model (89 MB) in diarization._load_embedder. Both used to block inside a
+# library call that reports nothing, so the UI held one static line for however
+# long the download took and "working" looked exactly like "hung" — the bug this
+# section exists to kill. There was no wall-clock bound either, so a link that
+# died mid-file could hold the pipeline forever.
+#
+# THE MECHANISM: hf_hub_download's public `tqdm_class` argument, with the files
+# fetched HERE rather than by the model library. It is the one hook that covers
+# both loaders, because every download route in huggingface_hub 1.x builds its
+# progress bar through utils.tqdm._get_progress_bar_context(tqdm_class=...).
+# `_create_progress_bar` passes a class that does not subclass its own tqdm
+# straight through, without injecting `disable`, so a duck-typed object sees
+# every byte; an hf-tqdm SUBCLASS would instead be constructed with
+# disable=True off a TTY, and tqdm.update() returns early when disabled, which
+# is why _ProgressBar below inherits from nothing. The hook only reports
+# usefully on the plain HTTP transfer, hence HF_HUB_DISABLE_XET above.
+#
+# Fetching the files ourselves (into exactly the directory the library will look
+# in, so its own loader then finds everything cached) also buys the two things a
+# tqdm hook alone cannot: bounded retries around the whole transfer, and a real
+# byte total to count against, from the same metadata call the download makes.
+
+# How many times a transfer is attempted before the user is told it failed.
+# Partial files survive between attempts (huggingface_hub resumes from the
+# .incomplete file), so a retry costs only what is left.
+DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_S = (3.0, 10.0)
+
+# The stall guard. huggingface_hub retries a dropped read internally and RESETS
+# its retry budget on every byte that arrives, so a connection trickling one
+# packet a minute never dies on its own — the "it just kept processing and never
+# stopped" report. Less than 64 KB in 2 minutes is 0.5 KB/s, at which the speech
+# model would need 55 days, so treating it as dead cannot misfire on a link that
+# is merely slow.
+_STALL_WINDOW_S = 120.0
+_STALL_MIN_BYTES = 64 * 1024
+
+# Progress messages are throttled to this, so a 2.4 GB download costs the UI a
+# couple of thousand updates rather than one per 10 MB chunk.
+_PROGRESS_EVERY_S = 0.7
+
+# Errors where retrying is pointless: the file, repo or revision is not there,
+# or the repo is gated. Anything else is treated as transient — including
+# LocalEntryNotFoundError, which means "the Hub was unreachable and this is not
+# cached", i.e. exactly the connection problem a retry is for.
+_FATAL_HF_ERRORS = (
+    "EntryNotFoundError", "RepositoryNotFoundError", "RevisionNotFoundError",
+    "GatedRepoError",
+)
+
+
+class ModelDownloadError(RuntimeError):
+    """A model could not be downloaded. str(exc) is user-facing copy."""
+
+
+class _DownloadStalled(RuntimeError):
+    """Raised from inside the progress bar when the bytes stop moving."""
+
+
+def human_bytes(n):
+    """Bytes as download sizes are quoted: "2.4 GB", "340 MB", "89 MB"."""
+    n = float(n or 0)
+    if n >= 1e9:
+        return f"{n / 1e9:.1f} GB"
+    if n >= 1e6:
+        return f"{n / 1e6:.0f} MB"
+    if n >= 1e3:
+        return f"{n / 1e3:.0f} KB"
+    return f"{int(n)} B"
+
+
+def _hf_error_name(exc):
+    return type(exc).__name__
+
+
+def _is_missing_file(exc):
+    return _hf_error_name(exc) == "EntryNotFoundError" or "404" in str(exc)
+
+
+def _is_fatal(exc):
+    return _hf_error_name(exc) in _FATAL_HF_ERRORS
+
+
+class _DownloadSession:
+    """Running byte count for one model's transfer, shared by every file's
+    progress bar so the user sees one total and not five restarts."""
+
+    def __init__(self, label, progress_cb, total, bytes_cb=None):
+        self.label = label
+        self.cb = progress_cb
+        self.bytes_cb = bytes_cb
+        self.total = float(total or 0)
+        self.done = 0.0
+        self._moved = 0.0
+        self._checked_at = time.monotonic()
+        self._emitted_at = 0.0
+
+    def message(self):
+        if self.total:
+            pct = min(100, int(self.done / self.total * 100))
+            return (f"Downloading {self.label}, {human_bytes(self.done)} of "
+                    f"{human_bytes(self.total)} ({pct}%)…")
+        return f"Downloading {self.label}, {human_bytes(self.done)} so far…"
+
+    def reset_clock(self):
+        self._moved = 0.0
+        self._checked_at = time.monotonic()
+
+    def restart(self):
+        """Begin an attempt. The byte count goes back to zero because a resumed
+        transfer re-reports what is already on disk: huggingface_hub builds the
+        new bar with initial=resume_size, so carrying the previous attempt's
+        total forward counts those bytes twice (measured: a 2.5 GB file
+        finishing at "2.8 GB")."""
+        self.done = 0.0
+        self.reset_clock()
+
+    def add(self, n):
+        """Count n bytes. Raises _DownloadStalled when the link has gone quiet.
+
+        The check lives here because this is the only code that runs while a
+        transfer is in flight: it is called from huggingface_hub's own chunk
+        loop, so raising aborts the read (leaving the .incomplete file for the
+        next attempt to resume) instead of waiting for a timeout that a
+        trickling connection never triggers.
+        """
+        now = time.monotonic()
+        self.done = max(0.0, self.done + float(n or 0))
+        self._moved += max(0.0, float(n or 0))
+        if self._moved >= _STALL_MIN_BYTES:
+            self._moved = 0.0
+            self._checked_at = now
+        elif now - self._checked_at > _STALL_WINDOW_S:
+            waited = int(now - self._checked_at)
+            self.reset_clock()
+            raise _DownloadStalled(
+                f"under {human_bytes(_STALL_MIN_BYTES)} moved in {waited} s")
+        if now - self._emitted_at >= _PROGRESS_EVERY_S:
+            self._emitted_at = now
+            self.cb(self.message())
+            if self.bytes_cb is not None:
+                self.bytes_cb(int(self.done), int(self.total), self.label)
+
+
+def _progress_bar_class(session):
+    """A `tqdm_class` for hf_hub_download that reports into `session`.
+
+    Deliberately NOT a tqdm subclass: huggingface_hub only injects `disable`
+    (and `name`) when the class it is handed derives from its own tqdm, and a
+    disabled tqdm returns from update() before doing anything, which is exactly
+    the silence this whole section is fixing. The hub documents that a custom
+    class need only "mimic the behaviour", so this implements the four calls it
+    actually makes: construction with total/initial, update (which can be
+    NEGATIVE when a resumed range request is rejected and the file restarts),
+    close, and use as a context manager.
+    """
+
+    class _ProgressBar:
+        def __init__(self, *args, **kwargs):
+            initial = kwargs.get("initial") or 0
+            if initial:
+                session.add(initial)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def update(self, n=1):
+            session.add(n)
+
+        def close(self):
+            pass
+
+        def set_description(self, *args, **kwargs):
+            pass
+
+        def refresh(self, *args, **kwargs):
+            pass
+
+    return _ProgressBar
+
+
+def _hf_plan(repo_id, filenames, **where):
+    """[(filename, size, will_download)] for the files that EXIST in `repo_id`,
+    or None when the Hub cannot be reached / this huggingface_hub has no dry
+    run. One HEAD per file, the same metadata request the real download makes.
+
+    Whether a file is in the repo at all is settled HERE, not by catching a 404
+    during the transfer: a filename this module lists but a checkpoint no longer
+    ships is a skip, while a 404 on a file the plan said was there is a genuine
+    failure. Deciding it from the exception conflated the two, and a repository
+    missing its weights reported a cheerful "Downloaded (0 B)".
+    """
+    from huggingface_hub import hf_hub_download
+
+    rows = []
+    for name in filenames:
+        try:
+            info = hf_hub_download(repo_id, name, dry_run=True, **where)
+        except Exception as exc:  # noqa: BLE001 - absent file, or no network
+            if _is_missing_file(exc):
+                log.info("%s: %s is not in the repository, skipping", repo_id, name)
+                continue
+            log.debug("download plan for %s unavailable: %s", repo_id, exc)
+            return None
+        rows.append((name, int(getattr(info, "file_size", 0) or 0),
+                     bool(getattr(info, "will_download", True))))
+    return rows
+
+
+def hf_download_plan(repo_id, filenames, **where):
+    """(bytes still to fetch, bytes in total) for these files of `repo_id`.
+
+    `where` is the destination as hf_hub_download takes it (`cache_dir=` or
+    `local_dir=`) and must match what the model library will use, or the answer
+    describes a different copy than the one that gets loaded.
+
+    Returns (None, None) when the Hub cannot be reached, so a caller that only
+    wants to show a number can degrade instead of failing.
+    """
+    rows = _hf_plan(repo_id, filenames, **where)
+    if rows is None:
+        return None, None
+    return (sum(size for _n, size, wanted in rows if wanted),
+            sum(size for _n, size, _w in rows))
+
+
+def ensure_hf_files(repo_id, filenames, *, label, progress_cb=None,
+                    bytes_cb=None, **where):
+    """Put `filenames` on disk, reporting the megabytes as they land.
+
+    `label` is user-facing ("the speech model"). `progress_cb` is the pipeline's
+    existing one-string callback; None means report nothing. `bytes_cb` is the
+    numeric form, bytes_cb(done_bytes, total_bytes, label), for a caller that
+    draws its own bar rather than printing a sentence. `where` is the
+    destination, exactly as the model library will ask for it.
+
+    Returns the number of bytes downloaded (0 when everything was already
+    cached, in which case nothing is reported at all — a cached load must stay
+    as quiet as it is fast). Raises ModelDownloadError, whose message names the
+    model, the size, the underlying failure and the fact that a retry resumes.
+    """
+    from huggingface_hub import hf_hub_download
+
+    cb = progress_cb or (lambda msg: None)
+    rows = _hf_plan(repo_id, filenames, **where)
+    if rows is None:
+        # No usable plan: offline, or a huggingface_hub without dry runs. Ask
+        # for everything and let the transfer produce the real error. A 404 is
+        # tolerated here only because nothing else can tell an absent optional
+        # file from a broken repository without the plan.
+        wanted, pending, strict = list(filenames), None, False
+    else:
+        if not rows:
+            raise ModelDownloadError(
+                f"Could not download {label}: none of the files it needs "
+                f"({', '.join(filenames)}) are in {repo_id}. This build is "
+                "asking for a checkpoint that no longer exists."
+            )
+        pending = sum(size for _n, size, w in rows if w)
+        if pending == 0:
+            return 0
+        wanted = [name for name, _size, w in rows if w]
+        strict = True
+
+    session = _DownloadSession(label, cb, pending, bytes_cb)
+    cb(session.message())
+    bar = _progress_bar_class(session)
+    last = None
+    attempt = 0
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        session.restart()
+        try:
+            for name in wanted:
+                try:
+                    hf_hub_download(repo_id, name, tqdm_class=bar, **where)
+                except Exception as exc:  # noqa: BLE001 - see `strict`
+                    if not strict and _is_missing_file(exc):
+                        continue
+                    raise
+            log.info("%s: downloaded %s", label, human_bytes(session.done))
+            # Never leave the UI parked on the last throttled percentage.
+            cb(f"Downloaded {label} ({human_bytes(session.done)}).")
+            return int(session.done)
+        except Exception as exc:  # noqa: BLE001 - re-raised as ModelDownloadError
+            last = exc
+            log.warning("%s: download attempt %d of %d failed: %s: %s",
+                        label, attempt, DOWNLOAD_ATTEMPTS, _hf_error_name(exc), exc)
+            if _is_fatal(exc) or attempt >= DOWNLOAD_ATTEMPTS:
+                break
+            wait = _DOWNLOAD_BACKOFF_S[min(attempt - 1, len(_DOWNLOAD_BACKOFF_S) - 1)]
+            cb(f"Download of {label} was interrupted, retrying in {int(wait)} s "
+               f"(attempt {attempt + 1} of {DOWNLOAD_ATTEMPTS})…")
+            session.reset_clock()
+            time.sleep(wait)
+
+    size = f" ({human_bytes(pending)})" if pending else ""
+    if _is_fatal(last):
+        advice = ("Retrying will not help: the model host refused the request "
+                  "for that file.")
+    else:
+        advice = ("Check your internet connection and try again. The part that "
+                  "already arrived is kept, so a retry resumes where this "
+                  "stopped.")
+    detail = str(last).strip().rstrip(".") or _hf_error_name(last)
+    raise ModelDownloadError(
+        f"Could not download {label}{size} after {attempt} of "
+        f"{DOWNLOAD_ATTEMPTS} attempts. Last error: {_hf_error_name(last)}: "
+        f"{detail}. {advice}"
+    ) from last
