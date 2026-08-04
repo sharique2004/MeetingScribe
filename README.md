@@ -100,11 +100,16 @@ where your meetings actually happen.
    Neural Engine, on-device. They're a draft: the full-quality pass with
    speaker separation happens when you stop. Attendee names from the
    calendar event are used to bias recognition, so names come out right.
-5. When the meeting ends, press **■ Stop & transcribe**. On macOS 26+
-   transcription uses Apple's on-device Speech engine (Neural Engine) — a
-   45-minute meeting finishes in **a minute or two**, with almost no CPU use
-   or heat. Older Macs fall back to Whisper on the GPU, and other machines to
-   Whisper on the CPU (about a third of the meeting's length).
+5. When the meeting ends, press **■ Stop & transcribe**. On Apple Silicon
+   transcription uses **NVIDIA Parakeet on the Apple GPU** — the most
+   accurate open engine on natural meeting speech, with word-level
+   timestamps and almost no invented words over silence; a 45-minute
+   meeting finishes in about a minute, fully on-device. Machines without it
+   fall back to Apple's Speech engine (macOS 26+, Neural Engine), then
+   Whisper on the GPU, then Whisper on the CPU. Speaker turns are then
+   refined by a second on-device model (pyannote community-1 on the Neural
+   Engine) so words land on the right person even when speakers trade off
+   mid-sentence.
 6. Open the meeting to read the transcript. Click the **meeting title** to
    rename the meeting, a **speaker name** to rename them (e.g. "Speaker 1" →
    "Priya"), or a **timestamp** to replay that moment. Export as
@@ -121,12 +126,15 @@ where your meetings actually happen.
    be invented), and a backup is kept so you can **↩ Undo tidy**.
 8. **Summary**: one click writes a TL;DR, key points, decisions, action
    items with owners, open questions and a ready-to-send follow-up email —
-   using **your own Claude account** through the `claude` CLI (no API key;
-   the first click walks you through signing in). Claude reads the whole
+   using **your own AI CLI**: Claude by default, or Codex, Gemini or GitHub
+   Copilot (`"summary_engine": "codex"` etc. — no API key; the first click
+   walks you through signing in). A frontier model reads the whole
    transcript in one pass, so it genuinely understands who said what. Only
-   the transcript *text* is sent, never audio. Prefer 100% offline? Set
-   `"summary_engine": "apple"` in `config.json` to use Apple Intelligence
-   instead (shallower, but nothing leaves the Mac).
+   the transcript *text* is sent, never audio. If the CLI is ever missing or
+   signed out, the summary falls back to on-device Apple Intelligence
+   automatically. Prefer 100% offline always? Set `"summary_engine":
+   "apple"` (shallower, but nothing leaves the Mac). The same choice powers
+   **Ask**.
 
 ## On your phone
 
@@ -170,7 +178,9 @@ Create/edit `config.json` in this folder (defaults shown):
   "whisper_model": "auto",
   "whisper_backend": "auto",
   "language": null,
+  "diarization_engine": "auto",
   "diarization_threshold": 0.6,
+  "summary_engine": "claude",
   "auto_route_macos": true,
   "live_captions": true,
   "vocabulary": [],
@@ -186,10 +196,17 @@ Create/edit `config.json` in this folder (defaults shown):
 
 - `whisper_model`: `auto` / `tiny` / `base` / `small` / `medium` / `large-v3`
   / `large-v3-turbo`. Bigger = more accurate, slower. `auto` picks
-  `large-v3-turbo` on the Apple-GPU backend and `small` on CPU.
-- `whisper_backend`: `auto` / `mlx` / `faster`. `mlx` is the Apple-GPU
-  backend (Apple Silicon only) — much faster and cooler than CPU.
+  `large-v3-turbo` on the Apple-GPU backend and `small` on CPU. (Whisper
+  backends only — Parakeet and Apple Speech have no size variants.)
+- `whisper_backend`: `auto` / `parakeet` / `apple` / `mlx` / `faster`.
+  `auto` picks the most accurate engine the machine can run: Parakeet
+  (Apple-GPU, English + 24 European languages), then Apple Speech
+  (macOS 26+), then Whisper on the GPU, then CPU.
 - `language`: force a language (`"en"`, `"hi"`, …) or `null` to auto-detect.
+- `diarization_engine`: `auto` / `classic`. `auto` refines who-spoke-when
+  with an on-device neural pipeline (pyannote community-1 via CoreML,
+  ~22 MB downloaded on first use); the classic voice-print engine still
+  decides how many speakers there are, and everything still runs locally.
 - `diarization_threshold`: lower → more likely to split similar voices into
   separate speakers; higher → more likely to merge them.
 - `auto_route_macos`: let the app switch the sound output to the
@@ -249,6 +266,17 @@ ever use it, set `"voice_profiles": false` in `config.json`.
   sound actually plays through this PC (not a phone or external speaker).
 - **Transcript quality poor** — switch `whisper_model` to `"medium"` in
   `config.json`, then use **🔁 Reprocess** on the meeting.
+
+## Models & credits
+
+Everything that touches audio runs on-device with openly licensed models:
+[NVIDIA Parakeet TDT 0.6B](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2)
+(CC-BY-4.0) via [parakeet-mlx](https://github.com/senstella/parakeet-mlx)
+(Apache-2.0) for transcription; OpenAI Whisper (MIT) as fallback;
+[pyannote speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+(CC-BY-4.0) via [FluidAudio](https://github.com/FluidInference/FluidAudio)'s
+CoreML port (Apache-2.0) for speaker turns; SpeechBrain's ECAPA-TDNN
+(Apache-2.0) for voice prints.
 
 ## License
 

@@ -1092,8 +1092,56 @@ def check_recluster_writes_the_marker(fail, corpus):
             fail("recluster left the mic-only warning on a solo meeting")
 
 
+def check_assign_by_turns(fail, corpus):
+    """diarization.assign_by_turns: the neural-turn word assignment keeps
+    diarize_track's output contract. Pure arithmetic — no corpus, no model.
+
+    The cases are the ones the classic label_at path is known to fumble: a
+    speaker change INSIDE one ASR segment, a word the diarizer heard as
+    silence (gap -> nearest turn), a word-less segment (midpoint), and label
+    renumbering by first appearance whatever the turn labels were.
+    """
+    seg = {
+        "start": 0.0, "end": 6.0, "text": "a b c d e f",
+        "words": [{"w": f" {ch}", "s": i * 1.0, "e": i * 1.0 + 0.8}
+                  for i, ch in enumerate("abcdef")],
+    }
+    # Speaker change mid-segment at t=3.0; turn labels deliberately NOT 0/1.
+    turns = [(0.0, 3.0, 7), (3.0, 6.0, 4)]
+    out, n = diarization_mod.assign_by_turns([dict(seg, words=list(seg["words"]))], turns)
+    print(f"    mid-segment change -> {n} speakers over {len(out)} segments")
+    if n != 2 or len(out) != 2:
+        fail(f"expected 2 speakers / 2 segments, got {n} / {len(out)}")
+    elif [s["speaker_idx"] for s in out] != [0, 1]:
+        fail(f"labels not renumbered by first appearance: "
+             f"{[s['speaker_idx'] for s in out]}")
+    elif out[0]["text"] != "a b c" or out[1]["text"] != "d e f":
+        fail(f"words split at the wrong boundary: "
+             f"{[s['text'] for s in out]}")
+
+    # A word in a diarizer gap joins the NEAREST turn, not a phantom.
+    gap_turns = [(0.0, 1.9, 0), (4.1, 6.0, 1)]
+    out, n = diarization_mod.assign_by_turns([dict(seg, words=list(seg["words"]))], gap_turns)
+    got = {s["text"]: s["speaker_idx"] for s in out}
+    print(f"    gap words -> {got}")
+    if n != 2 or got.get("a b c") != 0 or got.get("d e f") != 1:
+        fail(f"gap words not assigned to the nearest turn: {got}")
+
+    # Word-less segments are labelled whole at their midpoint.
+    bare = {"start": 4.0, "end": 6.0, "text": "tail"}
+    out, n = diarization_mod.assign_by_turns([bare], turns)
+    if len(out) != 1 or out[0]["speaker_idx"] != 0 or out[0]["text"] != "tail":
+        fail(f"word-less segment mislabelled: {out}")
+
+    # No turns at all: everything is one speaker, nothing crashes.
+    out, n = diarization_mod.assign_by_turns([bare], [])
+    if n != 1 or out[0]["speaker_idx"] != 0:
+        fail(f"empty turn list did not collapse to one speaker: {out}")
+
+
 CHECKS = [
     ("the corpus is present and current", check_corpus_is_usable),
+    ("neural-turn word assignment (assign_by_turns)", check_assign_by_turns),
     ("the table's truth comes from the fixtures", check_the_table_is_grounded_in_truth),
     ("system-track-lost is absolute, not a ratio", check_system_track_lost_is_absolute),
     ("second-voice verdicts over the mic corpus", check_second_voice_verdicts),

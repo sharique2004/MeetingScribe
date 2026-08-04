@@ -39,13 +39,25 @@ DEFAULTS = {
     # Cosine-distance cutoff for deciding two voices are different people.
     # Lower = more likely to split voices apart, higher = more likely to merge.
     "diarization_threshold": 0.6,
+    # Speaker attribution engine. "auto" (default): the classic ECAPA cascade
+    # decides HOW MANY voices (21/21 on the real corpus), and the neural
+    # engine (pyannote community-1 on the Neural Engine, ~22 MB of local
+    # CoreML models) re-derives WHO SPEAKS WHEN at that count — frame-level
+    # turns instead of 2-second window votes. "classic": never run the
+    # neural pass (the pre-2026-08 behaviour, and the automatic fallback
+    # whenever the neural engine is missing or fails).
+    "diarization_engine": "auto",
     # macOS: switch the sound output to a Multi-Output Device (speakers +
     # BlackHole) while recording, and switch back afterwards.
     "auto_route_macos": True,
-    # Summary engine: "claude" writes summaries with the user's own Claude
-    # account via the claude CLI (best quality; transcript text is sent to
-    # Anthropic, never audio). "apple" keeps summaries fully on-device via
-    # Apple Intelligence (shallower, but 100% offline).
+    # Summary + Ask engine. "claude" (default), "codex", "gemini" or
+    # "copilot" run on the user's own AI CLI of that name (best quality;
+    # transcript TEXT is sent to that provider's cloud, never audio — the
+    # registry lives in ai_cli.py). "apple" keeps everything on-device via
+    # Apple Intelligence (shallower, but 100% offline). When the chosen CLI
+    # is missing or signed out, summaries fall back to Apple Intelligence
+    # automatically; Ask reports what to install instead, because an
+    # interactive answer that silently switched models is harder to trust.
     "summary_engine": "claude",
     # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
     "live_captions": True,

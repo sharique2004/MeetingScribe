@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
@@ -31,6 +32,7 @@ from pathlib import Path
 import numpy as np
 
 import diarization
+import diarization_neural
 import speaker_names
 import stats as stats_mod
 import swift_helpers
@@ -109,13 +111,23 @@ def _atomic_write_text(path, text):
 
 _WHISPER = None
 _WHISPER_KEY = None
+_PARAKEET = None
+_PARAKEET_REPO = None
+# Guards the Parakeet singleton AND its use: process_meeting runs on a thread
+# per meeting, and two meetings may transcribe at once (record-stop on one,
+# Reprocess on another). See _get_parakeet.
+_PARAKEET_LOCK = threading.Lock()
 
 TURN_MERGE_GAP_S = 3.0
 
-# Model label shown in the UI when whisper_model is "auto". Apple Speech runs
-# on the Neural Engine (fastest, coolest); MLX uses the GPU; faster-whisper
-# the CPU.
+# Model label shown in the UI when whisper_model is "auto". Parakeet runs on
+# the Apple GPU via MLX and is the accuracy pick for meeting audio (NVIDIA
+# parakeet-tdt-0.6b: the strongest meeting-domain WER of anything that runs
+# on this hardware, near-zero silence hallucination, native punctuation and
+# word timestamps). Apple Speech runs on the Neural Engine (fastest,
+# coolest); MLX whisper uses the GPU; faster-whisper the CPU.
 AUTO_MODEL = {
+    "parakeet": "parakeet-tdt-0.6b",
     "apple": "apple-speech",
     "mlx": "large-v3-turbo",
     "faster": "small",
@@ -129,6 +141,24 @@ MLX_REPOS = {
     "large-v3": "mlx-community/whisper-large-v3-mlx",
     "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
 }
+
+# Parakeet TDT 0.6B — v2 is English-only and the best English of the pair;
+# v3 trades a sliver of English accuracy for 25 European languages. Neither
+# covers hi/ja/ko/zh/ar, so those languages fall through to Apple/Whisper in
+# transcribe_track's ladder.
+PARAKEET_REPO_EN = "mlx-community/parakeet-tdt-0.6b-v2"
+PARAKEET_REPO_MULTI = "mlx-community/parakeet-tdt-0.6b-v3"
+PARAKEET_V3_LANGS = {
+    "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu",
+    "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru",
+    "uk",
+}
+# Long meetings are transcribed in overlapping chunks (the model's full
+# attention window is ~24 min but memory grows with length; 2-minute chunks
+# with the library's default 15 s overlap keep peak memory flat and let the
+# library's token-merge stitch the seams).
+PARAKEET_CHUNK_S = 120.0
+PARAKEET_OVERLAP_S = 15.0
 
 # Apple SpeechAnalyzer helper (macOS 26+). Source ships in tools/; the
 # compiled binary is cached outside the synced project folder.
@@ -166,19 +196,57 @@ def _mlx_available():
         return False
 
 
+def _parakeet_lang(cfg):
+    """The bare language code Parakeet would transcribe this meeting in, or
+    None when the requested language is outside what it covers. Auto-detect
+    (no language set) reads as English — the same assumption the Apple tier
+    has always made when it defaults the locale to en-US."""
+    lang = (cfg.get("language") or "en").strip().lower().split("-")[0]
+    return lang if lang in PARAKEET_V3_LANGS else None
+
+
+def _parakeet_available(cfg):
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        return False
+    if _parakeet_lang(cfg) is None:
+        return False
+    try:
+        import parakeet_mlx  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
 def pick_backend(cfg):
     """Pick the transcription backend.
 
-    "apple"  — Apple SpeechAnalyzer on the Neural Engine (macOS 26+): fastest,
-               coolest, fully on-device. The default when available.
-    "mlx"    — Whisper on the Apple GPU (Apple Silicon + mlx-whisper).
-    "faster" — Whisper on the CPU (faster-whisper), the portable fallback.
+    "parakeet" — Parakeet TDT on the Apple GPU (MLX): the most accurate on
+                 meeting audio and nearly hallucination-free on silence. The
+                 default when available — accuracy is what the transcript is
+                 FOR, and the recording is already over when this runs.
+    "apple"    — Apple SpeechAnalyzer on the Neural Engine (macOS 26+):
+                 fastest and coolest, but tuned for clean dictation; on
+                 meeting audio it mishears noticeably more.
+    "mlx"      — Whisper large-v3-turbo on the Apple GPU: the multilingual
+                 catch-all, and the one tier that honours the vocabulary via
+                 initial_prompt.
+    "faster"   — Whisper on the CPU (faster-whisper), the portable fallback.
 
     Config "whisper_backend" can force any of these.
     """
     backend = cfg.get("whisper_backend", "auto")
-    if backend in ("apple", "mlx", "faster"):
+    if backend in ("parakeet", "apple", "mlx", "faster"):
         return backend
+    # With NO language set, Parakeet reads the meeting as English — the same
+    # assumption the Apple tier has always made (locale defaults to en-US).
+    # So auto only puts Parakeet ahead of a tier that shared that assumption:
+    # on a Mac where Apple Speech isn't available, the old default was
+    # Whisper, which genuinely auto-detects, and an unset language must keep
+    # that ability rather than silently anglicize a Spanish meeting.
+    if _parakeet_available(cfg) and (
+            cfg.get("language") or _ensure_apple_binary() is not None):
+        return "parakeet"
     if _ensure_apple_binary() is not None:
         return "apple"
     if _mlx_available():
@@ -187,10 +255,15 @@ def pick_backend(cfg):
 
 
 def resolve_model(cfg, backend):
-    # Apple Speech has no selectable model variants, so whisper_model does not
-    # apply to it. The Whisper backends honour an explicit model, else "auto".
+    # Apple Speech and Parakeet have no user-selectable model variants, so
+    # whisper_model does not apply to them. The Whisper backends honour an
+    # explicit model, else "auto".
     if backend == "apple":
         return AUTO_MODEL["apple"]
+    if backend == "parakeet":
+        lang = _parakeet_lang({"language": cfg.get("language")})
+        repo = PARAKEET_REPO_EN if lang in (None, "en") else PARAKEET_REPO_MULTI
+        return repo.rsplit("/", 1)[1]
     model = cfg.get("whisper_model") or "auto"
     return AUTO_MODEL.get(backend, "small") if model == "auto" else model
 
@@ -238,6 +311,156 @@ def _is_hallucination(seg, audio, sr=16000):
     return float(np.abs(audio[i0:i1]).max()) < SILENCE_PEAK
 
 
+def _vocab_prompt(cfg):
+    """The vocabulary as a comma-joined Whisper initial_prompt / hotwords
+    string, truncated at a comma boundary well inside Whisper's 224-token
+    prompt window. None when there is nothing to bias toward."""
+    strings = [str(s).strip() for s in (cfg.get("_context_strings") or [])
+               if str(s).strip()]
+    if not strings:
+        return None
+    joined = ", ".join(strings)
+    if len(joined) > 700:
+        joined = joined[:700].rsplit(",", 1)[0]
+    return joined
+
+
+def _is_vocab_echo(text, prompt):
+    """Whisper sometimes transcribes its own prompt over near-silence. A
+    segment whose words are nearly all vocabulary words, in bulk, is that —
+    real speech about one product name never reads as a term list."""
+    if not prompt:
+        return False
+    vocab = {w.lower() for w in re.findall(r"\w+", prompt)}
+    words = [w.lower() for w in re.findall(r"\w+", text)]
+    if len(words) < 4:
+        return False
+    hits = sum(1 for w in words if w in vocab)
+    return hits / len(words) >= 0.9
+
+
+def _get_parakeet(repo):
+    """The Parakeet model singleton. Callers MUST hold _PARAKEET_LOCK for
+    their whole use of the returned model, not just this call: two meetings
+    can process concurrently (each on its own request thread), the swap
+    between the en/multilingual checkpoints is a torn-pair hazard, and
+    parakeet-mlx documents nothing about concurrent generate() on one
+    model. Serializing GPU transcription is also simply faster than two
+    decodes thrashing one GPU."""
+    global _PARAKEET, _PARAKEET_REPO
+    if _PARAKEET is None or _PARAKEET_REPO != repo:
+        from parakeet_mlx import from_pretrained
+
+        _PARAKEET = from_pretrained(repo, cache_dir=str(MODELS_DIR / "parakeet"))
+        _PARAKEET_REPO = repo
+    return _PARAKEET
+
+
+def _parakeet_words(sentence):
+    """AlignedTokens -> the {"w","s","e"} word list every tier returns.
+    Tokens are subword pieces; a piece starting with a space starts a new
+    word (matching Whisper's leading-space word convention downstream)."""
+    words = []
+    for tok in sentence.tokens:
+        text = tok.text
+        if not text:
+            continue
+        if words and not text.startswith(" "):
+            words[-1]["w"] += text
+            words[-1]["e"] = float(tok.end)
+        else:
+            words.append({"w": text, "s": float(tok.start), "e": float(tok.end)})
+    return words
+
+
+def _transcribe_parakeet(path, label, cfg, progress_cb):
+    """Parakeet TDT on the Apple GPU via MLX — the accuracy tier for meeting
+    audio. Transducer decoding barely hallucinates on silence and its frame
+    timestamps are tighter than Whisper's DTW alignment, which is exactly
+    what word→speaker attribution wants."""
+    import mlx.core as mx
+    from parakeet_mlx.alignment import (
+        merge_longest_common_subsequence,
+        merge_longest_contiguous,
+        sentences_to_result,
+        tokens_to_sentences,
+    )
+    from parakeet_mlx.audio import get_logmel
+
+    lang = _parakeet_lang(cfg)
+    if lang is None:
+        raise RuntimeError("language not covered by Parakeet")
+    repo = PARAKEET_REPO_EN if lang == "en" else PARAKEET_REPO_MULTI
+    model_name = repo.rsplit("/", 1)[1]
+    progress_cb(f"Transcribing {label} on the Apple GPU ({model_name})…")
+
+    # Decode the WAV ourselves (parakeet-mlx's own loader shells out to
+    # ffmpeg, which most machines don't have). The model wants 16 kHz mono;
+    # load_mono_16k delivers exactly that.
+    audio = diarization.load_mono_16k(path)
+
+    # One meeting transcribes at a time: the lock covers model load AND
+    # generate, because a concurrent Reprocess on another meeting would
+    # otherwise race the singleton (or swap the en/multilingual checkpoint
+    # under this thread) — see _get_parakeet.
+    with _PARAKEET_LOCK:
+        model = _get_parakeet(repo)
+        sr = model.preprocessor_config.sample_rate
+        if sr != diarization.EMBED_SR:  # never true for the shipped models
+            raise RuntimeError(f"unexpected Parakeet sample rate {sr}")
+        data = mx.array(audio)
+
+        # Mirrors parakeet_mlx.BaseParakeet.transcribe()'s chunked branch over
+        # our own decoded audio, reusing the library's overlap token-merge.
+        total = len(audio)
+        chunk = int(PARAKEET_CHUNK_S * sr)
+        overlap = int(PARAKEET_OVERLAP_S * sr)
+        if total <= chunk:
+            result = model.generate(get_logmel(data, model.preprocessor_config))[0]
+        else:
+            all_tokens = []
+            for start in range(0, total, chunk - overlap):
+                end = min(start + chunk, total)
+                if end - start < model.preprocessor_config.hop_length:
+                    break
+                piece = model.generate(
+                    get_logmel(data[start:end], model.preprocessor_config))[0]
+                offset = start / sr
+                for sent in piece.sentences:
+                    for tok in sent.tokens:
+                        tok.start += offset
+                        tok.end = tok.start + tok.duration
+                if all_tokens:
+                    try:
+                        all_tokens = merge_longest_contiguous(
+                            all_tokens, piece.tokens,
+                            overlap_duration=PARAKEET_OVERLAP_S)
+                    except RuntimeError:
+                        all_tokens = merge_longest_common_subsequence(
+                            all_tokens, piece.tokens,
+                            overlap_duration=PARAKEET_OVERLAP_S)
+                else:
+                    all_tokens = piece.tokens
+                progress_cb(f"Transcribing {label}… {min(99, int(end / total * 100))}%")
+            result = sentences_to_result(tokens_to_sentences(all_tokens))
+
+    out = []
+    dropped = 0
+    for sent in result.sentences:
+        text = sent.text.strip()
+        if not text or not re.search(r"\w", text):
+            continue
+        seg = {"start": float(sent.start), "end": float(sent.end), "text": text,
+               "words": _parakeet_words(sent)}
+        if _is_hallucination(seg, audio):
+            dropped += 1
+            continue
+        out.append(seg)
+    if dropped:
+        log.info("%s: dropped %d silent segment(s)", label, dropped)
+    return out, lang
+
+
 def _transcribe_mlx(path, label, cfg, progress_cb):
     """Whisper on the Apple GPU via mlx-whisper — fast and easy on the fans."""
     import mlx_whisper
@@ -247,6 +470,7 @@ def _transcribe_mlx(path, label, cfg, progress_cb):
     # Decode the WAV ourselves (mlx-whisper would otherwise shell out to
     # ffmpeg, which most machines don't have). Whisper wants 16 kHz mono.
     audio = diarization.load_mono_16k(path)
+    prompt = _vocab_prompt(cfg)
     result = mlx_whisper.transcribe(
         audio,
         path_or_hf_repo=MLX_REPOS.get(model, model),
@@ -254,6 +478,10 @@ def _transcribe_mlx(path, label, cfg, progress_cb):
         word_timestamps=True,
         condition_on_previous_text=False,
         hallucination_silence_threshold=2.0,
+        # Bias recognition toward attendee names and the user's vocabulary —
+        # proper names are the recognizer's biggest error class, and this is
+        # the only knob Whisper exposes for them.
+        initial_prompt=prompt,
         verbose=None,
     )
     out = []
@@ -262,7 +490,7 @@ def _transcribe_mlx(path, label, cfg, progress_cb):
         text = seg["text"].strip()
         if not text or not re.search(r"\w", text):
             continue
-        if _is_hallucination(seg, audio):
+        if _is_hallucination(seg, audio) or _is_vocab_echo(text, prompt):
             dropped += 1
             continue
         words = [
@@ -365,8 +593,19 @@ def _transcribe_apple(path, label, cfg, progress_cb):
 
 def transcribe_track(path, label, cfg, progress_cb):
     """Transcribe one WAV. Returns (segments, language). Tries the configured
-    backend, then degrades gracefully (apple -> mlx -> faster-whisper)."""
+    backend, then degrades gracefully
+    (parakeet -> apple -> mlx -> faster-whisper)."""
     backend = pick_backend(cfg)
+    if backend == "parakeet":
+        try:
+            return _transcribe_parakeet(path, label, cfg, progress_cb)
+        except Exception as exc:
+            log.warning("Parakeet failed (%s); trying the next engine", exc)
+            progress_cb(f"Parakeet unavailable ({exc}); trying the next engine…")
+            if _ensure_apple_binary() is not None:
+                backend = "apple"
+            else:
+                backend = "mlx" if _mlx_available() else "faster"
     if backend == "apple":
         try:
             return _transcribe_apple(path, label, cfg, progress_cb)
@@ -388,6 +627,13 @@ def transcribe_track(path, label, cfg, progress_cb):
         vad_filter=True,
         word_timestamps=True,
         beam_size=5,
+        # The other tiers already decode each window independently; without
+        # this the CPU tier alone lets one mis-heard phrase seed the next
+        # window's decode (classic Whisper repetition spirals).
+        condition_on_previous_text=False,
+        # Vocabulary biasing without spending the text-prompt window —
+        # hotwords apply to every window, not just the first.
+        hotwords=_vocab_prompt(cfg),
     )
     out = []
     for seg in segments_iter:
@@ -1043,8 +1289,86 @@ def _user_speaker_count(meta):
     return count if basis == SPEAKER_COUNT_TOTAL else count + 1
 
 
+def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
+                   state, precomputed, allow_neural_run, progress_cb):
+    """Swap the classic window-vote attribution for neural frame-level turns
+    when the neural engine is available and agrees to the classic COUNT.
+
+    The count decision is untouched — diarization.cluster()'s GEN3 cascade
+    scores 21/21 on the real corpus and stays the authority (see
+    diarization_neural's module docstring for the measurement). What changes
+    is who each WORD belongs to: turns from powerset segmentation + VBx,
+    forced to that count, replace nearest-window-centre voting. Every
+    failure returns the classic result unchanged.
+
+    Cached turns (analysis.npz) are reused when their speaker count matches;
+    a fresh engine run happens only when `allow_neural_run` — reprocess yes,
+    recluster no, because recluster promises sub-second answers and a fresh
+    neural pass reads the whole WAV.
+    """
+    engine = str(cfg.get("diarization_engine") or "auto").lower()
+    if engine == "classic" or n_found < 2:
+        return classic_segs, n_found, False
+    track = (meta.get("tracks") or {}).get(key) or {}
+
+    turns = None
+    cached = (precomputed or {}).get(key)
+    if cached is not None and len(cached) > 2 and cached[2] is not None:
+        cached_turns = [tuple(t) for t in np.asarray(cached[2]).tolist()]
+        if len({int(t[2]) for t in cached_turns}) == n_found:
+            turns = cached_turns
+    if turns is None:
+        if not allow_neural_run or not diarization_neural.available():
+            return classic_segs, n_found, False
+        wav = meeting_dir / (track.get("file") or "")
+        if not wav.exists():
+            return classic_segs, n_found, False
+        progress_cb("Refining speaker turns…")
+        offset = float(track.get("start_offset") or 0.0)
+        try:
+            # SELF-VALIDATION, measured on the corpus (OFFLINE_RETEST.md):
+            # ask the engine for its own unforced opinion first.
+            #   sees the same count  -> its turns are used as-is.
+            #   sees MORE voices     -> it hears everyone; re-run pinned to
+            #                           the classic count so VBx merges the
+            #                           extras onto the right voices.
+            #   sees FEWER voices    -> it cannot hear a voice the classic
+            #                           engine can (Room T: two people in
+            #                           one room read as one). A forced
+            #                           split from an engine that cannot
+            #                           hear the difference is a coin toss —
+            #                           keep the classic attribution.
+            turns = diarization_neural.fold_confetti(
+                diarization_neural.diarize_turns(wav, offset=offset))
+            k_neural = len({t[2] for t in turns})
+            if k_neural > n_found:
+                turns = diarization_neural.diarize_turns(
+                    wav, num_speakers=n_found, offset=offset)
+            elif k_neural < n_found:
+                log.info("neural engine hears %d voice(s) on %s where the "
+                         "classic engine hears %d; keeping classic "
+                         "attribution", k_neural, key, n_found)
+                return classic_segs, n_found, False
+        except Exception as exc:
+            log.warning("neural turns failed on %s (%s); keeping classic "
+                        "attribution", key, exc)
+            return classic_segs, n_found, False
+    if not turns:
+        return classic_segs, n_found, False
+
+    refined, k = diarization.assign_by_turns(segs, turns)
+    if k != n_found:
+        # The turn set didn't produce every voice the count promised (or
+        # produced ghosts). The classic attribution keeps the contract.
+        log.info("neural turns yielded %d speaker(s) against a count of %d "
+                 "on %s; keeping classic attribution", k, n_found, key)
+        return classic_segs, n_found, False
+    state["neural_turns"] = turns
+    return refined, n_found, True
+
+
 def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_cb,
-                        precomputed=None, collect=None):
+                        precomputed=None, collect=None, allow_neural_run=True):
     """Steps 3+4: cluster voices into speakers and build the final transcript.
 
     Mutates meta (speakers/turns/stats) and the transcript segments. Returns
@@ -1081,6 +1405,7 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     threshold = float(cfg["diarization_threshold"])
     warnings = []
     track_state = {}
+    neural_used = []
 
     def diarize(key, n_speakers, prefix, name_fmt, start_index):
         """Cluster one track's voices; returns labelled segments + speaker map."""
@@ -1092,6 +1417,7 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
         # embeddings this run used before it trusts a second voice, whether or
         # not the caller asked for them to be persisted.
         state = {}
+        cached = (precomputed or {}).get(key)
         try:
             new_segs, n_found = diarization.diarize_track(
                 track_file,
@@ -1099,7 +1425,7 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 n_speakers=n_speakers,
                 threshold=threshold,
                 progress_cb=progress_cb,
-                precomputed=(precomputed or {}).get(key),
+                precomputed=None if cached is None else cached[:2],
                 state=state,
             )
         except Exception as exc:
@@ -1109,6 +1435,13 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             )
             new_segs = [dict(s, speaker_idx=0) for s in segs]
             n_found = 1
+        # The classic engine has decided HOW MANY voices; the neural engine,
+        # when present, re-decides WHO SPEAKS WHEN at that count.
+        new_segs, n_found, refined = _neural_refine(
+            meeting_dir, meta, cfg, key, segs, new_segs, n_found,
+            state, precomputed, allow_neural_run, progress_cb)
+        if refined:
+            neural_used.append(key)
         if state and "embeddings" in state:
             track_state[key] = state
             if collect is not None:
@@ -1154,6 +1487,10 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             # path can legitimately collapse to a single cluster, which is the
             # whole point: the detector only tells us the system track was
             # silent, not that anyone else was actually on the mic.
+            # The probe below may be DISCARDED (verdict "just you"), and a
+            # discarded labelling must not leave its neural-turns mark on the
+            # meeting — snapshot the marker list so it can be rolled back.
+            neural_before = list(neural_used)
             fallback_segs, fallback_speakers = diarize(
                 "mic", forced, "s", "Speaker {}", 1
             )
@@ -1188,8 +1525,11 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 # One voice on the mic is the user talking, as usual. The
                 # fallback's output is dropped on the floor — diarize_track
                 # builds fresh dicts, so transcripts["mic"] is untouched and the
-                # "You" pass below labels it exactly as it always would.
+                # "You" pass below labels it exactly as it always would. That
+                # includes any neural-turns mark the probe left: a labelling
+                # nobody sees must not stamp meta["diarizer"].
                 mic_only = False
+                neural_used[:] = neural_before
         if not mic_only and mic_segs:
             speakers["you"] = "You"
             for seg in mic_segs:
@@ -1260,6 +1600,13 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
         meta["diarization_mode"] = "mic_fallback"
     else:
         meta.pop("diarization_mode", None)
+    # Which engine attributed the words — "neural" when frame-level turns
+    # replaced window voting on at least one track. Cleared, never stale, so
+    # a meeting relabelled classic (engine off, cache mismatch) says so.
+    if neural_used:
+        meta["diarizer"] = "neural"
+    else:
+        meta.pop("diarizer", None)
     return warnings
 
 
@@ -1309,6 +1656,11 @@ def _save_analysis_state(meeting_dir, transcripts, collect):
         for key, state in collect.items():
             arrays[f"{key}_windows"] = np.asarray(state["windows"], dtype=np.float64)
             arrays[f"{key}_embeddings"] = np.asarray(state["embeddings"], dtype=np.float32)
+            if state.get("neural_turns"):
+                # (start, end, label) per neural turn, meeting timeline. Reused
+                # by recluster when the count still matches; versioned below.
+                arrays[f"{key}_neural_turns"] = np.asarray(
+                    state["neural_turns"], dtype=np.float64)
         npz_path = meeting_dir / ANALYSIS_NPZ
         json_path = meeting_dir / ANALYSIS_JSON
         state_id = (uuid.uuid4().hex if arrays
@@ -1320,6 +1672,9 @@ def _save_analysis_state(meeting_dir, transcripts, collect):
             # written just below. Both are metadata only: separate entries that
             # touch neither the window coordinates nor the embedding values.
             arrays["embed_version"] = np.asarray(diarization.EMBED_VERSION, dtype=np.int32)
+            if any(k.endswith("_neural_turns") for k in arrays):
+                arrays["neural_version"] = np.asarray(
+                    diarization_neural.NEURAL_VERSION, dtype=np.int32)
             arrays[STATE_ID_KEY] = np.asarray(state_id)
             # savez_compressed appends ".npz" to a *name* that lacks it, which
             # would defeat the temp file, so it is handed an open handle.
@@ -1385,10 +1740,22 @@ def _load_analysis_cache(npz_path, keys, json_state_id):
                     "analysis.json — recomputing", npz_path.parent.name,
                 )
                 return {}
+            # Neural turns ride along only when written by the engine version
+            # this build runs; a mismatch drops the turns, never the
+            # embeddings — classic attribution remains fully served.
+            neural_ok = (
+                "neural_version" in npz
+                and int(npz["neural_version"]) == diarization_neural.NEURAL_VERSION
+            )
             cache = {}
             for key in keys:
                 if f"{key}_windows" in npz and f"{key}_embeddings" in npz:
-                    cache[key] = (npz[f"{key}_windows"], npz[f"{key}_embeddings"])
+                    turns = (
+                        npz[f"{key}_neural_turns"]
+                        if neural_ok and f"{key}_neural_turns" in npz else None
+                    )
+                    cache[key] = (npz[f"{key}_windows"],
+                                  npz[f"{key}_embeddings"], turns)
             return cache
     except (zipfile.BadZipFile, ValueError, KeyError, OSError, EOFError) as exc:
         # A corrupt cache must never cost the user their transcript: the arrays
@@ -1418,7 +1785,7 @@ def _load_analysis_cache(npz_path, keys, json_state_id):
 # when the fallback does not engage, "error" once processing succeeds — has to
 # be removed from the on-disk document too, so the owned-key lists are applied
 # as "copy if present, delete if not" rather than dict.update().
-_LABELLING_KEYS = ("speakers", "turns", "stats", "diarization_mode")
+_LABELLING_KEYS = ("speakers", "turns", "stats", "diarization_mode", "diarizer")
 _RECLUSTER_KEYS = _LABELLING_KEYS + (
     "expected_speakers", "speaker_count_source", "speaker_count_basis",
     "warnings", "status",
@@ -1562,6 +1929,10 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     label_warnings = _label_and_assemble(
         meeting_dir, meta, transcripts, cfg, expected_speakers, progress_cb,
         precomputed=precomputed, collect=collect,
+        # Recluster promises sub-second answers; cached neural turns are
+        # reused when the count matches, but a fresh engine pass (a full read
+        # of the WAV) belongs to Reprocess only.
+        allow_neural_run=False,
     )
     # Any track that had to be embedded here (the mic-only fallback hits a mic
     # track that no earlier run ever cached) is persisted, so the next dropdown
@@ -1570,11 +1941,20 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     if any(key not in precomputed for key in collect):
         # Carry over cached tracks this run did not re-embed, so persisting the
         # newly embedded one never impoverishes the npz.
-        merged = {
-            key: {"windows": win, "embeddings": emb}
-            for key, (win, emb) in precomputed.items()
-        }
-        merged.update(collect)
+        merged = {}
+        for key, entry in precomputed.items():
+            state = {"windows": entry[0], "embeddings": entry[1]}
+            if len(entry) > 2 and entry[2] is not None:
+                state["neural_turns"] = np.asarray(entry[2]).tolist()
+            merged[key] = state
+        for key, state in collect.items():
+            # A recluster whose count didn't match the cached turns keeps
+            # them ON DISK anyway: they are versioned and count-gated at
+            # reuse, and the next Auto recluster may match them again.
+            cached_turns = (merged.get(key) or {}).get("neural_turns")
+            if cached_turns and not state.get("neural_turns"):
+                state = dict(state, neural_turns=cached_turns)
+            merged[key] = state
         _save_analysis_state(meeting_dir, saved_transcripts, merged)
     # Read meeting.json again, as late as possible: a rename or a retitle that
     # app.py accepted while this run was working is in THIS document and not in

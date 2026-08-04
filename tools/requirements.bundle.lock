@@ -1,9 +1,10 @@
 # Exact package set for the self-contained .app bundle.
 # Generated from the known-good runtime (~/.meetingscribe/venv, Python 3.11.15)
-# with 'python -m pip freeze'. tools/build_dmg_bundle.sh installs these into
 # the bundled python-build-standalone runtime, so builds are reproducible.
+# with 'python -m pip freeze'. tools/build_dmg_bundle.sh installs these into
 annotated-doc==0.0.4
 anyio==4.13.0
+audioread==3.1.0
 av==17.1.0
 blinker==1.9.0
 certifi==2026.5.20
@@ -11,6 +12,8 @@ cffi==2.0.0
 charset-normalizer==3.4.7
 click==8.4.1
 ctranslate2==4.8.0
+dacite==1.9.2
+decorator==5.3.1
 faster-whisper==1.2.1
 filelock==3.29.3
 Flask==3.1.3
@@ -27,22 +30,28 @@ iniconfig==2.3.0
 itsdangerous==2.2.0
 Jinja2==3.1.6
 joblib==1.5.3
+lazy_loader==0.5
+librosa==0.11.0
 llvmlite==0.47.0
 markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
-mlx==0.31.2
 mlx-metal==0.31.2
 mlx-whisper==0.4.3
+mlx==0.31.2
 more-itertools==11.1.0
 mpmath==1.3.0
+msgpack==1.2.1
 narwhals==2.22.1
 networkx==3.6.1
 numba==0.65.1
 numpy==2.4.6
 onnxruntime==1.26.0
 packaging==26.2
+parakeet-mlx==0.5.2
+platformdirs==4.11.0
 pluggy==1.6.0
+pooch==1.9.0
 protobuf==7.35.0
 pycparser==3.0
 Pygments==2.20.0
@@ -60,8 +69,8 @@ PyYAML==6.0.3
 regex==2026.5.9
 requests==2.34.2
 rich==15.0.0
-ruamel.yaml==0.18.17
 ruamel.yaml.clib==0.2.15
+ruamel.yaml==0.18.17
 safetensors==0.8.0
 scikit-learn==1.9.0
 scipy==1.17.1
@@ -69,6 +78,7 @@ sentencepiece==0.2.1
 shellingham==1.5.4
 sounddevice==0.5.5
 soundfile==0.14.0
+soxr==1.1.0
 speechbrain==1.1.0
 sympy==1.14.0
 threadpoolctl==3.6.0

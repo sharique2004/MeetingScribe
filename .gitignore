@@ -45,5 +45,10 @@ macapp/.build/
 .windsurf
 dist/
 
+# SPM build products for the neural-diarizer helper (vendored checkout +
+# object files; the sources and Package.swift ARE tracked)
+native/fluiddiarizer/.build/
+native/fluiddiarizer/Package.resolved
+
 # symlink form (recordings/ only matches the old directory)
 recordings

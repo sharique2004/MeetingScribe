@@ -110,6 +110,21 @@ if command -v xcrun >/dev/null 2>&1; then
     xcrun swiftc -O "$PROJECT/tools/calendar_events.swift" -o "$PREBUILT/calendar_events" \
         && echo "  built calendar_events" || echo "  WARNING: calendar_events failed to build here"
 
+    # fluid-diarizer is an SPM package (it links the vendored FluidAudio
+    # CoreML pipeline), not a single-file helper, so it builds with
+    # `swift build`. Same shipping rule as the others: pre-built here,
+    # copied to ~/.meetingscribe/bin by the backend at startup. Its ~22 MB
+    # of CoreML models are NOT bundled — they download to
+    # <DATA_DIR>/models/fluid-diarization on first use, exactly like the
+    # ECAPA/Whisper weights, and diarization falls back to the classic
+    # engine until they exist.
+    if (cd "$PROJECT/native/fluiddiarizer" && swift build -c release >/dev/null 2>&1); then
+        cp "$PROJECT/native/fluiddiarizer/.build/release/fluid-diarizer" "$PREBUILT/fluid-diarizer"
+        echo "  built fluid-diarizer"
+    else
+        echo "  WARNING: fluid-diarizer failed to build here (neural turns will fall back to classic)"
+    fi
+
     # apple_syscap stays BYTE-STABLE across releases as a defensive measure:
     # under adhoc signing the System Audio Recording grant may key on the
     # helper's cdhash (research memo; to be verified against TCC.db before

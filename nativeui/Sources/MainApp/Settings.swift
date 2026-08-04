@@ -12,6 +12,14 @@ final class Settings: ObservableObject {
         didSet { write("summary_engine", summaryEngine) }
     }
 
+    /// Which speech recognizer writes the transcript. "auto" resolves to the
+    /// most accurate engine this Mac can run (Parakeet, then Apple Speech,
+    /// then Whisper) — see pipeline.pick_backend. Applies from the next
+    /// recording or Re-analyse; the engine reads config fresh per run.
+    @Published var whisperBackend: String {
+        didSet { write("whisper_backend", whisperBackend) }
+    }
+
     /// Whether naming a speaker also teaches this Mac their voice. Same
     /// config.json, read fresh by the engine on every rename, so the switch
     /// applies to the very next one.
@@ -44,6 +52,7 @@ final class Settings: ObservableObject {
         let cfg = Self.read(path)
         // Matches config.py's default: on, unless this Mac says otherwise.
         voiceProfiles = (cfg["voice_profiles"] as? Bool) ?? true
+        whisperBackend = (cfg["whisper_backend"] as? String) ?? "auto"
         if let existing = cfg["summary_engine"] as? String {
             summaryEngine = existing
         } else {
@@ -73,11 +82,27 @@ final class Settings: ObservableObject {
     }
 }
 
+/// One AI CLI as the engine probe reports it (`GET /api/cli-engines`).
+struct CLIEngine: Decodable, Identifiable {
+    let id: String
+    let label: String
+    let installed: Bool
+}
+
+private struct CLIEngines: Decodable {
+    let engines: [CLIEngine]
+}
+
 struct SettingsView: View {
     @StateObject private var settings = Settings.shared
     @State private var appleReady: Bool?
     @State private var appleMessage: String?
-    @State private var claudeFound = false
+    // The engine probe is the backend's (ai_cli.detect_all) so the path list
+    // can't drift per front end; until it answers, Claude is assumed present
+    // so the card the user most likely wants isn't greyed out by a race.
+    @State private var clis: [CLIEngine] = [
+        CLIEngine(id: "claude", label: "Claude", installed: true)
+    ]
 
     var body: some View {
         ScrollView {
@@ -85,23 +110,100 @@ struct SettingsView: View {
                 intelligence
                 Rectangle().fill(MS.hairline).frame(height: 1)
                     .padding(.vertical, 26)
+                transcription
+                Rectangle().fill(MS.hairline).frame(height: 1)
+                    .padding(.vertical, 26)
                 VoicesSection(settings: settings)
             }
             .padding(.horizontal, 34)
             .padding(.bottom, 30)
         }
-        .frame(width: 520, height: 560)
+        .frame(width: 520, height: 680)
         .background(MS.content)
         .task {
-            let home = NSHomeDirectory()
-            claudeFound = [
-                "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-                "\(home)/.claude/local/claude", "\(home)/.local/bin/claude",
-            ].contains { FileManager.default.isExecutableFile(atPath: $0) }
+            if let probe = try? await API.get("api/cli-engines", as: CLIEngines.self) {
+                clis = probe.engines
+            }
             if let status = try? await API.get("api/llm/status", as: LLMStatus.self) {
                 appleReady = status.available ?? false
                 appleMessage = status.message
             }
+        }
+    }
+
+    private var claudeFound: Bool {
+        clis.first(where: { $0.id == "claude" })?.installed ?? false
+    }
+
+    private func cliDetail(_ cli: CLIEngine) -> String {
+        if !cli.installed {
+            return "Optional — install the \(cli.label) CLI and sign in to enable this."
+        }
+        switch cli.id {
+        case "claude":
+            return "The most accurate summaries and answers, especially on long meetings. Takes a minute or two."
+        case "gemini":
+            return "Uses your Gemini CLI account. Note: Google's free tier may use prompts to improve their models."
+        case "copilot":
+            return "Uses your GitHub Copilot plan — each summary or answer spends premium requests."
+        default:
+            return "Uses your \(cli.label) account and its default model."
+        }
+    }
+
+    private var transcription: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("TRANSCRIPTION")
+                .font(MSFont.kicker)
+                .kerning(0.55)
+                .foregroundStyle(MS.ink3)
+
+            Text("Which recognizer writes the words")
+                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .foregroundStyle(MS.ink)
+                .padding(.top, 8)
+
+            VStack(spacing: 10) {
+                EngineOption(
+                    id: "auto",
+                    title: "Best available",
+                    detail: "Picks the most accurate engine this Mac can run — Parakeet for meeting audio, falling back to Apple Speech, then Whisper. Fully on-device either way.",
+                    available: true,
+                    recommended: true,
+                    selected: settings.whisperBackend == "auto") {
+                        settings.whisperBackend = "auto"
+                    }
+                EngineOption(
+                    id: "parakeet",
+                    title: "Parakeet",
+                    detail: "The most accurate on natural, overlapping meeting speech, and it almost never invents words over silence. English and 24 European languages.",
+                    available: true,
+                    selected: settings.whisperBackend == "parakeet") {
+                        settings.whisperBackend = "parakeet"
+                    }
+                EngineOption(
+                    id: "apple",
+                    title: "Apple Speech",
+                    detail: "The macOS recognizer on the Neural Engine — fastest and coolest, but tuned for clean dictation; it mishears more on meeting audio.",
+                    available: true,
+                    selected: settings.whisperBackend == "apple") {
+                        settings.whisperBackend = "apple"
+                    }
+                EngineOption(
+                    id: "mlx",
+                    title: "Whisper",
+                    detail: "OpenAI's large-v3-turbo on the Apple GPU. Nearly 100 languages, and the one engine that can be biased toward your vocabulary and attendee names.",
+                    available: true,
+                    selected: settings.whisperBackend == "mlx") {
+                        settings.whisperBackend = "mlx"
+                    }
+            }
+            .padding(.top, 18)
+
+            Text("Everything here runs on this Mac — audio never leaves it. Applies from the next recording or Re-analyse.")
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+                .padding(.top, 16)
         }
     }
 
@@ -124,27 +226,27 @@ struct SettingsView: View {
                     title: "Apple Intelligence",
                     detail: appleReady == false
                         ? (appleMessage ?? "Not available on this Mac")
-                        : "Built in, on-device and fast — usually under a minute, with nothing to install. Paraphrases more loosely than Claude on long meetings.",
+                        : "Built in, on-device and fast — usually under a minute, with nothing to install. Paraphrases more loosely than a frontier model on long meetings.",
                     available: appleReady ?? true,
                     recommended: !claudeFound,
                     selected: settings.summaryEngine == "apple") {
                         settings.summaryEngine = "apple"
                     }
-                EngineOption(
-                    id: "claude",
-                    title: "Claude",
-                    detail: claudeFound
-                        ? "The most accurate summaries and answers, especially on long meetings. Takes a minute or two."
-                        : "Optional — install Claude Code to enable this.",
-                    available: claudeFound,
-                    recommended: claudeFound,
-                    selected: settings.summaryEngine == "claude") {
-                        settings.summaryEngine = "claude"
-                    }
+                ForEach(clis) { cli in
+                    EngineOption(
+                        id: cli.id,
+                        title: cli.label,
+                        detail: cliDetail(cli),
+                        available: cli.installed,
+                        recommended: cli.id == "claude" && cli.installed,
+                        selected: settings.summaryEngine == cli.id) {
+                            settings.summaryEngine = cli.id
+                        }
+                }
             }
             .padding(.top, 18)
 
-            Text("Applies to summaries and to Ask. Re-analyse any meeting to rewrite it with the engine you pick.")
+            Text("Applies to summaries and to Ask. Cloud engines receive the transcript text — never audio, which stays on this Mac. If the engine you pick is ever unavailable, summaries fall back to Apple Intelligence automatically. Re-analyse any meeting to rewrite it with the engine you pick.")
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
                 .padding(.top, 16)

@@ -588,6 +588,13 @@ def diarize_track(wav_path, segments, n_speakers=None, threshold=0.6, progress_c
         before, after = centers_sorted[i - 1], centers_sorted[i]
         return int(labels_sorted[i - 1] if t - before <= after - t else labels_sorted[i])
 
+    return _split_segments(segments, label_at), n_found
+
+
+def _split_segments(segments, label_at):
+    """Segments re-cut by speaker: each word joins the speaker `label_at`
+    says is active at its centre; consecutive same-speaker words re-form
+    segments. Word-less segments are labelled whole at their midpoint."""
     new_segments = []
     for seg in segments:
         words = seg.get("words") or []
@@ -617,4 +624,49 @@ def diarize_track(wav_path, segments, n_speakers=None, threshold=0.6, progress_c
                     "speaker_idx": run["lab"],
                 }
             )
-    return new_segments, n_found
+    return new_segments
+
+
+def assign_by_turns(segments, turns):
+    """Label transcript segments from diarizer TURNS instead of window
+    clusters. Same contract as diarize_track's return: (new_segments,
+    n_found), speaker_idx renumbered by first appearance in the output.
+
+    `turns` is [(start, end, label)] on the same timeline as `segments`
+    (the neural engine's frame-level who-spoke-when). A word inside a turn
+    takes that turn's speaker; a word in a gap takes the nearest turn edge —
+    the diarizer heard silence there, but the recognizer transcribed
+    something, and the nearest voice is the only honest guess.
+    """
+    turns = sorted((float(s), float(e), int(lab)) for s, e, lab in turns)
+    if not segments or not turns:
+        return [dict(seg, speaker_idx=0) for seg in segments], (1 if segments else 0)
+    starts = [t[0] for t in turns]
+
+    from bisect import bisect_right
+
+    def label_at(t):
+        i = bisect_right(starts, t) - 1
+        best_lab, best_d = turns[0][2], float("inf")
+        for j in (i, i + 1):
+            if 0 <= j < len(turns):
+                s, e, lab = turns[j]
+                if s <= t <= e:
+                    return lab
+                d = min(abs(t - s), abs(t - e))
+                if d < best_d:
+                    best_lab, best_d = lab, d
+        return best_lab
+
+    new_segments = _split_segments(segments, label_at)
+    # First voice heard is speaker 0, next new voice 1, … — the same
+    # invariant cluster() keeps, re-derived on the OUTPUT because a turn that
+    # caught no words must not reserve a number.
+    mapping = {}
+    for seg in sorted(new_segments, key=lambda s: s["start"]):
+        lab = seg["speaker_idx"]
+        if lab not in mapping:
+            mapping[lab] = len(mapping)
+    for seg in new_segments:
+        seg["speaker_idx"] = mapping[seg["speaker_idx"]]
+    return new_segments, len(mapping)

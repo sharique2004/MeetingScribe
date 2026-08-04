@@ -45,7 +45,15 @@ DEMO_ID = "20260610-000001"
 # these, that is the change to justify — not the numbers to edit away.
 GOLDEN_SPEAKERS = {"you": "You", "s1": "Speaker 1", "s2": "Speaker 2"}
 GOLDEN_WARNINGS = []
-GOLDEN_EMBEDDING_WINDOWS = {"system": 39}
+# 44 as of 2026-08-03: the default ASR backend moved to Parakeet, whose
+# sentence segmentation cuts the demo's system track into different spans
+# than Apple Speech did, so build_windows() emits 44 windows where the Apple
+# transcript yielded 39. The cluster outcome is unchanged (2 remote voices,
+# golden speaker map above). The FROZEN fixture in test/fixtures/ still
+# carries the 39-window Apple-era cache, and tools/eval_diarization.py keeps
+# gating that at 39 — this constant covers a FRESH reprocess, which now runs
+# Parakeet.
+GOLDEN_EMBEDDING_WINDOWS = {"system": 44}
 
 
 def _seg(start, text, rate=0.5):
@@ -303,6 +311,15 @@ def report(meta, windows):
 def check_golden(meta, windows):
     """Assert the demo meeting's golden result. Returns nothing; raises on drift."""
     assert meta["status"] == "done", f"status was {meta['status']!r}, expected 'done'"
+    # GOLDEN_EMBEDDING_WINDOWS is a claim about Parakeet's segmentation (44
+    # windows; Apple Speech cut this track into 39). Pin the backend so a
+    # machine that silently fell down the ladder fails HERE, with the reason,
+    # instead of on a mysterious window count below.
+    backend = (meta.get("processing") or {}).get("backend")
+    assert backend == "parakeet", (
+        f"expected the parakeet backend to have produced this run, got "
+        f"{backend!r} — the window-count golden below is only valid for it"
+    )
     assert meta["speakers"] == GOLDEN_SPEAKERS, (
         f"speaker map drifted:\n  got      {meta['speakers']}\n"
         f"  expected {GOLDEN_SPEAKERS}"
