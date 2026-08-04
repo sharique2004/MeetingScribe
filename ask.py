@@ -44,6 +44,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import ai_cli
 import local_llm
 import summarize
 from summarize import NeedsClaudeError  # re-exported: the route catches it
@@ -1012,6 +1013,30 @@ def _run_claude(prompt, progress_cb, on_delta=None):
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _run_cloud(engine, prompt, progress_cb, on_delta=None):
+    """Ask whichever cloud CLI the user picked and parse its JSON answer.
+
+    Claude keeps its dedicated streaming path (_run_claude); every other
+    provider runs one-shot through ai_cli and the answer arrives whole. The
+    single on_delta call hands the raw reply to the same incremental decoder
+    the streaming path feeds, so the client renders it identically.
+    """
+    if engine == "claude":
+        return _run_claude(prompt, progress_cb, on_delta)
+    reply = ai_cli.run_one_shot(engine, prompt, timeout=CLAUDE_TIMEOUT_S,
+                                progress_cb=progress_cb)
+    if on_delta is not None:
+        try:
+            on_delta(reply)
+        except Exception:  # a broken listener must not lose the answer
+            log.exception("ask on_delta callback failed")
+    try:
+        parsed = summarize._extract_json(reply)
+    except ValueError:
+        return _salvage(reply)
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _salvage(reply):
     """Unparseable reply -> the best answer we can still honestly give.
 
@@ -1551,8 +1576,9 @@ def answer_question(meeting_dir, question, history=None, progress_cb=lambda msg:
     """Answer one question about one meeting. -> {"answer", "citations"}.
 
     `on_delta` is called with each piece of the answer as the model writes it
-    (Claude path only). It is for showing the answer as it lands — the return
-    value is still the whole thing, with the citations validated.
+    (cloud engines only; Claude streams real deltas, the other CLIs deliver
+    the reply in one piece). It is for showing the answer as it lands — the
+    return value is still the whole thing, with the citations validated.
     """
     meeting_dir = Path(meeting_dir)
     meta = json.loads((meeting_dir / "meeting.json").read_text(encoding="utf-8"))
@@ -1565,11 +1591,12 @@ def answer_question(meeting_dir, question, history=None, progress_cb=lambda msg:
         raise RuntimeError("No transcript to ask about yet.")
     fallback = _is_mic_fallback(meta)
 
-    if summarize._pick_engine() == "claude":
+    engine = summarize._pick_engine()
+    if engine != "apple":
         budget = budget_for(question)
         source, kept, partial = build_prompt(meta, entries, question, history, budget)
         instructions = ASK_INSTRUCTIONS_NO_LOCAL_USER if fallback else ASK_INSTRUCTIONS
-        raw = _run_claude(instructions + "\n\n" + source, progress_cb, on_delta)
+        raw = _run_cloud(engine, instructions + "\n\n" + source, progress_cb, on_delta)
     else:
         ok, reason = local_llm.available()
         if not ok:

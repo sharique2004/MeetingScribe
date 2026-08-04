@@ -2114,7 +2114,7 @@ function briefHero(meta, busy) {
     body = `<p class="tldr" id="tldr">${esc(tldr || "Summary ready")}</p>`;
   }
   return `<div class="brief-card"><div class="head-row"><div class="eyebrow">Brief</div>
-    <span class="brief-depth mono">${(s.engine === "claude" ? "Claude" : "On-device")}${busy ? " · updating…" : ""}</span></div>
+    <span class="brief-depth mono">${({claude: "Claude", codex: "Codex", gemini: "Gemini", copilot: "Copilot"}[s.engine] || "On-device")}${s.fallback_from ? " (fallback)" : ""}${busy ? " · updating…" : ""}</span></div>
     ${body}</div>`;
 }
 /* Badge initials: "Speaker 3" -> "3", "You" -> "Y", "Priya Sharma" -> "PS". */
@@ -3037,7 +3037,7 @@ addEventListener("resize", () => {
   _tabPill = at;
 });
 function renderReview(meta) {
-  const engine = {apple: "Apple Speech", mlx: "Whisper · GPU", faster: "Whisper · CPU"}[(meta.processing || {}).backend] || null;
+  const engine = {parakeet: "Parakeet", apple: "Apple Speech", mlx: "Whisper · GPU", faster: "Whisper · CPU"}[(meta.processing || {}).backend] || null;
   const lang = (meta.languages || {}).mic || (meta.languages || {}).system || null;
   const hasTurns = (meta.turns || []).length > 0;
   const sumJob = S.summaryJobs[meta.id];
@@ -3285,6 +3285,10 @@ async function revealMd(id) {
   catch (e) { toast("⚠ " + e.message); }
 }
 function claudeSetupPrompt(message) {
+  // The engine may be any AI CLI now (Codex, Gemini, …). The server's message
+  // names the right one with its install steps; the Claude walkthrough below
+  // is only the default for when no message came through.
+  if (message && !/claude/i.test(message)) { alert(message); return; }
   alert("Sign in to Claude to get summaries\n\n"
     + "MeetingScribe writes summaries with YOUR Claude account — the same "
     + "quality as claude.ai, no API key.\n\n"

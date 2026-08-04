@@ -19,6 +19,7 @@ from datetime import datetime
 
 from flask import Flask, abort, jsonify, redirect, request, send_from_directory
 
+import ai_cli
 import ask
 import insforge_client
 import live_captions
@@ -499,6 +500,17 @@ def llm_status():
         "engine": "apple-intelligence",
         "reason": reason,
         "message": None if ok else local_llm.reason_message(reason),
+    })
+
+
+@app.get("/api/cli-engines")
+def cli_engines():
+    """Which AI CLIs are installed — the single probe the Settings UI reads,
+    so front ends never re-hardcode binary paths. Includes the active engine
+    so the picker can show what is currently in force."""
+    return jsonify({
+        "engines": ai_cli.detect_all(),
+        "active": summarize._pick_engine(),
     })
 
 
@@ -1473,10 +1485,15 @@ def summarize_meeting(meeting_id):
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to summarize yet"}), 400
-    if summarize._pick_engine() == "claude":
-        if summarize.find_claude() is None:
-            return jsonify({"error": summarize._CLAUDE_SETUP_HELP,
-                            "needs_claude": True}), 400
+    engine = summarize._pick_engine()
+    if engine != "apple":
+        # A missing CLI is only fatal when the on-device fallback is missing
+        # too — summarize_meeting() degrades to Apple Intelligence on its own.
+        if ai_cli.find_cli(engine) is None:
+            llm_ok, _ = local_llm.available()
+            if not llm_ok:
+                return jsonify({"error": ai_cli.PROVIDERS[engine]["setup_help"],
+                                "needs_claude": True}), 400
     else:
         llm_ok, llm_reason = local_llm.available()
         if not llm_ok:
@@ -1771,9 +1788,10 @@ def ask_meeting(meeting_id):
     question = (data.get("question") or "").strip()
     if not question:
         return jsonify({"error": "empty question"}), 400
-    if summarize._pick_engine() == "claude":
-        if summarize.find_claude() is None:
-            return jsonify({"error": summarize._CLAUDE_SETUP_HELP,
+    engine = summarize._pick_engine()
+    if engine != "apple":
+        if ai_cli.find_cli(engine) is None:
+            return jsonify({"error": ai_cli.PROVIDERS[engine]["setup_help"],
                             "needs_claude": True}), 400
     else:
         llm_ok, llm_reason = local_llm.available()

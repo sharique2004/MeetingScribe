@@ -1,13 +1,17 @@
-"""Meeting summary + action items — written by the user's own Claude.
+"""Meeting summary + action items — written by the user's own AI CLI.
 
-Preferred engine: the `claude` CLI already on this machine (the user's
-Claude account — no API key). A frontier model reads the WHOLE transcript
-in one pass, so it genuinely understands who's who and what happened.
-Only the transcript TEXT is sent, never audio. When the CLI isn't
-installed or signed in, the UI walks the user through logging in.
+Preferred engine: an assistant CLI already on this machine, signed into the
+user's own account — `claude` by default, or Codex / Gemini / Copilot via
+config "summary_engine" (the registry lives in ai_cli.py). A frontier model
+reads the WHOLE transcript in one pass, so it genuinely understands who's
+who and what happened. Only the transcript TEXT is sent, never audio.
 
-Fallback engine (config "summary_engine": "apple"): the on-device Apple
-Intelligence model — fully offline but noticeably shallower.
+Fallback engine: the on-device Apple Intelligence model — fully offline but
+noticeably shallower. It is BOTH a choice (config "summary_engine": "apple")
+AND the automatic fallback: when the chosen CLI is missing, signed out, or
+errors, the summary still gets written on-device rather than failing with
+setup homework. The summary records the substitution ("fallback_from") so
+the UI can say which engine actually wrote it.
 
 Either way _coerce() validates + de-duplicates before anything is stored.
 
@@ -33,6 +37,7 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import ai_cli
 import local_llm
 from config import load_config
 
@@ -1209,9 +1214,11 @@ def _local_user_name():
         return None
 
 
-class NeedsClaudeError(RuntimeError):
-    """The `claude` CLI is missing or signed out — the UI walks the user
-    through logging in."""
+# One class, two names. ai_cli owns the definition so a missing/signed-out
+# state is the same exception for every provider (it carries .engine); the
+# old name survives because ask.py raises it and app.py's routes catch it —
+# the wire contract ("needs_claude") is unchanged.
+NeedsClaudeError = ai_cli.NeedsCLIError
 
 
 def _inline_note_line(when, text):
@@ -1293,18 +1300,15 @@ def _full_source(meta, lines):
 
 
 def find_claude():
-    """The user's Claude Code CLI, if installed."""
-    exe = shutil.which("claude")
-    if exe:
-        return exe
-    for cand in (
-        Path.home() / ".local" / "bin" / "claude",
-        Path("/usr/local/bin/claude"),
-        Path("/opt/homebrew/bin/claude"),
-    ):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+    """The user's Claude Code CLI, if installed.
+
+    Delegates to the ai_cli registry so the executor and every probe
+    (GET /api/cli-engines, the route preflights, the Settings cards) share
+    ONE path list. This function used to carry its own shorter list, which
+    let Settings call Claude "installed" while the summary silently fell
+    back to Apple because the runner couldn't find the same binary.
+    """
+    return ai_cli.find_cli("claude")
 
 
 _CLAUDE_SETUP_HELP = (
@@ -1438,8 +1442,34 @@ def _summarize_claude(meta, lines, progress_cb):
 
 
 def _pick_engine():
+    """The engine summaries AND Ask run on: "apple", or a cloud-CLI id from
+    ai_cli.PROVIDERS ("claude" default; "codex"/"gemini"/"copilot" when the
+    user picked one). An unrecognized value reads as "claude" so an old or
+    hand-edited config can never turn the feature off by typo."""
     setting = str(load_config().get("summary_engine") or "claude").lower()
-    return "apple" if setting == "apple" else "claude"
+    if setting == "apple":
+        return "apple"
+    return setting if setting in ai_cli.PROVIDERS else "claude"
+
+
+def _summarize_cloud(engine, meta, lines, progress_cb):
+    """One full-transcript pass through the user's chosen CLI."""
+    if engine == "claude":
+        return _summarize_claude(meta, lines, progress_cb)
+    source = _full_source(meta, lines)
+    instructions = (FULL_INSTRUCTIONS_NO_LOCAL_USER if _is_mic_fallback(meta)
+                    else FULL_INSTRUCTIONS)
+    if _notes_block(meta):
+        instructions += _notes_guidance(meta)
+    label = ai_cli.PROVIDERS[engine]["label"]
+    progress_cb(f"Summarizing with your {label} account…")
+    reply = ai_cli.run_one_shot(
+        engine, instructions + "\n\n" + source, timeout=900,
+        progress_cb=lambda msg: None)
+    try:
+        return _extract_json(reply)
+    except ValueError as exc:
+        raise RuntimeError(f"Could not parse {label}'s reply: {exc}") from exc
 
 
 def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
@@ -1452,10 +1482,27 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     lines = _transcript_lines(meta)
 
-    if _pick_engine() == "claude":
-        raw = _summarize_claude(meta, lines, progress_cb)
+    engine = _pick_engine()
+    if engine != "apple":
+        try:
+            raw = _summarize_cloud(engine, meta, lines, progress_cb)
+        except (NeedsClaudeError, RuntimeError) as exc:
+            # The cloud engine is the preference, not a dependency: when it is
+            # missing, signed out, or broken AND the on-device model exists,
+            # write the summary there instead of handing back setup homework.
+            # The original error is re-raised when there is no fallback to
+            # give, so the UI's walk-the-user-through-login flow still fires.
+            ok, _reason = local_llm.available()
+            if not ok:
+                raise
+            label = ai_cli.PROVIDERS[engine]["label"]
+            log.warning("summary engine %s failed (%s); falling back to "
+                        "Apple Intelligence", engine, exc)
+            progress_cb(f"{label} unavailable — summarizing on this Mac instead…")
+            return _summarize_apple(meta, meta_path, meeting_dir, lines,
+                                    progress_cb, fallback_from=engine)
         summary = _coerce(raw if isinstance(raw, dict) else {})
-        summary["engine"] = "claude"
+        summary["engine"] = engine
         _mark_unaddressed_cues(summary, raw, meta, model_judged=True)
         _mark_notes_omitted(summary, meta)
         return _store_summary(meta, meta_path, meeting_dir, summary)
@@ -1463,7 +1510,14 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
     ok, reason = local_llm.available()
     if not ok:
         raise RuntimeError(local_llm.reason_message(reason))
+    return _summarize_apple(meta, meta_path, meeting_dir, lines, progress_cb)
 
+
+def _summarize_apple(meta, meta_path, meeting_dir, lines, progress_cb,
+                     fallback_from=None):
+    """The on-device map-reduce path. `fallback_from` records that a cloud
+    engine was chosen but unavailable, so the UI can say who actually wrote
+    this summary."""
     title = meta.get("title") or "Untitled meeting"
     speaker_note = _speaker_note(meta)
 
@@ -1543,6 +1597,10 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     summary = _coerce(raw if isinstance(raw, dict) else {})
     summary["engine"] = "apple-intelligence"
+    if fallback_from:
+        # The user chose a cloud engine and got this one; say so rather than
+        # letting an on-device summary silently impersonate the choice.
+        summary["fallback_from"] = fallback_from
     _drop_unsupported_actions(summary, meta)
     _apple_headline(summary, title, progress_cb)
     _mark_unaddressed_cues(summary, raw, meta)
