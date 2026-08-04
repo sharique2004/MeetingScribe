@@ -1,5 +1,8 @@
 /* MeetingScribe mobile — dark, matches the Mac app's look. */
 :root {
+  /* Ink on an aqua fill. Was two near-identical darks doing the
+     same job (#08222a and #04251f); one token so a third cannot appear. */
+  --ink-on-accent: #04251f;
   --bg: #101014;
   --panel: #17171c;
   --panel-2: #1e1e24;
@@ -49,7 +52,7 @@ a { color: var(--accent); }
   height: 44px; border-radius: 10px; border: 1px solid var(--border);
   background: var(--panel-2); font-weight: 600; font-size: 14.5px;
 }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #08222a; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--ink-on-accent); }
 .btn:disabled { opacity: 0.55; }
 .sep { display: flex; align-items: center; gap: 10px; color: var(--text-faint); font-size: 12px; }
 .sep::before, .sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
@@ -292,7 +295,7 @@ a { color: var(--accent); }
 }
 .lp-btn.primary {
   background: linear-gradient(180deg, #71efdb, #43c4ae);
-  border-color: transparent; color: #04251f;
+  border-color: transparent; color: var(--ink-on-accent);
   box-shadow: 0 10px 32px rgba(94, 234, 212, 0.22);
 }
 .lp-btn.ghost:hover { border-color: var(--lp-line-lit); }
