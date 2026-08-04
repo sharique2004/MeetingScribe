@@ -58,10 +58,11 @@ import time
 from pathlib import Path
 
 import insforge_client
+from config import DATA_DIR
 
 log = logging.getLogger("meetingscribe.sync")
 
-QUEUE_PATH = Path.home() / ".meetingscribe" / "sync_queue.json"
+QUEUE_PATH = DATA_DIR / "sync_queue.json"
 MAX_PAYLOAD_BYTES = 5 * 1024 * 1024  # a 2h meeting is ~400 KB; 5 MB is pathological
 
 _queue_lock = threading.Lock()
@@ -255,8 +256,31 @@ def drain(read_meeting):
         _draining.release()
 
 
-def push_if_synced(read_meeting, write_meeting, meeting_id):
-    """Background re-push after an edit; queues on failure. Never raises."""
+def stamp_pushed(meta):
+    """Mark this meeting as successfully uploaded, or abandon the edit."""
+    if not (meta.get("sync") or {}).get("enabled"):
+        return "no longer syncing"  # anything non-None abandons the edit
+    meta["sync"]["pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    meta["sync"]["error"] = None
+    return None
+
+
+def push_if_synced(read_meeting, edit_meeting, meeting_id):
+    """Background re-push after an edit; queues on failure. Never raises.
+
+    `read_meeting(id)` -> the meeting dict or None. `edit_meeting(id, mutate)`
+    applies mutate(meta) to meeting.json AND SAVES IT, under whatever lock the
+    caller serialises that file on; mutate returns non-None to abandon the
+    edit.
+
+    An EDITOR and not a writer, because everything written here is written
+    after a network call that can take seconds. Handing back the dict that was
+    read before the upload would republish a snapshot from before it — the
+    rename, summary or speaker fix that landed while the upload was in flight
+    is simply gone, overwritten by an older copy of the same document. The
+    stamp is applied to a fresh read instead, under the caller's lock, and
+    touches nothing but the "sync" block.
+    """
     def run():
         try:
             meta = read_meeting(meeting_id)
@@ -264,20 +288,20 @@ def push_if_synced(read_meeting, write_meeting, meeting_id):
                 return
             try:
                 push_meeting(meta)
-                meta = read_meeting(meeting_id)
-                if meta is not None and (meta.get("sync") or {}).get("enabled"):
-                    meta["sync"]["pushed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                    meta["sync"]["error"] = None
-                    write_meeting(meta)
+                edit_meeting(meeting_id, stamp_pushed)
                 drain(read_meeting)
             except Exception as exc:
                 log.warning("sync push for %s failed: %s", meeting_id, exc)
                 enqueue(meeting_id)
+
+                def note_error(m):
+                    if not (m.get("sync") or {}).get("enabled"):
+                        return "no longer syncing"
+                    m["sync"]["error"] = str(exc)
+                    return None
+
                 try:
-                    meta = read_meeting(meeting_id)
-                    if meta is not None and (meta.get("sync") or {}).get("enabled"):
-                        meta["sync"]["error"] = str(exc)
-                        write_meeting(meta)
+                    edit_meeting(meeting_id, note_error)
                 except Exception:
                     pass
         except Exception as exc:  # absolutely never disturb the caller

@@ -42,6 +42,8 @@ struct MeetingPage: View {
                 Rectangle().fill(MS.hairline).frame(height: 1)
                     .padding(.bottom, 26)
 
+                engineNotices
+
                 if let leadText = detail.summary?.headline
                     ?? detail.summary?.tldr.map({ String($0.split(separator: ".").first.map(String.init) ?? $0) }) {
                     Text(leadText)
@@ -75,7 +77,11 @@ struct MeetingPage: View {
                         .padding(.bottom, 22)
                 }
 
-                if doc.sections.isEmpty && doc.nextSteps.isEmpty && detail.summary == nil {
+                // A failed meeting has its own notice above, with the button
+                // that fixes it. Anything else here would be a promise about
+                // a transcript that is never coming.
+                if doc.sections.isEmpty && doc.nextSteps.isEmpty
+                    && detail.summary == nil && !detail.failed {
                     emptyBody
                 }
 
@@ -170,6 +176,76 @@ struct MeetingPage: View {
         }
     }
 
+    // MARK: - What the engine had to say
+
+    /// The engine's own reporting, at the top of the document where it cannot
+    /// be scrolled past: the failure that stopped the run and the button that
+    /// retries it, then the warnings that cost audio, then the quieter ones.
+    ///
+    /// All of this was written by the engine into meeting.json and decoded by
+    /// nobody. The consequence was not cosmetic: a meeting recorded with
+    /// system audio blocked by macOS looks exactly like a normal one until
+    /// you read the transcript and find half the conversation missing.
+    @ViewBuilder
+    private var engineNotices: some View {
+        let capture = detail.captureWarnings
+        let minor = detail.minorWarnings
+        if detail.failed || !capture.isEmpty || !minor.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                if detail.failed { failureNotice }
+                ForEach(capture, id: \.self) { warning in
+                    NoticeBand(icon: "exclamationmark.triangle", text: warning)
+                }
+                ForEach(minor, id: \.self) { warning in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MS.ink4)
+                        Text(warning)
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .padding(.bottom, 26)
+        }
+    }
+
+    private var failureNotice: some View {
+        NoticeBand(icon: "exclamationmark.triangle", text: detail.failureText) {
+            if model.reprocessing {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("Starting…")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink2)
+                }
+            } else {
+                Button {
+                    model.reprocess()
+                } label: {
+                    Label("Reprocess audio", systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(MS.playheadFill, in: .capsule)
+                }
+                .buttonStyle(PressStyle())
+                .help("Transcribe the saved audio again")
+            }
+        }
+        .alert("Couldn't reprocess",
+               isPresented: Binding(get: { model.reprocessError != nil },
+                                    set: { if !$0 { model.reprocessError = nil } })) {
+            Button("OK") { model.reprocessError = nil }
+        } message: {
+            Text(model.reprocessError ?? "")
+        }
+    }
+
     // MARK: - Body
 
     /// AI-authored sections (Overview, Decisions, Open questions) wear a
@@ -253,6 +329,8 @@ struct MeetingPage: View {
         VStack(alignment: .leading, spacing: 12) {
             if model.summarizing {
                 summaryProgressRow
+            } else if meetingIsWorking(detail.status) {
+                transcriptionProgressRow
             } else if detail.turns?.isEmpty == false {
                 Text("No summary yet.")
                     .font(MSFont.body)
@@ -291,6 +369,28 @@ struct MeetingPage: View {
                 .foregroundStyle(MS.ink2)
                 .generationShimmer(true)
                 .contentTransition(.opacity)
+        }
+    }
+
+    /// The transcription, in the engine's words. It knows whether it is
+    /// loading a model, fetching 2.5 GB of one, or three quarters of the way
+    /// through the audio; the page used to answer all three with silence and
+    /// an estimate.
+    private var transcriptionProgressRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 9) {
+                ProgressView().controlSize(.small)
+                Text(model.processingProgress ?? "Transcribing this meeting…")
+                    .font(MSFont.body)
+                    .foregroundStyle(MS.ink2)
+                    .generationShimmer(true)
+                    .contentTransition(.opacity)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("Transcription usually takes about a third of the meeting's length, and the first run also downloads the models.")
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -352,6 +452,52 @@ struct MeetingPage: View {
         if let d = detail.duration { parts.append("\(Int(d / 60)) min") }
         parts.append("local only")
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Notice band
+
+/// One thing the engine needs the reader to know, in the engine's words,
+/// with the action that answers it when there is one.
+///
+/// Deliberately colourless: the palette spends red on recording and mint on
+/// the present moment, so attention here is bought with a surface, a rule and
+/// a glyph instead. It is at the top of a document nobody can start reading
+/// without passing, which is enough.
+struct NoticeBand<Action: View>: View {
+    let icon: String
+    let text: String
+    @ViewBuilder var action: () -> Action
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MS.ink2)
+                .offset(y: 1)
+            Text(text)
+                .font(MSFont.chrome)
+                .lineSpacing(4)
+                .foregroundStyle(MS.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+            action()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MS.raised, in: .rect(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(MS.hairlineStrong, lineWidth: 1)
+        }
+    }
+}
+
+extension NoticeBand where Action == EmptyView {
+    init(icon: String, text: String) {
+        self.init(icon: icon, text: text) { EmptyView() }
     }
 }
 

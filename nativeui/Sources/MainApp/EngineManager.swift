@@ -5,6 +5,12 @@
 import Foundation
 import AppKit
 
+/// The shutdown reply, written on URLSession's thread and read on the main
+/// one after the semaphore. The two never overlap, so the box needs no lock.
+private final class ShutdownReply: @unchecked Sendable {
+    var refusal: String?
+}
+
 @MainActor
 final class EngineManager: ObservableObject {
     static let shared = EngineManager()
@@ -14,13 +20,30 @@ final class EngineManager: ObservableObject {
         case starting
         case running
         case failed(String)
+
+        var message: String? {
+            if case .failed(let why) = self { return why }
+            return nil
+        }
     }
 
     @Published private(set) var state: State = .checking
+    /// The engine died while a meeting was being recorded. The audio up to
+    /// that moment is on disk, and the engine repairs the meeting into
+    /// "error" the next time it starts — so this is the one failure the user
+    /// has to be told something extra about.
+    @Published private(set) var lostRecording = false
     private var process: Process?
     private(set) var spawnedByUs = false
+    private var monitorTask: Task<Void, Never>?
     /// Set by the UI so the quit path can refuse to kill a live recording.
     var isRecording: () -> Bool = { false }
+    /// Was a meeting being recorded in the seconds before now, with no clean
+    /// stop since? It cannot be `isRecording` here: the recorder's own poll
+    /// turns "recording" into "offline" the moment the engine stops
+    /// answering, so by the time a death is CONFIRMED nothing is recording
+    /// any more. The question a death has to ask is about the recent past.
+    var wasRecordingRecently: () -> Bool = { false }
 
     private let dataDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".meetingscribe")
@@ -28,9 +51,60 @@ final class EngineManager: ObservableObject {
     func ensureRunning() async {
         if await healthy() {
             state = .running
+            watch()
             return
         }
         spawn()
+    }
+
+    /// Start again after a death (or after a failed start). Adopts an engine
+    /// that came back on its own, spawns one otherwise.
+    func restart() async {
+        monitorTask?.cancel()
+        monitorTask = nil
+        if let process, process.isRunning { process.terminate() }
+        process = nil
+        spawnedByUs = false
+        lostRecording = false
+        state = .checking
+        await ensureRunning()
+    }
+
+    /// Watch the engine for as long as the app is up.
+    ///
+    /// Nothing did. The engine was launched and then trusted forever: when it
+    /// died the recorder poll simply reported "offline", the library said the
+    /// engine "isn't answering", a live recording stopped existing without a
+    /// word, and the app offered no way back short of quitting it. Three
+    /// consecutive misses, so a slow answer under a transcription load is not
+    /// mistaken for a death.
+    private func watch() {
+        guard monitorTask == nil else { return }
+        monitorTask = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled, let self, self.state == .running else { return }
+                if await self.healthy() {
+                    misses = 0
+                    continue
+                }
+                misses += 1
+                guard misses >= 3 else { continue }
+                guard !Task.isCancelled, self.state == .running else { return }
+                self.lostRecording = self.wasRecordingRecently()
+                self.state = .failed(self.deathMessage())
+                self.monitorTask = nil
+                return
+            }
+        }
+    }
+
+    private func deathMessage() -> String {
+        if let process, !process.isRunning {
+            return "The engine quit unexpectedly (exit code \(process.terminationStatus))."
+        }
+        return "The engine stopped answering."
     }
 
     private func healthy() async -> Bool {
@@ -72,7 +146,7 @@ final class EngineManager: ObservableObject {
 
     private func spawn() {
         guard let python = enginePython else {
-            state = .failed("The Python environment is missing — run setup.sh once, then relaunch.")
+            state = .failed("The Python environment is missing. Run setup.sh once, then relaunch.")
             return
         }
         guard let sourceDir = engineSourceDir else {
@@ -107,10 +181,11 @@ final class EngineManager: ObservableObject {
                 try? await Task.sleep(nanoseconds: 500_000_000)
                 if await healthy() {
                     state = .running
+                    watch()
                     return
                 }
                 if !p.isRunning {
-                    state = .failed("The engine exited while starting — check ~/.meetingscribe for logs.")
+                    state = .failed("The engine exited while starting. Check ~/.meetingscribe for logs.")
                     return
                 }
             }
@@ -160,19 +235,52 @@ final class EngineManager: ObservableObject {
         }
     }
 
-    /// Called from the app's quit path. Returns false when quit must be
-    /// blocked (a recording is running).
-    func prepareForQuit() -> Bool {
-        if isRecording() { return false }
-        guard spawnedByUs else { return true }
+    /// Why quitting now would cost the user something. `overridable` is the
+    /// difference between "you can fix this in two seconds" (stop the
+    /// recording) and "the engine is mid-write and asked for a minute",
+    /// which the user is allowed to overrule on their own machine.
+    struct QuitRefusal {
+        let title: String
+        let body: String
+        let overridable: Bool
+    }
+
+    /// Called from the app's quit path. Returns nil when it is safe to go,
+    /// and the reason to show when it is not.
+    ///
+    /// The engine answers /api/shutdown with 409 when a meeting is still
+    /// being transcribed, summarized or reclustered — it is protecting a
+    /// half-written meeting.json and analysis.npz. This used to fire the
+    /// request and return true no matter what came back, so the refusal was
+    /// read by nobody and the app quit anyway.
+    func prepareForQuit() -> QuitRefusal? {
+        if isRecording() {
+            return QuitRefusal(
+                title: "A recording is running",
+                body: "Stop the recording before quitting so the meeting is saved.",
+                overridable: false)
+        }
+        guard spawnedByUs else { return nil }
         // Fire-and-wait briefly: a graceful shutdown keeps the meeting store
         // clean; if it hangs the process is our child and dies with us.
         let sem = DispatchSemaphore(value: 0)
         var req = URLRequest(url: engineBase.appendingPathComponent("api/shutdown"))
         req.httpMethod = "POST"
         req.timeoutInterval = 2
-        URLSession.shared.dataTask(with: req) { _, _, _ in sem.signal() }.resume()
+        let reply = ShutdownReply()
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            defer { sem.signal() }
+            guard let code = (resp as? HTTPURLResponse)?.statusCode,
+                  !(200..<300).contains(code), let data else { return }
+            reply.refusal =
+                ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
+                ?? "The engine is still busy (\(code))."
+        }.resume()
         _ = sem.wait(timeout: .now() + 2.5)
-        return true
+        guard let refusal = reply.refusal else { return nil }
+        return QuitRefusal(
+            title: "MeetingScribe is still working",
+            body: refusal + "\n\nQuitting now can leave that meeting half written.",
+            overridable: true)
     }
 }

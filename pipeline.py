@@ -40,6 +40,7 @@ import tech_vocabulary
 import voice_profiles
 from config import (
     BASE_DIR,
+    DATA_DIR,
     MODELS_DIR,
     ModelDownloadError,
     ensure_hf_files,
@@ -175,7 +176,7 @@ PARAKEET_LABEL = "the speech model"
 # Apple SpeechAnalyzer helper (macOS 26+). Source ships in tools/; the
 # compiled binary is cached outside the synced project folder.
 _APPLE_SRC = BASE_DIR / "tools" / "apple_transcribe.swift"
-_APPLE_BIN = Path.home() / ".meetingscribe" / "bin" / "apple_transcribe"
+_APPLE_BIN = DATA_DIR / "bin" / "apple_transcribe"
 _APPLE_TIMEOUT_S = 1800
 
 # Map a bare language code to a default Apple locale; the helper also resolves

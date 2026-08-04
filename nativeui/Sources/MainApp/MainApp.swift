@@ -28,14 +28,20 @@ final class MainAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if MainActor.assumeIsolated({ !EngineManager.shared.prepareForQuit() }) {
-            let alert = NSAlert()
-            alert.messageText = "A recording is running"
-            alert.informativeText = "Stop the recording before quitting so the meeting is saved."
-            alert.runModal()
-            return .terminateCancel
-        }
-        return .terminateNow
+        guard let refusal = MainActor.assumeIsolated({ EngineManager.shared.prepareForQuit() })
+        else { return .terminateNow }
+        let alert = NSAlert()
+        alert.messageText = refusal.title
+        alert.informativeText = refusal.body
+        alert.addButton(withTitle: "OK")
+        // The engine can be mid-write for minutes. Waiting is the right
+        // answer and the default one, but this is the user's Mac: an app
+        // whose only remaining exit is Force Quit is a worse trap than the
+        // half-written meeting it is guarding.
+        if refusal.overridable { alert.addButton(withTitle: "Quit Anyway") }
+        let choice = alert.runModal()
+        if refusal.overridable, choice == .alertSecondButtonReturn { return .terminateNow }
+        return .terminateCancel
     }
 }
 
@@ -53,6 +59,11 @@ struct RowMeta {
     var hasTranscript = false
     var hasSummary = false
     var hasNotes = false
+    /// The engine warned that this recording is not what it looks like —
+    /// system audio macOS blocked, a mic that wasn't there. The page carries
+    /// the sentence; the row carries the fact that there is one, because a
+    /// warning nobody opens the meeting to read is a warning nobody has read.
+    var hasCaptureWarning = false
 }
 
 @MainActor
@@ -61,6 +72,10 @@ final class Library: ObservableObject {
     @Published var loadError: String?
     @Published var meta: [String: RowMeta] = [:]
     @Published var briefs: [String: String] = [:]
+    /// What the engine is doing to each meeting it is working on, in its own
+    /// words: "Downloading the speech model, 340 MB of 2.5 GB", "Transcribing
+    /// 4/9". Keyed by meeting id, empty when nothing is in flight.
+    @Published var progress: [String: String] = [:]
     private var metaFetches = Set<String>()
     private var searchTask: Task<Void, Never>?
     private var watchTask: Task<Void, Never>?
@@ -74,7 +89,22 @@ final class Library: ObservableObject {
         } catch {
             loadError = "The engine isn't answering. Nothing is lost — it just isn't listening yet."
         }
+        if meetings.contains(where: { meetingIsWorking($0.status) }) {
+            await refreshProgress()
+        }
         watchWorkInFlight()
+    }
+
+    /// The engine's line for every meeting it is working on. One request for
+    /// the whole library, taken on the same tick as the list rather than by a
+    /// second poller racing it.
+    private func refreshProgress() async {
+        var next: [String: String] = [:]
+        for (id, job) in await API.processingJobs() where job.state == "processing" {
+            let message = job.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !message.isEmpty { next[id] = message }
+        }
+        progress = next
     }
 
     /// Recording just stopped, so a meeting is on its way that the engine has
@@ -100,13 +130,13 @@ final class Library: ObservableObject {
     /// restarted. Poll only while there is a reason to, so an idle library
     /// makes no requests at all.
     private func watchWorkInFlight(force: Bool = false) {
-        let working = meetings.contains { ($0.status ?? "done") != "done" }
+        let working = meetings.contains { meetingIsWorking($0.status) }
         guard working || force else { watchTask?.cancel(); watchTask = nil; return }
         guard watchTask == nil else { return }
         let known = Set(meetings.map(\.id))
         watchTask = Task { [weak self] in
             defer { self?.watchTask = nil }
-            var pending = Set(meetings.filter { ($0.status ?? "done") != "done" }.map(\.id))
+            var pending = Set(meetings.filter { meetingIsWorking($0.status) }.map(\.id))
             // When we are waiting for a meeting that does not exist yet, give
             // the engine a bounded window to produce it rather than polling on
             // forever if a recording produced nothing at all.
@@ -116,7 +146,8 @@ final class Library: ObservableObject {
                 guard !Task.isCancelled, let self else { return }
                 guard let fresh = try? await API.meetings(query: self.query) else { continue }
                 self.meetings = fresh
-                let stillWorking = Set(fresh.filter { ($0.status ?? "done") != "done" }.map(\.id))
+                await self.refreshProgress()
+                let stillWorking = Set(fresh.filter { meetingIsWorking($0.status) }.map(\.id))
                 // Only the rows that finished ON THIS TICK: their brief and
                 // badges were fetched while the transcript did not exist yet.
                 for id in pending.subtracting(stillWorking) {
@@ -155,6 +186,7 @@ final class Library: ObservableObject {
             m.hasTranscript = detail.turns?.isEmpty == false
             m.hasSummary = detail.summary != nil
             m.hasNotes = detail.notes?.isEmpty == false
+            m.hasCaptureWarning = !detail.captureWarnings.isEmpty
             if let s = detail.summary {
                 m.brief = s.headline ?? s.tldr.map { String($0.prefix(140)) }
             }
@@ -187,6 +219,16 @@ struct ContentView: View {
         } detail: {
             detailColumn
                 .navigationTitle("")   // the wordmark in the toolbar is the title
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    // Above the document, not over it: an engine that is down
+                    // takes recording, transcripts and search with it, and the
+                    // app used to say nothing at all.
+                    if engine.state.message != nil {
+                        EngineBanner(engine: engine)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(Motion.enter, value: engine.state)
         }
         .tint(MS.interactive)
         .environmentObject(library)
@@ -233,6 +275,11 @@ struct ContentView: View {
             EngineManager.shared.isRecording = { [weak center] in
                 center?.phase == .recording
             }
+            // The window the watchdog needs: three misses at four seconds,
+            // plus the poll that noticed. A minute covers it with room.
+            EngineManager.shared.wasRecordingRecently = { [weak center] in
+                center?.wasRecording(within: 60) ?? false
+            }
             await EngineManager.shared.ensureRunning()
             await library.refresh()
             if let i = CommandLine.arguments.firstIndex(of: "--open"),
@@ -262,6 +309,73 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Engine banner
+
+/// The engine is down. Nothing in this app works without it — recording,
+/// transcripts, search and Ask are all its answers — so the failure gets a
+/// line of its own above the document, the reason in the engine's words, and
+/// the one button that fixes it. Before this the app just went quiet.
+struct EngineBanner: View {
+    @ObservedObject var engine: EngineManager
+    @State private var restarting = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: "bolt.slash")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MS.ink2)
+                .offset(y: 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(engine.state.message ?? "")
+                    .font(MSFont.chromeMedium)
+                    .foregroundStyle(MS.ink)
+                Text(engine.lostRecording
+                     ? "A recording was running. The audio saved up to that moment is still on this Mac: restart, then open that meeting and press Reprocess."
+                     : "Recording, transcripts, search and Ask all need it. Nothing already saved is affected.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                restarting = true
+                Task {
+                    await engine.restart()
+                    restarting = false
+                }
+            } label: {
+                Group {
+                    if restarting {
+                        HStack(spacing: 7) {
+                            ProgressView().controlSize(.small)
+                            Text("Starting…")
+                        }
+                    } else {
+                        Text("Restart the engine")
+                    }
+                }
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.black.opacity(0.85))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(MS.playheadFill, in: .capsule)
+            }
+            .buttonStyle(PressStyle())
+            .disabled(restarting)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(MS.raised)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(MS.hairline).frame(height: 1)
+        }
+    }
+}
+
 // MARK: - Sidebar
 
 private struct DayGroup: Identifiable {
@@ -277,6 +391,7 @@ struct SidebarView: View {
     @Binding var route: DetailRoute?
     @State private var pendingDelete: MeetingListItem?
     @State private var deleteError: String?
+    @State private var reprocessError: String?
 
     var body: some View {
         List(selection: $route) {
@@ -299,10 +414,17 @@ struct SidebarView: View {
                     ForEach(group.meetings) { m in
                         MeetingRow(meeting: m,
                                    meta: library.meta[m.id],
+                                   progress: library.progress[m.id],
                                    showBrief: group.isToday)
                             .tag(DetailRoute.meeting(m.id))
                             .task { library.fetchBrief(for: m.id) }
                             .contextMenu {
+                                // Reprocess is the only way back from a failed
+                                // meeting, and the audio it needs is still on
+                                // disk. It belongs here even when the row looks
+                                // healthy: it is also how a bad transcript is
+                                // redone with today's settings.
+                                Button("Reprocess Audio") { reprocess(m) }
                                 Button("Reveal in Finder") {
                                     Task { await API.post("api/meetings/\(m.id)/reveal") }
                                 }
@@ -350,6 +472,27 @@ struct SidebarView: View {
             Button("OK") { deleteError = nil }
         } message: {
             Text(deleteError ?? "")
+        }
+        .alert("Couldn't reprocess",
+               isPresented: Binding(get: { reprocessError != nil },
+                                    set: { if !$0 { reprocessError = nil } })) {
+            Button("OK") { reprocessError = nil }
+        } message: {
+            Text(reprocessError ?? "")
+        }
+    }
+
+    /// Hand the meeting's saved audio back to the engine. The refresh is what
+    /// starts the library's watcher again, so the row picks up the engine's
+    /// progress from the next tick.
+    private func reprocess(_ m: MeetingListItem) {
+        Task {
+            let (ok, err) = await API.reprocess(m.id)
+            if ok {
+                await library.refresh()
+            } else {
+                reprocessError = err
+            }
         }
     }
 
@@ -413,11 +556,15 @@ struct SidebarView: View {
 struct MeetingRow: View {
     let meeting: MeetingListItem
     var meta: RowMeta?
+    /// The engine's live line for this meeting while it works on it.
+    var progress: String?
     var showBrief: Bool
 
-    private var processing: Bool {
-        (meeting.status ?? "done") != "done"
-    }
+    /// Work in flight. "error" is NOT work: the row used to shimmer on
+    /// anything that wasn't "done", so a failed meeting shimmered "Error" for
+    /// the life of the app and the library's poll loop could never exit.
+    private var processing: Bool { meetingIsWorking(meeting.status) }
+    private var failed: Bool { meeting.status == "error" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -442,10 +589,21 @@ struct MeetingRow: View {
                         if meta.hasNotes {
                             Image(systemName: "pencil.line").glyph()
                         }
+                        if meta.hasCaptureWarning {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 10))
+                                .foregroundStyle(MS.ink2)
+                                .help("Something about this recording needs a look. Open it to read what.")
+                        }
                     }
                 }
                 Spacer(minLength: 0)
-                if processing {
+                if failed {
+                    Label("Not transcribed", systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(MS.ink2)
+                        .labelStyle(.titleAndIcon)
+                } else if processing {
                     Text(meeting.status?.capitalized ?? "Working")
                         .font(.system(size: 11))
                         .foregroundStyle(MS.ink2)
@@ -456,7 +614,17 @@ struct MeetingRow: View {
                 }
             }
 
-            if showBrief, let brief = meta?.brief, !brief.isEmpty {
+            // While the engine works, its own words take the third line —
+            // "Processing" alone was the whole story for a run that can spend
+            // ten minutes downloading a model.
+            if let progress, processing, !progress.isEmpty {
+                Text(progress)
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+                    .lineLimit(1)
+                    .contentTransition(.opacity)
+                    .transition(.offset(y: 3).combined(with: .opacity))
+            } else if showBrief, let brief = meta?.brief, !brief.isEmpty {
                 Text(brief)
                     .font(MSFont.meta)
                     .foregroundStyle(MS.ink3)
@@ -465,7 +633,13 @@ struct MeetingRow: View {
             }
         }
         .padding(.vertical, 4)
-        .help(!showBrief ? (meta?.brief ?? "") : "")
+        .help(helpText)
+    }
+
+    private var helpText: String {
+        if processing, let progress, !progress.isEmpty { return progress }
+        if failed { return "Processing failed. Right-click to reprocess the saved audio." }
+        return showBrief ? "" : (meta?.brief ?? "")
     }
 
     private var timeText: String {

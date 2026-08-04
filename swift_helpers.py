@@ -21,7 +21,9 @@ from pathlib import Path
 
 log = logging.getLogger("meetingscribe.swift")
 
-BIN_DIR = Path.home() / ".meetingscribe" / "bin"
+from config import DATA_DIR
+
+BIN_DIR = DATA_DIR / "bin"
 
 # Set by the packaged app (BackendManager) to Contents/Resources/bin, where
 # the pre-built helpers live. Empty when running from a source checkout.

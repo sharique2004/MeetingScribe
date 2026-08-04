@@ -64,6 +64,18 @@ struct LivePage: View {
                                 .onSubmit { center.sendNote() }
                         }
                         .id("live-composer")
+
+                        if let refusal = center.noteRefusal {
+                            Text("That note wasn't saved: \(refusal)")
+                                .font(MSFont.meta)
+                                .foregroundStyle(MS.ink2)
+                                .padding(.leading, 58)
+                        } else if center.noteSendFailed {
+                            Text("The engine hasn't taken that note yet. It's saved on this Mac and will be filed as soon as the engine answers.")
+                                .font(MSFont.meta)
+                                .foregroundStyle(MS.ink3)
+                                .padding(.leading, 58)
+                        }
                     }
 
                     // The machine, one ink down, in serif: the last few

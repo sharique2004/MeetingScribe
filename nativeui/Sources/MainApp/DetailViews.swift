@@ -13,7 +13,13 @@ final class MeetingModel: ObservableObject {
     @Published var summarizing = false
     @Published var summaryProgress: String?
     @Published var summaryError: String?
+    /// The engine's line while it transcribes this meeting: "Loading model…",
+    /// "Downloading the speech model, 340 MB of 2.5 GB", "Transcribing 4/9".
+    @Published var processingProgress: String?
+    @Published var reprocessing = false
+    @Published var reprocessError: String?
     private var meetingID: String?
+    private var processingWatch: Task<Void, Never>?
 
     func load(_ id: String) async {
         meetingID = id
@@ -33,7 +39,7 @@ final class MeetingModel: ObservableObject {
         // Opened while the engine is still transcribing? Watch the work, so
         // the transcript appears the moment it lands instead of the next
         // time the user happens to navigate here.
-        if isWorking(detail?.status) {
+        if meetingIsWorking(detail?.status) {
             watchProcessing(id)
         }
         // A summary may already be writing (auto-run after transcription, or
@@ -45,25 +51,30 @@ final class MeetingModel: ObservableObject {
         }
     }
 
-    private func isWorking(_ status: String?) -> Bool {
-        ["recording", "processing"].contains(status ?? "done")
-    }
-
     /// Poll the document while the engine works on it. Nothing else refreshes
     /// an OPEN meeting page: the sidebar's watcher updates the LIST rows, and
     /// this model used to fetch exactly once — so a meeting opened mid-
     /// transcription showed "Processing" until the user clicked away and
     /// back. Ends on its own when the work does, or when the page moves to
     /// another meeting.
+    ///
+    /// The same tick reads the engine's job message, so the page reports the
+    /// work in the engine's words rather than the static one it invented.
     private func watchProcessing(_ id: String) {
-        Task {
+        guard processingWatch == nil else { return }
+        processingWatch = Task { [weak self] in
+            defer { self?.processingWatch = nil }
+            guard let self else { return }
+            processingProgress = await API.processingJobs()[id]?.message
             while meetingID == id {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard meetingID == id else { return }
+                processingProgress = await API.processingJobs()[id]?.message
                 guard let fresh = try? await API.meeting(id) else { continue }
                 guard meetingID == id else { return }
                 detail = fresh
-                if isWorking(fresh.status) { continue }
+                if meetingIsWorking(fresh.status) { continue }
+                processingProgress = nil
                 // The work landed: bring the sidecars the first load found
                 // empty, and pick up the auto-run summary job if one started.
                 if let bundled = fresh.notes, !bundled.isEmpty {
@@ -87,6 +98,29 @@ final class MeetingModel: ObservableObject {
     func reload() async {
         guard let id = meetingID, let fresh = try? await API.meeting(id) else { return }
         detail = fresh
+    }
+
+    /// Hand the saved audio back to the engine.
+    ///
+    /// This is the whole recovery path for a meeting that failed: the WAVs
+    /// are untouched by a failed run, so a reprocess is a second attempt with
+    /// today's settings, not a salvage job. The page picks the work up the
+    /// same way it does for a fresh recording.
+    func reprocess() {
+        guard let id = meetingID, !reprocessing else { return }
+        reprocessing = true
+        reprocessError = nil
+        Task {
+            let (ok, err) = await API.reprocess(id)
+            reprocessing = false
+            guard ok else {
+                reprocessError = err
+                return
+            }
+            processingProgress = "Loading model…"
+            if let fresh = try? await API.meeting(id) { detail = fresh }
+            watchProcessing(id)
+        }
     }
 
     func summarize() {

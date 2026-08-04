@@ -31,6 +31,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+from config import DATA_DIR
 
 CHUNK_FRAMES = 1024
 
@@ -68,7 +69,7 @@ _SYSCAP_SRC = Path(__file__).resolve().parent / "tools" / "apple_syscap.swift"
 # Written after each tap recording so preflight can report the permission
 # state ("System Audio Recording Only" has no public query API — the last
 # recording's outcome is the best signal available).
-TAP_STATE_PATH = Path.home() / ".meetingscribe" / "tap_state.json"
+TAP_STATE_PATH = DATA_DIR / "tap_state.json"
 
 
 def _tap_binary(build=True):

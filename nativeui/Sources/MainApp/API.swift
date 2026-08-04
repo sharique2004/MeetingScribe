@@ -77,6 +77,59 @@ struct MeetingDetail: Decodable {
     let stats: MeetingStats?
     let summary: MeetingSummary?
     let notes: [MeetingNote]?
+    /// Why processing stopped, in the engine's own words, e.g. "Interrupted —
+    /// press Reprocess to transcribe the saved audio." Set with
+    /// status == "error" and nothing else clears it: the audio is still on
+    /// disk and Reprocess is the whole recovery path.
+    let error: String?
+    /// Everything the engine wants said about this recording that isn't a
+    /// failure: system audio that macOS blocked, a diarization fallback, echo
+    /// it trimmed. Written by the recorder at stop and by the pipeline, and
+    /// never seen by anyone until it is on the page.
+    let warnings: [String]?
+}
+
+extension MeetingDetail {
+    /// Processing failed and will not resume on its own.
+    var failed: Bool { status == "error" }
+
+    /// The engine's sentence for a failed meeting, or a plain one if the
+    /// document somehow carries the status without the reason.
+    var failureText: String {
+        let text = error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty ? "Processing failed. The audio is saved." : text
+    }
+
+    /// Warnings that cost the user audio: the recording is not what they
+    /// think it is, and the engine's sentence ends with the fix. Those earn
+    /// a band at the top of the page. Everything else the engine reports
+    /// (a diarization fallback, echo it trimmed) changed the labels, not the
+    /// sound, and reads as a footnote.
+    ///
+    /// Matched on the engine's words rather than a severity field, because
+    /// there isn't one: warnings are free text appended by the recorder and
+    /// the pipeline. A phrase that stops matching costs a warning its band,
+    /// never its visibility.
+    var captureWarnings: [String] { (warnings ?? []).filter { isCaptureWarning($0) } }
+
+    /// The quieter half: true, worth one line, not worth alarm.
+    var minorWarnings: [String] { (warnings ?? []).filter { !isCaptureWarning($0) } }
+
+    private func isCaptureWarning(_ w: String) -> Bool {
+        let text = w.lowercased()
+        return ["blocked", "not be recorded", "no microphone", "was silent",
+                "filled with silence", "stopped early", "did not shut down",
+                "could not be routed"].contains { text.contains($0) }
+    }
+}
+
+/// Is the engine still working on this meeting?
+///
+/// "error" is TERMINAL: the run failed, the audio is saved, and nothing
+/// changes until the user presses Reprocess. Anything that treats it as work
+/// in flight (a poll loop, a shimmer) waits for a moment that never comes.
+func meetingIsWorking(_ status: String?) -> Bool {
+    ["recording", "processing"].contains(status ?? "done")
 }
 
 struct WaveformData: Decodable {
@@ -123,9 +176,15 @@ struct LiveSnapshot: Decodable {
     let seq: Int
 }
 
-struct SummaryJob: Decodable {
+/// One piece of engine work in flight, as /api/status reports it —
+/// transcription under "jobs", summarizing under "summary_jobs".
+/// `message` is the line the engine wants shown and it moves: "Loading
+/// model…", "Downloading the speech model, 340 MB of 2.5 GB", "Transcribing
+/// 4/9". Showing the static word "Processing" instead is how a ten-minute
+/// first-run download looked identical to a hang.
+struct EngineJob: Decodable {
     let state: String?      // "processing" | "done" | "error"
-    let message: String?    // live progress from the writer
+    let message: String?    // live progress from the worker
 }
 
 /// One model the engine needs on disk before it can transcribe.
@@ -325,10 +384,40 @@ enum API {
         return (200..<300).contains(code) || code == 409
     }
 
+    private struct EngineStatus: Decodable {
+        let jobs: [String: EngineJob]?
+        let summary_jobs: [String: EngineJob]?
+    }
+
     /// The live summary job for one meeting, if any.
-    static func summaryJob(_ id: String) async -> SummaryJob? {
-        struct EngineStatus: Decodable { let summary_jobs: [String: SummaryJob]? }
-        return (try? await get("api/status", as: EngineStatus.self))?.summary_jobs?[id]
+    static func summaryJob(_ id: String) async -> EngineJob? {
+        (try? await get("api/status", as: EngineStatus.self))?.summary_jobs?[id]
+    }
+
+    /// Every transcription job the engine is running, keyed by meeting id.
+    /// One request covers the whole library, so the list poll can carry the
+    /// progress rather than each row opening its own.
+    static func processingJobs() async -> [String: EngineJob] {
+        (try? await get("api/status", as: EngineStatus.self))?.jobs ?? [:]
+    }
+
+    /// Transcribe a meeting's saved audio again — the recovery path for one
+    /// that failed, and the only one there is. Returns (ok, engineMessage):
+    /// the engine refuses while the meeting is recording, while it is being
+    /// summarized, and when the audio is gone, and each refusal says which.
+    static func reprocess(_ id: String) async -> (Bool, String?) {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/meetings/\(id)/process"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        req.timeoutInterval = 15
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else {
+            return (false, "The engine didn't answer.")
+        }
+        if (200..<300).contains(code) { return (true, nil) }
+        let err = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
+        return (false, err ?? "Reprocess failed (\(code)).")
     }
 
     /// Returns (ok, engineMessage). The engine refuses while a meeting is
@@ -380,6 +469,39 @@ enum API {
 
     static func live(since: Int) async throws -> LiveSnapshot {
         try await get("api/live?since=\(since)", as: LiveSnapshot.self)
+    }
+
+    /// What became of one note. app.py's contract: every non-200 stored
+    /// NOTHING, so the caller still owns the text either way. The difference
+    /// that matters to a retry is whether the engine will ever accept it —
+    /// a 4xx (too long, meeting deleted, malformed id) refuses the same text
+    /// forever, while an unreachable engine is worth asking again.
+    enum NoteResult {
+        case stored
+        case refused(String)
+        case unreachable
+    }
+
+    /// File one note against the meeting it was typed in. `meetingID` is
+    /// omitted only for a note typed with nothing in view, which is the one
+    /// case where "whatever is live" is what the user means.
+    static func note(text: String, t: Double?, meetingID: String?) async -> NoteResult {
+        var body: [String: Any] = ["text": text]
+        if let meetingID { body["meeting_id"] = meetingID }
+        if let t { body["t"] = t }
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/record/note"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        req.timeoutInterval = 10
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else {
+            return .unreachable
+        }
+        if (200..<300).contains(code) { return .stored }
+        guard (400..<500).contains(code) else { return .unreachable }
+        let err = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
+        return .refused(err ?? "The engine wouldn't take that note (\(code)).")
     }
 
     @discardableResult

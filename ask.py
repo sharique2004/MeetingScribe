@@ -1571,6 +1571,24 @@ def _ask_apple(meta, entries, question, history, fallback, progress_cb):
     raise RuntimeError(str(overflow))
 
 
+def _answer_on_device(meta, entries, question, history, fallback, progress_cb):
+    """The Apple Intelligence path. -> (raw, kept, partial).
+
+    Callers check local_llm.available() first; this assumes the model is there.
+    """
+    # Does the whole transcript fit in one on-device call? If it does, one
+    # call is both faster and better — the model sees the meeting whole.
+    # If it does not, sweep every portion rather than answering from an
+    # excerpt: on the gold set a single call reads ~50% of a long meeting,
+    # and "nobody mentioned X" from half a meeting is not an answer.
+    transcript_chars = sum(len(e["line"]) + 1 for e in entries)
+    if transcript_chars <= APPLE_PROMPT_CHARS - len(question) - 800:
+        progress_cb("Answering on this Mac…")
+        return _ask_apple(meta, entries, question, history, fallback, progress_cb)
+    raw, kept = _sweep_apple(meta, entries, question, history, fallback, progress_cb)
+    return raw, kept, False   # every portion was read
+
+
 def answer_question(meeting_dir, question, history=None, progress_cb=lambda msg: None,
                     on_delta=None):
     """Answer one question about one meeting. -> {"answer", "citations"}.
@@ -1596,25 +1614,47 @@ def answer_question(meeting_dir, question, history=None, progress_cb=lambda msg:
         budget = budget_for(question)
         source, kept, partial = build_prompt(meta, entries, question, history, budget)
         instructions = ASK_INSTRUCTIONS_NO_LOCAL_USER if fallback else ASK_INSTRUCTIONS
-        raw = _run_cloud(engine, instructions + "\n\n" + source, progress_cb, on_delta)
+        # Has the CLI written anything the user can already see? A fallback is
+        # only safe before the first word: swapping engines mid-answer would
+        # rewrite prose someone is in the middle of reading.
+        written = []
+
+        def watch(text):
+            written.append(1)
+            on_delta(text)
+
+        try:
+            raw = _run_cloud(engine, instructions + "\n\n" + source, progress_cb,
+                             None if on_delta is None else watch)
+        except (NeedsClaudeError, RuntimeError) as exc:
+            # The cloud engine is the preference, not a dependency — the rule
+            # summarize.summarize_meeting() has followed for as long as the
+            # on-device path has existed. Ask was the exception, and that made
+            # it the one feature a fresh install could not use at all: the
+            # shipped config named a cloud CLI, most Macs have no such CLI, and
+            # the first question anybody asked came back as `npm install -g …`
+            # instead of an answer. Changing that default alone would not have
+            # fixed it either — a user whose config names a CLI they later
+            # uninstall, or who signs out of one, lands in exactly the same
+            # place — so the fallback is the fix and the default is the manners.
+            #
+            # Re-raised when there is nothing to fall back to, so the UI's
+            # walk-the-user-through-setup flow (needs_claude) still fires.
+            ok, _reason = local_llm.available()
+            if written or not ok:
+                raise
+            label = ai_cli.PROVIDERS[engine]["label"]
+            log.warning("ask engine %s failed (%s); answering on this Mac instead",
+                        engine, exc)
+            progress_cb(f"{label} unavailable, answering on this Mac instead…")
+            raw, kept, partial = _answer_on_device(meta, entries, question,
+                                                   history, fallback, progress_cb)
     else:
         ok, reason = local_llm.available()
         if not ok:
             raise RuntimeError(local_llm.reason_message(reason))
-        # Does the whole transcript fit in one on-device call? If it does, one
-        # call is both faster and better — the model sees the meeting whole.
-        # If it does not, sweep every portion rather than answering from an
-        # excerpt: on the gold set a single call reads ~50% of a long meeting,
-        # and "nobody mentioned X" from half a meeting is not an answer.
-        transcript_chars = sum(len(e["line"]) + 1 for e in entries)
-        if transcript_chars <= APPLE_PROMPT_CHARS - len(question) - 800:
-            progress_cb("Answering on this Mac…")
-            raw, kept, partial = _ask_apple(meta, entries, question, history,
-                                            fallback, progress_cb)
-        else:
-            raw, kept = _sweep_apple(meta, entries, question, history,
-                                     fallback, progress_cb)
-            partial = False   # every portion was read
+        raw, kept, partial = _answer_on_device(meta, entries, question, history,
+                                               fallback, progress_cb)
 
     # NOT truncated. This used to end in [:4000], which on the streaming path
     # was visible vandalism: the deltas draw the whole answer on screen, then

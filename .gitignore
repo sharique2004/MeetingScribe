@@ -52,3 +52,11 @@ native/fluiddiarizer/Package.resolved
 
 # symlink form (recordings/ only matches the old directory)
 recordings
+
+# Engine state that follows MEETINGSCRIBE_DATA. In the packaged app that is
+# ~/.meetingscribe; from a source checkout it is this folder, same as
+# recordings/ and models/ already are.
+/bin/
+/sync_queue.json
+/tap_state.json
+/note-drafts/

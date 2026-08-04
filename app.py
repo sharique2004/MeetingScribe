@@ -324,7 +324,7 @@ def _persist_notes(meeting_id):
 
 def _push_synced(meeting_id):
     """Re-upload a synced meeting after an edit. No-op when not synced."""
-    sync.push_if_synced(_read_meeting_safe, _write_meeting, meeting_id)
+    sync.push_if_synced(_read_meeting_safe, _edit_meeting_json_safe, meeting_id)
 
 
 def _write_transcript_md(meta):
@@ -350,7 +350,21 @@ def _write_transcript_md(meta):
 # List-scan cache: folder name -> (meeting.json mtime, item, searchable text).
 # Keeps GET /api/meetings O(changed files) per request even with thousands of
 # meetings — only new/edited meeting.json files are re-read.
+#
+# The lock is the paging one: a sidebar that fetches page after page has
+# several of these scans in flight at once, and the eviction sweep below walks
+# a dict another request thread is inserting into ("dictionary changed size
+# during iteration", which Flask would answer with an HTML 500 the sidebar can
+# only read as "the list is gone"). Held across the scan, which is a few stat()
+# calls once the cache is warm; the pages are served from the returned list.
 _LIST_CACHE = {}
+_LIST_LOCK = threading.Lock()
+
+# GET /api/meetings paging. The default is one screenful; the maximum is what
+# one request will ever serve, so a library bigger than that is READ, in pages,
+# rather than silently cut off at the end of the first one.
+MEETINGS_PAGE_DEFAULT = 40
+MEETINGS_PAGE_MAX = 500
 
 
 def _list_meetings(query=""):
@@ -359,34 +373,35 @@ def _list_meetings(query=""):
         return items
     seen = set()
     query = (query or "").strip().lower()
-    for d in RECORDINGS_DIR.iterdir():
-        meta_path = d / "meeting.json"
-        if not d.is_dir() or not FOLDER_ID_RE.match(d.name) or not meta_path.exists():
-            continue
-        try:
-            mtime = meta_path.stat().st_mtime
-        except OSError:
-            continue
-        seen.add(d.name)
-        cached = _LIST_CACHE.get(d.name)
-        if cached and cached[0] == mtime:
-            item, haystack = cached[1], cached[2]
-        else:
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            except (ValueError, OSError):
+    with _LIST_LOCK:
+        for d in RECORDINGS_DIR.iterdir():
+            meta_path = d / "meeting.json"
+            if not d.is_dir() or not FOLDER_ID_RE.match(d.name) or not meta_path.exists():
                 continue
-            item = {k: meta.get(k) for k in LIST_FIELDS}
-            item["speakers"] = len(meta.get("speakers") or {})
-            haystack = " ".join(
-                [str(meta.get("title") or "")] + list((meta.get("speakers") or {}).values())
-            ).lower()
-            _LIST_CACHE[d.name] = (mtime, item, haystack)
-        if query and query not in haystack:
-            continue
-        items.append(item)
-    for stale in set(_LIST_CACHE) - seen:  # renamed/deleted folders
-        del _LIST_CACHE[stale]
+            try:
+                mtime = meta_path.stat().st_mtime
+            except OSError:
+                continue
+            seen.add(d.name)
+            cached = _LIST_CACHE.get(d.name)
+            if cached and cached[0] == mtime:
+                item, haystack = cached[1], cached[2]
+            else:
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    continue
+                item = {k: meta.get(k) for k in LIST_FIELDS}
+                item["speakers"] = len(meta.get("speakers") or {})
+                haystack = " ".join(
+                    [str(meta.get("title") or "")] + list((meta.get("speakers") or {}).values())
+                ).lower()
+                _LIST_CACHE[d.name] = (mtime, item, haystack)
+            if query and query not in haystack:
+                continue
+            items.append(item)
+        for stale in set(_LIST_CACHE) - seen:  # renamed/deleted folders
+            del _LIST_CACHE[stale]
     items.sort(key=lambda m: m["id"], reverse=True)
     return items
 
@@ -491,7 +506,14 @@ def devices():
     # value — otherwise the UI reports "routes automatically" to someone who
     # turned routing off and would silently record nothing but their own mic.
     cfg = load_config()
-    return jsonify(REC.preflight(auto_route=bool(cfg.get("auto_route_macos", True))))
+    # A copy: preflight hands back its own cached dict, and adding a key to
+    # that would edit the recorder's cache rather than this response.
+    info = dict(REC.preflight(auto_route=bool(cfg.get("auto_route_macos", True))))
+    # Whether this Mac can record is not only a question about devices. This
+    # is the probe the UI runs before offering the button, so it is where a
+    # disk with no room for a meeting has to appear too.
+    info["disk"] = _disk_state()
+    return jsonify(info)
 
 
 @app.get("/api/llm/status")
@@ -1097,6 +1119,93 @@ def calendar_today():
     return jsonify(calendar_events.todays_events())
 
 
+# ------------------------------------------------------------- disk space ----
+#
+# Recording writes uncompressed 16-bit WAV and nothing ever removes it: the
+# system tap runs at 48 kHz stereo (192 KB/s) and the mic at 48 kHz mono
+# (96 KB/s), so one meeting-hour costs about 1.04 GB and the folder only ever
+# grows. A disk that fills is therefore not a corner case, it is the end of a
+# straight line — and the worst possible moment to discover it is mid-meeting,
+# where a failed write surfaces afterwards as a truncated track, if at all.
+#
+# Two guards, and only two. Refuse to START a recording that has nowhere to
+# go, and say how much room is left while one runs.
+#
+# NOTHING HERE DELETES ANYTHING, and that is a decision rather than an
+# omission. These recordings are the user's, they are the only copy, and an
+# app that quietly reclaimed space by dropping the oldest meeting would have
+# answered a disk problem with data loss. If retention is ever added it has to
+# be something the user switched on, off by default, and it does not belong in
+# the code path that is trying to start a meeting.
+RECORDING_BYTES_PER_SECOND = 288 * 1024   # mic mono + system stereo @ 48 kHz
+# Below this a recording is refused. ~2 hours of headroom, which is longer
+# than any meeting this app has recorded, plus room for the pipeline's own
+# working files. Anything much smaller and "you may start" stops meaning it.
+MIN_FREE_TO_RECORD = 2 * 1024 ** 3
+# Below this the UI is told to say so — while there is still time to act,
+# rather than at the point where recording has already stopped being possible.
+LOW_FREE_WARNING = 4 * 1024 ** 3
+# /api/record/status is polled several times a second by the HUD; the free
+# space it reports does not need to be re-measured that often.
+_DISK_POLL_S = 15.0
+_disk_seen = {"at": 0.0, "free": None}
+
+
+def _free_bytes(force=False):
+    """Free bytes where recordings are written, or None if unreadable.
+
+    Cached for _DISK_POLL_S. None means the question could not be answered,
+    which is never on its own a reason to stop someone recording.
+    """
+    now = time.monotonic()
+    if not force and _disk_seen["free"] is not None \
+            and now - _disk_seen["at"] < _DISK_POLL_S:
+        return _disk_seen["free"]
+    try:
+        free = shutil.disk_usage(RECORDINGS_DIR).free
+    except OSError as exc:  # unmounted volume, permissions…
+        app.logger.warning("could not read free space on %s: %s", RECORDINGS_DIR, exc)
+        return None
+    _disk_seen.update(at=now, free=free)
+    return free
+
+
+def _recording_time_left(free):
+    """`free` bytes as the recording time it buys: "about 40 minutes"."""
+    minutes = int(free / RECORDING_BYTES_PER_SECOND / 60)
+    if minutes < 90:
+        return f"about {max(0, minutes)} minutes"
+    hours = minutes / 60.0
+    return f"about {hours:.0f} hours" if hours >= 2 else "about an hour and a half"
+
+
+def _disk_state(force=False):
+    """Space as the UI states it. Always present, always safe to poll:
+    {"free": bytes|None, "state": ok|low|full|unknown, "message": str|None}.
+
+    "full" is the state that refuses a recording; "low" is a warning and
+    refuses nothing. Both carry the sentence to show, so every front end says
+    the same thing about the same number.
+    """
+    free = _free_bytes(force=force)
+    if free is None:
+        return {"free": None, "state": "unknown", "message": None}
+    if free < MIN_FREE_TO_RECORD:
+        return {
+            "free": free, "state": "full",
+            "message": (f"Only {human_bytes(free)} of disk space is left, room for "
+                        f"{_recording_time_left(free)} of recording. Free up space "
+                        "before recording again."),
+        }
+    if free < LOW_FREE_WARNING:
+        return {
+            "free": free, "state": "low",
+            "message": (f"Disk space is running low: {human_bytes(free)} left, room "
+                        f"for {_recording_time_left(free)} of recording."),
+        }
+    return {"free": free, "state": "ok", "message": None}
+
+
 @app.post("/api/record/start")
 def record_start():
     data = request.get_json(force=True, silent=True) or {}
@@ -1105,6 +1214,14 @@ def record_start():
 
 def _do_record_start(data):
     """Start a recording. Shared by the record button and nudge-accept."""
+    # Before anything is created: a meeting that cannot be written is worse
+    # than one that never started, because the user believes it is running.
+    # Measured fresh (force=True) — a start is rare, and a cached number from
+    # 15 seconds ago is not what to bet a meeting on.
+    disk = _disk_state(force=True)
+    if disk["state"] == "full":
+        return jsonify({"error": disk["message"], "disk": disk}), 507
+
     expected = data.get("expected_speakers")
     try:
         expected = max(1, min(8, int(expected))) if expected else None
@@ -1180,6 +1297,13 @@ def _do_record_start(data):
             others += 1
         expected = max(1, min(8, others))
 
+    # Space that is merely low does not stop a meeting, but it belongs on the
+    # meeting's own record: it is the one warning that explains a track that
+    # stops early, and it has to outlive the recording to be read afterwards.
+    warnings = list(info["warnings"])
+    if disk["state"] == "low":
+        warnings.append(disk["message"])
+
     meta = {
         "id": meeting_id,
         "title": title or "Meeting " + datetime.now().strftime("%d %b %Y, %H:%M"),
@@ -1188,7 +1312,7 @@ def _do_record_start(data):
         "expected_speakers": expected,
         "status": "recording",
         "tracks": info["tracks"],
-        "warnings": info["warnings"],
+        "warnings": warnings,
         "routing": info.get("routing"),
     }
     if language:
@@ -1245,6 +1369,13 @@ def record_stop():
             meta["tracks"].setdefault(key, {}).update(tr)
         meta["duration"] = result["duration"]
         meta["warnings"] = meta.get("warnings", []) + result["warnings"]
+        # A long meeting can eat the space it was started with. Measured here
+        # rather than trusted from the poll cache, and recorded on the meeting
+        # so the state the audio was written under is readable later.
+        stop_disk = _disk_state(force=True)
+        if stop_disk["state"] in ("low", "full") \
+                and stop_disk["message"] not in meta["warnings"]:
+            meta["warnings"].append(stop_disk["message"])
         meta["status"] = "processing"
         # Fold the live notes (and the cues this meeting froze) into the meeting
         # so the review UI and the summary see them. notes.jsonl stays
@@ -1275,12 +1406,19 @@ def record_status():
     a bare {"recording": False} with no tracks, and a client that decodes into
     a fixed shape would fail on the missing keys rather than simply draw a
     stopped timer.
+
+    "disk" rides along for the same reason it is cheap to: this is the one
+    thing a client polls throughout a meeting, so it is where "you are running
+    out of room" can be said while the recording it concerns is still going.
+    Its message is null unless there is something to say, and the value is
+    re-measured at most every _DISK_POLL_S however often this is called.
     """
     st = REC.status()
     st.setdefault("elapsed", 0.0)
     levels = st.setdefault("levels", {})
     levels.setdefault("mic", 0.0)
     levels.setdefault("system", 0.0)
+    st["disk"] = _disk_state()
     return jsonify(st)
 
 
@@ -1571,35 +1709,67 @@ def auth_callback():
 
 @app.post("/api/meetings/<meeting_id>/sync")
 def meeting_sync(meeting_id):
-    """Toggle "View on phone" for one meeting."""
+    """Toggle "View on phone" for one meeting.
+
+    Every write of meeting.json here goes through the edit helpers, so each
+    one is a read-modify-write under JOB_LOCK. The version that kept one dict
+    across sync.push_meeting() and wrote it back afterwards published a
+    snapshot from before a network call that runs for seconds — reverting
+    whatever else was saved meanwhile — and did it without the lock every
+    other writer of that file holds.
+    """
     data = request.get_json(force=True, silent=True) or {}
-    enabled = bool(data.get("enabled"))
-    meta = _read_meeting(meeting_id)
-    if enabled:
-        if meta.get("status") != "done" or not meta.get("turns"):
-            return jsonify({"error": "Wait for the transcript to finish first"}), 409
-        if not insforge_client.state()["signed_in"]:
-            return jsonify({"error": "Sign in first to view meetings on your phone",
-                            "needs_signin": True}), 401
-        meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
-        _write_meeting(meta)
-        try:
-            sync.push_meeting(meta)
-            meta["sync"]["pushed_at"] = datetime.now().isoformat(timespec="seconds")
-        except (sync.SyncError, insforge_client.AuthError) as exc:
-            meta["sync"]["error"] = str(exc)
-            sync.enqueue(meeting_id)
-        _write_meeting(meta)
-    else:
-        had_sync = bool(meta.pop("sync", None))
-        _write_meeting(meta)
-        if had_sync:
+    if not bool(data.get("enabled")):
+        was_synced = []
+
+        def disable(meta):
+            was_synced.append(bool(meta.pop("sync", None)))
+            return None
+
+        meta, denied = _edit_meeting_json(meeting_id, disable)
+        if denied:
+            return jsonify(denied[0]), denied[1]
+        if any(was_synced):
             try:
                 sync.delete_remote(meeting_id)
             except (sync.SyncError, insforge_client.AuthError) as exc:
                 app.logger.warning("could not delete synced copy of %s: %s",
                                    meeting_id, exc)
-    return jsonify(meta)
+        return jsonify(meta)
+
+    # Read outside the lock (it goes to the keychain), applied inside it, so
+    # the two refusals keep the order they had: a meeting that is not ready is
+    # told so before anyone is asked to sign in.
+    signed_in = insforge_client.state()["signed_in"]
+
+    def enable(meta):
+        if meta.get("status") != "done" or not meta.get("turns"):
+            return ({"error": "Wait for the transcript to finish first"}, 409)
+        if not signed_in:
+            return ({"error": "Sign in first to view meetings on your phone",
+                     "needs_signin": True}, 401)
+        meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
+        return None
+
+    meta, denied = _edit_meeting_json(meeting_id, enable)
+    if denied:
+        return jsonify(denied[0]), denied[1]
+    # enabled:true is on disk before the push, so a failure here is a retry
+    # sync.drain() will actually pick up (it skips anything meeting.json does
+    # not say is syncing).
+    try:
+        sync.push_meeting(meta)
+    except (sync.SyncError, insforge_client.AuthError) as exc:
+        sync.enqueue(meeting_id)
+
+        def note_error(m):
+            if not (m.get("sync") or {}).get("enabled"):
+                return "no longer syncing"
+            m["sync"]["error"] = str(exc)
+            return None
+
+        return jsonify(_edit_meeting_json_safe(meeting_id, note_error) or meta)
+    return jsonify(_edit_meeting_json_safe(meeting_id, sync.stamp_pushed) or meta)
 
 
 @app.post("/api/sync/all")
@@ -1611,17 +1781,33 @@ def sync_all():
     ids = [it["id"] for it in _list_meetings()
            if it.get("status") == "done"]
 
+    def enable_sync(meta):
+        """Turn syncing on for this meeting, or decline it."""
+        if not meta.get("turns"):
+            return "nothing to sync yet"  # non-None abandons the edit
+        meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
+        return None
+
     def run():
         done = err = 0
         for meeting_id in ids:
             try:
-                meta = _read_meeting_safe(meeting_id)
-                if not meta or not meta.get("turns"):
+                # SAVED BEFORE THE UPLOAD, not after, and that ordering is the
+                # whole retry story. sync.drain() re-reads meeting.json and
+                # skips anything not marked enabled, so a flag that only ever
+                # existed in this thread's dict meant every meeting enqueued
+                # below was dropped on the next drain: the user was told
+                # "N will retry" and none of them ever did.
+                meta = _edit_meeting_json_safe(meeting_id, enable_sync)
+                if meta is None:  # no transcript, deleted, or busy elsewhere
                     continue
-                meta["sync"] = {"enabled": True, "pushed_at": None, "error": None}
                 sync.push_meeting(meta)
-                meta["sync"]["pushed_at"] = datetime.now().isoformat(timespec="seconds")
-                _write_meeting(meta)
+                # The stamp goes onto a FRESH read (under JOB_LOCK), never onto
+                # the dict that was uploaded. The push above can run for
+                # seconds, and writing that pre-network snapshot back republished
+                # a copy of the document from before it — reverting a rename, a
+                # summary or a speaker fix that landed while it was in flight.
+                _edit_meeting_json_safe(meeting_id, sync.stamp_pushed)
                 done += 1
                 SYNC_ALL["message"] = f"Synced {done} of {len(ids)}…"
             except Exception as exc:  # keep going; queue the failures
@@ -1694,17 +1880,43 @@ def live():
 
 @app.get("/api/meetings")
 def meetings():
-    """Paged meeting list: ?limit=40&offset=0&q=<search over titles/speakers>."""
+    """Paged meeting list: ?limit=40&offset=0&q=<search over titles/speakers>.
+
+    THE SHAPE, and the contract a client has to keep to see every meeting:
+
+        {"items": [...], "total": 412, "offset": 0, "limit": 40,
+         "has_more": true, "next_offset": 40}
+
+    `items` is one page, newest first. `total` is how many meetings match —
+    the WHOLE library, not the page — and `has_more`/`next_offset` say whether
+    another page exists and where it starts; a client pages until has_more is
+    false. `limit` is the limit that was actually applied, which is not always
+    the one that was asked for: anything above MEETINGS_PAGE_MAX is clamped,
+    and echoing it is what stops a client that asked for 1,000 from reading a
+    500-row answer as the complete list. items/total/offset are unchanged, so
+    a client that only reads those still works.
+
+    `q` is matched server-side against every meeting's title and speaker
+    names BEFORE paging, so search reaches meetings no page has been fetched
+    for. A client must therefore send the query here and not filter the page
+    it happens to be holding.
+    """
     try:
-        limit = max(1, min(500, int(request.args.get("limit", 40))))
+        limit = max(1, min(MEETINGS_PAGE_MAX,
+                           int(request.args.get("limit", MEETINGS_PAGE_DEFAULT))))
         offset = max(0, int(request.args.get("offset", 0)))
     except (TypeError, ValueError):
         return jsonify({"error": "limit/offset must be integers"}), 400
     all_items = _list_meetings(query=request.args.get("q", ""))
+    page = all_items[offset:offset + limit]
+    seen = offset + len(page)
     return jsonify({
-        "items": all_items[offset:offset + limit],
+        "items": page,
         "total": len(all_items),
         "offset": offset,
+        "limit": limit,
+        "has_more": seen < len(all_items),
+        "next_offset": seen if seen < len(all_items) else None,
     })
 
 
@@ -1802,6 +2014,37 @@ def _edit_meeting_json(meeting_id, mutate):
             return None, rejected
         _write_meeting(meta)
     return meta, None
+
+
+def _edit_meeting_json_safe(meeting_id, mutate):
+    """_edit_meeting_json for a background thread. -> the saved meta, or None.
+
+    None covers every reason the edit did not happen: the meeting is gone or
+    unreadable, a recluster owns it, the mutate declined (by returning
+    anything but None), or the write failed.
+
+    A worker cannot use the request-context version. _read_meeting aborts 404,
+    and a Flask abort raised on a thread with no request to abort becomes an
+    exception nobody is positioned to turn into a response; the (payload,
+    status) pair it returns is HTTP vocabulary a background job has no way to
+    answer in either. What matters is the half that IS shared: the whole
+    read-modify-write happens under JOB_LOCK, which is the invariant
+    _persist_notes documents and which every writer of meeting.json owes the
+    others. Anything that reads this file, waits on a network, and then writes
+    is exactly the shape that loses somebody's edit; see sync.push_if_synced.
+    """
+    with JOB_LOCK:
+        if RECLUSTER_JOBS.get(meeting_id, {}).get("state") == "processing":
+            return None
+        meta = _read_meeting_safe(meeting_id)
+        if meta is None or mutate(meta) is not None:
+            return None
+        try:
+            _write_meeting(meta)
+        except OSError as exc:  # read-only disk, meeting deleted mid-call…
+            app.logger.warning("could not save %s: %s", meeting_id, exc)
+            return None
+    return meta
 
 
 @app.post("/api/meetings/<meeting_id>/title")
@@ -2053,6 +2296,47 @@ def tidy_undo(meeting_id):
     return jsonify(meta)
 
 
+def _on_device_unavailable(reason):
+    """Why the on-device model cannot write this, plus the way out if there is
+    one.
+
+    Apple Intelligence is the shipped default (config.DEFAULTS), so this is the
+    message a Mac with the feature switched off meets. Naming a CLI that IS
+    installed turns a dead end into a two-click fix. Nothing switches by
+    itself: sending a transcript to a cloud provider is the user's call, not a
+    fallback to be taken quietly on their behalf.
+    """
+    message = local_llm.reason_message(reason)
+    installed = [cli["label"] for cli in ai_cli.detect_all() if cli["installed"]]
+    if installed:
+        message += (f" {installed[0]} is installed on this Mac. Pick it in "
+                    "Settings to use it instead.")
+    return message
+
+
+def _engine_precheck():
+    """Can an AI write anything at all right now? -> (payload, status), or None.
+
+    Summaries and Ask run on the same engine and now fail the same way, which
+    is the point of writing it once: a missing cloud CLI is only fatal when the
+    on-device model is missing too, because summarize.summarize_meeting() and
+    ask.answer_question() both fall back to Apple Intelligence themselves.
+    These two checks HAD drifted — Ask returned the CLI's setup instructions
+    unconditionally — and since the default engine was a CLI most Macs do not
+    have, the first question a new user asked was answered with an npm command.
+    """
+    engine = summarize._pick_engine()
+    if engine != "apple":
+        if ai_cli.find_cli(engine) is not None or local_llm.available()[0]:
+            return None
+        return ({"error": ai_cli.PROVIDERS[engine]["setup_help"],
+                 "needs_claude": True}, 400)
+    llm_ok, llm_reason = local_llm.available()
+    if llm_ok:
+        return None
+    return ({"error": _on_device_unavailable(llm_reason)}, 400)
+
+
 @app.post("/api/meetings/<meeting_id>/summarize")
 def summarize_meeting(meeting_id):
     """Generate a summary + action items with the user's own Claude (or the
@@ -2060,19 +2344,9 @@ def summarize_meeting(meeting_id):
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
         return jsonify({"error": "No transcript to summarize yet"}), 400
-    engine = summarize._pick_engine()
-    if engine != "apple":
-        # A missing CLI is only fatal when the on-device fallback is missing
-        # too — summarize_meeting() degrades to Apple Intelligence on its own.
-        if ai_cli.find_cli(engine) is None:
-            llm_ok, _ = local_llm.available()
-            if not llm_ok:
-                return jsonify({"error": ai_cli.PROVIDERS[engine]["setup_help"],
-                                "needs_claude": True}), 400
-    else:
-        llm_ok, llm_reason = local_llm.available()
-        if not llm_ok:
-            return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
+    unusable = _engine_precheck()
+    if unusable:
+        return jsonify(unusable[0]), unusable[1]
     # Summarize writes its result back into meeting.json, and a recluster is
     # rewriting that same file — and would summarize stale speaker labels.
     denied = _claim_job(SUMMARY_JOBS, meeting_id, "Summarizing…",
@@ -2363,15 +2637,9 @@ def ask_meeting(meeting_id):
     question = (data.get("question") or "").strip()
     if not question:
         return jsonify({"error": "empty question"}), 400
-    engine = summarize._pick_engine()
-    if engine != "apple":
-        if ai_cli.find_cli(engine) is None:
-            return jsonify({"error": ai_cli.PROVIDERS[engine]["setup_help"],
-                            "needs_claude": True}), 400
-    else:
-        llm_ok, llm_reason = local_llm.available()
-        if not llm_ok:
-            return jsonify({"error": local_llm.reason_message(llm_reason)}), 400
+    unusable = _engine_precheck()
+    if unusable:
+        return jsonify(unusable[0]), unusable[1]
 
     meeting_dir, history = _dir_for(meeting_id), data.get("history")
     if not _wants_ask_stream(request, data):

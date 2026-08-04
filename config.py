@@ -76,15 +76,34 @@ DEFAULTS = {
     # macOS: switch the sound output to a Multi-Output Device (speakers +
     # BlackHole) while recording, and switch back afterwards.
     "auto_route_macos": True,
-    # Summary + Ask engine. "claude" (default), "codex", "gemini" or
-    # "copilot" run on the user's own AI CLI of that name (best quality;
-    # transcript TEXT is sent to that provider's cloud, never audio — the
-    # registry lives in ai_cli.py). "apple" keeps everything on-device via
-    # Apple Intelligence (shallower, but 100% offline). When the chosen CLI
-    # is missing or signed out, summaries fall back to Apple Intelligence
-    # automatically; Ask reports what to install instead, because an
-    # interactive answer that silently switched models is harder to trust.
-    "summary_engine": "claude",
+    # Summary + Ask engine. "apple" (default) keeps everything on-device via
+    # Apple Intelligence (shallower, but 100% offline). "claude", "codex",
+    # "gemini" or "copilot" run on the user's own AI CLI of that name (best
+    # quality; transcript TEXT is sent to that provider's cloud, never audio —
+    # the registry lives in ai_cli.py). When the chosen CLI is missing or
+    # signed out, BOTH summaries and Ask fall back to Apple Intelligence
+    # (summarize.summarize_meeting, ask.answer_question) rather than handing
+    # back setup instructions.
+    #
+    # WHY THIS DEFAULT IS "apple" AND NOT "claude", which it was until the
+    # fallback above existed on both sides:
+    #  * It is the only default that matches what the app promises before it
+    #    is used. Onboarding says summaries run "through Apple Intelligence —
+    #    nothing goes to the cloud" and calls Claude Code "optional, not
+    #    needed"; a default that sends the transcript to a cloud CLI the user
+    #    never asked for contradicts both, and this app's whole claim is that
+    #    the meeting stays on the Mac unless the user says otherwise.
+    #  * On a machine WITHOUT the CLI it is the difference between a working
+    #    feature and homework. That is not what fixes it, though — the
+    #    fallbacks are. A default cannot help a user whose config names a CLI
+    #    they later uninstall, or who picks Claude and then signs out; only the
+    #    engine falling back at the point of use covers those, which is why
+    #    the fallback landed first and this line second.
+    #  * Nothing is taken away: a Mac with a CLI installed says so in Settings
+    #    (which recommends Claude when it finds it), and the error a Mac with
+    #    Apple Intelligence switched off gets names the installed CLI as the
+    #    way out — see app._on_device_unavailable.
+    "summary_engine": "apple",
     # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
     "live_captions": True,
     # Voice profiles: renaming a speaker saves their voice locally, so later
