@@ -1290,9 +1290,10 @@ def _user_speaker_count(meta):
 
 
 def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
-                   state, precomputed, allow_neural_run, progress_cb):
+                   state, precomputed, allow_neural_run, progress_cb,
+                   user_forced=False):
     """Swap the classic window-vote attribution for neural frame-level turns
-    when the neural engine is available and agrees to the classic COUNT.
+    when the neural engine is available and agrees to the COUNT.
 
     The count decision is untouched — diarization.cluster()'s GEN3 cascade
     scores 21/21 on the real corpus and stays the authority (see
@@ -1301,10 +1302,22 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
     forced to that count, replace nearest-window-centre voting. Every
     failure returns the classic result unchanged.
 
+    `user_forced` marks a count a HUMAN chose (the speaker-count control —
+    speaker_count_source == "user"), and it changes the gate: the engine's
+    own unforced opinion is not consulted, it is simply run pinned to the
+    user's number. Measured on the loudspeaker-playback simulation
+    (native/diarization-ab/MULTIPARTY.md — AMI ES2004a degraded through a
+    band-limit + reverb + compression chain, truth 4 voices): both engines'
+    auto counts collapse to 3 there, and at a forced count of 4 the classic
+    attribution scores 27.6% speaker confusion against the neural turns'
+    2.7%. The user's number plus the neural attributor is the rescue path
+    for exactly the audio the auto engines under-hear; a MACHINE-guessed
+    count (calendar) never takes this branch.
+
     Cached turns (analysis.npz) are reused when their speaker count matches;
     a fresh engine run happens only when `allow_neural_run` — reprocess yes,
-    recluster no, because recluster promises sub-second answers and a fresh
-    neural pass reads the whole WAV.
+    auto-recluster no (it promises sub-second answers), user-forced
+    recluster yes (an explicit action worth a few seconds of engine time).
     """
     engine = str(cfg.get("diarization_engine") or "auto").lower()
     if engine == "classic" or n_found < 2:
@@ -1326,29 +1339,37 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
         progress_cb("Refining speaker turns…")
         offset = float(track.get("start_offset") or 0.0)
         try:
-            # SELF-VALIDATION, measured on the corpus (OFFLINE_RETEST.md):
-            # ask the engine for its own unforced opinion first.
-            #   sees the same count  -> its turns are used as-is.
-            #   sees MORE voices     -> it hears everyone; re-run pinned to
-            #                           the classic count so VBx merges the
-            #                           extras onto the right voices.
-            #   sees FEWER voices    -> it cannot hear a voice the classic
-            #                           engine can (Room T: two people in
-            #                           one room read as one). A forced
-            #                           split from an engine that cannot
-            #                           hear the difference is a coin toss —
-            #                           keep the classic attribution.
-            turns = diarization_neural.fold_confetti(
-                diarization_neural.diarize_turns(wav, offset=offset))
-            k_neural = len({t[2] for t in turns})
-            if k_neural > n_found:
+            if user_forced:
+                # The human outranks both machines — run pinned to their
+                # number, no self-validation detour (see docstring).
                 turns = diarization_neural.diarize_turns(
                     wav, num_speakers=n_found, offset=offset)
-            elif k_neural < n_found:
-                log.info("neural engine hears %d voice(s) on %s where the "
-                         "classic engine hears %d; keeping classic "
-                         "attribution", k_neural, key, n_found)
-                return classic_segs, n_found, False
+            else:
+                # SELF-VALIDATION, measured on the corpus (OFFLINE_RETEST.md):
+                # ask the engine for its own unforced opinion first.
+                #   sees the same count  -> its turns are used as-is.
+                #   sees MORE voices     -> it hears everyone; re-run pinned
+                #                           to the classic count so VBx
+                #                           merges the extras onto the right
+                #                           voices.
+                #   sees FEWER voices    -> it cannot hear a voice the
+                #                           classic engine can (Room T: two
+                #                           people in one room read as one).
+                #                           A forced split from an engine
+                #                           that cannot hear the difference
+                #                           is a coin toss — keep the
+                #                           classic attribution.
+                turns = diarization_neural.fold_confetti(
+                    diarization_neural.diarize_turns(wav, offset=offset))
+                k_neural = len({t[2] for t in turns})
+                if k_neural > n_found:
+                    turns = diarization_neural.diarize_turns(
+                        wav, num_speakers=n_found, offset=offset)
+                elif k_neural < n_found:
+                    log.info("neural engine hears %d voice(s) on %s where the "
+                             "classic engine hears %d; keeping classic "
+                             "attribution", k_neural, key, n_found)
+                    return classic_segs, n_found, False
         except Exception as exc:
             log.warning("neural turns failed on %s (%s); keeping classic "
                         "attribution", key, exc)
@@ -1436,10 +1457,14 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             new_segs = [dict(s, speaker_idx=0) for s in segs]
             n_found = 1
         # The classic engine has decided HOW MANY voices; the neural engine,
-        # when present, re-decides WHO SPEAKS WHEN at that count.
+        # when present, re-decides WHO SPEAKS WHEN at that count. A count the
+        # USER typed relaxes the neural gate — see _neural_refine.
+        user_forced = bool(n_speakers) and (
+            meta.get("speaker_count_source") == SPEAKER_COUNT_USER)
         new_segs, n_found, refined = _neural_refine(
             meeting_dir, meta, cfg, key, segs, new_segs, n_found,
-            state, precomputed, allow_neural_run, progress_cb)
+            state, precomputed, allow_neural_run, progress_cb,
+            user_forced=user_forced)
         if refined:
             neural_used.append(key)
         if state and "embeddings" in state:
@@ -1876,7 +1901,11 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     expected_speakers: int forces the count (online mode: other speakers on
     the call; in-person: total speakers; under the mic-only fallback: every
     voice on the mic, the user included), None re-runs auto-detection.
-    Takes well under a second for a typical meeting.
+    Auto re-detection answers well under a second from the cache; a typed
+    count may additionally re-derive neural speaker turns from the audio
+    (a few seconds on a long meeting), because a human-chosen count plus
+    the neural attributor is the measured rescue for audio the automatic
+    engines under-hear.
 
     Because that number means "besides you" in one of those cases and "you
     included" in the others, which one the caller meant is recorded alongside it
@@ -1929,10 +1958,12 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     label_warnings = _label_and_assemble(
         meeting_dir, meta, transcripts, cfg, expected_speakers, progress_cb,
         precomputed=precomputed, collect=collect,
-        # Recluster promises sub-second answers; cached neural turns are
-        # reused when the count matches, but a fresh engine pass (a full read
-        # of the WAV) belongs to Reprocess only.
-        allow_neural_run=False,
+        # Auto recluster promises sub-second answers, so it only ever reuses
+        # cached neural turns. A recluster where the user TYPED a count is an
+        # explicit act worth a few seconds: the neural engine re-derives
+        # turns at that count, which is the measured rescue for audio the
+        # auto counts under-hear (see _neural_refine's user_forced note).
+        allow_neural_run=bool(expected_speakers),
     )
     # Any track that had to be embedded here (the mic-only fallback hits a mic
     # track that no earlier run ever cached) is persisted, so the next dropdown

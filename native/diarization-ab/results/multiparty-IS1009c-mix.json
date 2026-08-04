@@ -1,0 +1,49 @@
+{
+ "classic": {
+  "count": 4,
+  "elapsed": 56.1,
+  "collar25": [
+   0.06,
+   0.056,
+   0.002
+  ],
+  "strict": [
+   0.112,
+   0.075,
+   0.008
+  ]
+ },
+ "neural": {
+  "count": 4,
+  "elapsed": 6.0,
+  "collar25": [
+   0.045,
+   0.007,
+   0.004
+  ],
+  "strict": [
+   0.086,
+   0.022,
+   0.015
+  ]
+ },
+ "hybrid": {
+  "count": 4,
+  "how": "neural (agreed)",
+  "elapsed": 0.0,
+  "collar25": [
+   0.059,
+   0.054,
+   0.005
+  ],
+  "strict": [
+   0.111,
+   0.073,
+   0.013
+  ]
+ },
+ "truth": {
+  "speakers": 4,
+  "turns": 291
+ }
+}
