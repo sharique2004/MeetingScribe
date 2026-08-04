@@ -71,6 +71,7 @@ struct MeetingDetail: Decodable {
     let title: String
     let created: String
     let duration: Double?
+    let status: String?
     let speakers: [String: String]?
     let turns: [Turn]?
     let stats: MeetingStats?

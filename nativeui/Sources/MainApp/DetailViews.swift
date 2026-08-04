@@ -30,12 +30,54 @@ final class MeetingModel: ObservableObject {
             notes = (try? await API.notes(id)) ?? []
         }
         waveform = try? await API.waveform(id)
+        // Opened while the engine is still transcribing? Watch the work, so
+        // the transcript appears the moment it lands instead of the next
+        // time the user happens to navigate here.
+        if isWorking(detail?.status) {
+            watchProcessing(id)
+        }
         // A summary may already be writing (auto-run after transcription, or
         // kicked off elsewhere) — pick the job up so progress is visible.
         if let job = await API.summaryJob(id), job.state == "processing" {
             summarizing = true
             summaryProgress = job.message
             watchSummaryJob(id)
+        }
+    }
+
+    private func isWorking(_ status: String?) -> Bool {
+        ["recording", "processing"].contains(status ?? "done")
+    }
+
+    /// Poll the document while the engine works on it. Nothing else refreshes
+    /// an OPEN meeting page: the sidebar's watcher updates the LIST rows, and
+    /// this model used to fetch exactly once — so a meeting opened mid-
+    /// transcription showed "Processing" until the user clicked away and
+    /// back. Ends on its own when the work does, or when the page moves to
+    /// another meeting.
+    private func watchProcessing(_ id: String) {
+        Task {
+            while meetingID == id {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard meetingID == id else { return }
+                guard let fresh = try? await API.meeting(id) else { continue }
+                guard meetingID == id else { return }
+                detail = fresh
+                if isWorking(fresh.status) { continue }
+                // The work landed: bring the sidecars the first load found
+                // empty, and pick up the auto-run summary job if one started.
+                if let bundled = fresh.notes, !bundled.isEmpty {
+                    notes = bundled
+                }
+                waveform = (try? await API.waveform(id)) ?? waveform
+                if !summarizing, let job = await API.summaryJob(id),
+                   job.state == "processing" {
+                    summarizing = true
+                    summaryProgress = job.message
+                    watchSummaryJob(id)
+                }
+                return
+            }
         }
     }
 

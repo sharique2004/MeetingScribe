@@ -1291,44 +1291,52 @@ def _user_speaker_count(meta):
 
 def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
                    state, precomputed, allow_neural_run, progress_cb,
-                   user_forced=False):
+                   user_forced=False, forced=False):
     """Swap the classic window-vote attribution for neural frame-level turns
-    when the neural engine is available and agrees to the COUNT.
+    — and, on the AUTO path, let the neural engine RAISE the count.
 
-    The count decision is untouched — diarization.cluster()'s GEN3 cascade
-    scores 21/21 on the real corpus and stays the authority (see
-    diarization_neural's module docstring for the measurement). What changes
-    is who each WORD belongs to: turns from powerset segmentation + VBx,
-    forced to that count, replace nearest-window-centre voting. Every
-    failure returns the classic result unchanged.
+    The division of labour is measured, and it is not symmetric
+    (OFFLINE_RETEST.md + MULTIPARTY.md):
 
-    `user_forced` marks a count a HUMAN chose (the speaker-count control —
-    speaker_count_source == "user"), and it changes the gate: the engine's
-    own unforced opinion is not consulted, it is simply run pinned to the
-    user's number. Measured on the loudspeaker-playback simulation
-    (native/diarization-ab/MULTIPARTY.md — AMI ES2004a degraded through a
-    band-limit + reverb + compression chain, truth 4 voices): both engines'
-    auto counts collapse to 3 there, and at a forced count of 4 the classic
-    attribution scores 27.6% speaker confusion against the neural turns'
-    2.7%. The user's number plus the neural attributor is the rescue path
-    for exactly the audio the auto engines under-hear; a MACHINE-guessed
-    count (calendar) never takes this branch.
+      * Downward, the classic cascade is the authority: on the 1:1-heavy
+        real corpus it scores 21/21 while neural auto peaked at 19/21, and
+        on Room T it hears a second person the neural engine cannot. When
+        neural hears FEWER voices than classic, classic stands.
+      * Upward, the classic cascade is the liability: its fold rules were
+        tuned on a corpus where 17 of 21 tracks hold ONE voice, and on the
+        owner's multi-voice video test it collapsed six people to a single
+        speaker — with the old `n_found < 2` gate then never consulting the
+        neural engine at all. When neural hears MORE substantial voices
+        (each ≥ CONFETTI_MIN_S after fold_confetti) on an UNFORCED track,
+        its turns AND its count win. On the 21 truth-backed fixtures this
+        changes nothing — neural-after-fold never exceeds the classic count
+        there — so the 21/21 is intact by measurement, not by hope.
 
-    Cached turns (analysis.npz) are reused when their speaker count matches;
-    a fresh engine run happens only when `allow_neural_run` — reprocess yes,
-    auto-recluster no (it promises sub-second answers), user-forced
-    recluster yes (an explicit action worth a few seconds of engine time).
+    A FORCED count is a promise made upstream and is never raised:
+      * user_forced (speaker_count_source == "user"): the engine runs
+        pinned to the human's number, no self-validation — measured 10x
+        better than classic attribution at the same forced count on
+        playback audio (27.6% -> 2.7% confusion).
+      * calendar/other forced: the old self-validation flow, count kept.
+
+    Cached turns are reused when their count fits the same rules; a fresh
+    engine run happens only when `allow_neural_run` — reprocess yes,
+    auto-recluster no (sub-second promise), user-forced recluster yes.
+    Every failure returns the classic result unchanged.
     """
     engine = str(cfg.get("diarization_engine") or "auto").lower()
-    if engine == "classic" or n_found < 2:
+    if engine == "classic":
         return classic_segs, n_found, False
+    if forced and n_found < 2:
+        return classic_segs, n_found, False  # a forced count of 1 needs no turns
     track = (meta.get("tracks") or {}).get(key) or {}
 
     turns = None
     cached = (precomputed or {}).get(key)
     if cached is not None and len(cached) > 2 and cached[2] is not None:
         cached_turns = [tuple(t) for t in np.asarray(cached[2]).tolist()]
-        if len({int(t[2]) for t in cached_turns}) == n_found:
+        k_cached = len({int(t[2]) for t in cached_turns})
+        if k_cached == n_found or (not forced and k_cached > n_found):
             turns = cached_turns
     if turns is None:
         if not allow_neural_run or not diarization_neural.available():
@@ -1345,31 +1353,28 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
                 turns = diarization_neural.diarize_turns(
                     wav, num_speakers=n_found, offset=offset)
             else:
-                # SELF-VALIDATION, measured on the corpus (OFFLINE_RETEST.md):
-                # ask the engine for its own unforced opinion first.
-                #   sees the same count  -> its turns are used as-is.
-                #   sees MORE voices     -> it hears everyone; re-run pinned
-                #                           to the classic count so VBx
-                #                           merges the extras onto the right
-                #                           voices.
-                #   sees FEWER voices    -> it cannot hear a voice the
-                #                           classic engine can (Room T: two
-                #                           people in one room read as one).
-                #                           A forced split from an engine
-                #                           that cannot hear the difference
-                #                           is a coin toss — keep the
-                #                           classic attribution.
                 turns = diarization_neural.fold_confetti(
                     diarization_neural.diarize_turns(wav, offset=offset))
                 k_neural = len({t[2] for t in turns})
-                if k_neural > n_found:
-                    turns = diarization_neural.diarize_turns(
-                        wav, num_speakers=n_found, offset=offset)
-                elif k_neural < n_found:
-                    log.info("neural engine hears %d voice(s) on %s where the "
-                             "classic engine hears %d; keeping classic "
+                if k_neural < n_found:
+                    # It cannot hear a voice the classic engine can (Room T:
+                    # two people in one room read as one). A forced split
+                    # from an engine that cannot hear the difference is a
+                    # coin toss — keep the classic attribution.
+                    log.info("neural engine hears %d voice(s) on %s where "
+                             "the classic engine hears %d; keeping classic "
                              "attribution", k_neural, key, n_found)
                     return classic_segs, n_found, False
+                if k_neural > n_found and forced:
+                    # A machine-promised count (calendar): merge the extras
+                    # onto the promised voices rather than break the promise.
+                    turns = diarization_neural.diarize_turns(
+                        wav, num_speakers=n_found, offset=offset)
+                elif k_neural > n_found:
+                    log.info("neural engine hears %d substantial voice(s) on "
+                             "%s where the classic cascade folded to %d; "
+                             "adopting the neural count", k_neural, key, n_found)
+                # k_neural == n_found: the turns are used as-is.
         except Exception as exc:
             log.warning("neural turns failed on %s (%s); keeping classic "
                         "attribution", key, exc)
@@ -1377,15 +1382,16 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
     if not turns:
         return classic_segs, n_found, False
 
+    k_turns = len({int(t[2]) for t in turns})
     refined, k = diarization.assign_by_turns(segs, turns)
-    if k != n_found:
-        # The turn set didn't produce every voice the count promised (or
+    if k != k_turns:
+        # The turn set didn't put words on every voice it promised (or
         # produced ghosts). The classic attribution keeps the contract.
-        log.info("neural turns yielded %d speaker(s) against a count of %d "
-                 "on %s; keeping classic attribution", k, n_found, key)
+        log.info("neural turns yielded %d speaker(s) against their own count "
+                 "of %d on %s; keeping classic attribution", k, k_turns, key)
         return classic_segs, n_found, False
     state["neural_turns"] = turns
-    return refined, n_found, True
+    return refined, k, True
 
 
 def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_cb,
@@ -1456,15 +1462,17 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             )
             new_segs = [dict(s, speaker_idx=0) for s in segs]
             n_found = 1
-        # The classic engine has decided HOW MANY voices; the neural engine,
-        # when present, re-decides WHO SPEAKS WHEN at that count. A count the
-        # USER typed relaxes the neural gate — see _neural_refine.
+        # The classic engine proposes HOW MANY voices; the neural engine,
+        # when present, re-decides WHO SPEAKS WHEN — and on the auto path
+        # may raise the count when it hears more substantial voices than
+        # the classic cascade kept. A count the USER typed relaxes the
+        # neural gate entirely — see _neural_refine.
         user_forced = bool(n_speakers) and (
             meta.get("speaker_count_source") == SPEAKER_COUNT_USER)
         new_segs, n_found, refined = _neural_refine(
             meeting_dir, meta, cfg, key, segs, new_segs, n_found,
             state, precomputed, allow_neural_run, progress_cb,
-            user_forced=user_forced)
+            user_forced=user_forced, forced=bool(n_speakers))
         if refined:
             neural_used.append(key)
         if state and "embeddings" in state:
