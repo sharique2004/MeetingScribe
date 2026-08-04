@@ -4,10 +4,72 @@
 // nests beneath at secondary ink. Every AI claim tries to bind to the
 // transcript turn that produced it, so evidence can unfold in place.
 import Foundation
+import SwiftUI
+
+/// Which to-dos are ticked, kept where the app can honour the promise its own
+/// checkbox makes.
+///
+/// The tick used to live in a `@State` inside the row: it survived exactly
+/// until the next tab switch, which is the worst of both worlds — a control
+/// that looks like a commitment and behaves like a hover state. Persisting is
+/// the right answer, and this is where it can be persisted TODAY: the engine
+/// has no write path for summary state (its only meeting writes are
+/// /title and /speakers), so a tick has nowhere to go in meeting.json without
+/// a new endpoint. Kept here, it survives tab switches, meeting switches,
+/// relaunches and engine restarts; what it does not do is travel to the phone
+/// or into an export, and moving it into meeting.json is the follow-up.
+///
+/// Items are keyed by their NORMALISED task text, not their position: the
+/// summary is regenerated on Re-analyse and the order changes, so an index
+/// would tick the wrong line. A re-analysis that REWORDS a task drops its
+/// tick, which is honest — it is not the same sentence any more.
+@MainActor
+final class ActionItemStore: ObservableObject {
+    static let shared = ActionItemStore()
+
+    @Published private var done: [String: Set<String>] = [:]
+    private let defaults = UserDefaults.standard
+
+    private func storageKey(_ meetingID: String) -> String { "ms.todos.v1.\(meetingID)" }
+
+    private func loaded(_ meetingID: String) -> Set<String> {
+        if let cached = done[meetingID] { return cached }
+        let stored = Set(defaults.stringArray(forKey: storageKey(meetingID)) ?? [])
+        done[meetingID] = stored
+        return stored
+    }
+
+    func isDone(meeting: String, task: String) -> Bool {
+        loaded(meeting).contains(Self.key(task))
+    }
+
+    func set(_ isDone: Bool, meeting: String, task: String) {
+        var items = loaded(meeting)
+        let key = Self.key(task)
+        if isDone { items.insert(key) } else { items.remove(key) }
+        done[meeting] = items
+        defaults.set(Array(items), forKey: storageKey(meeting))
+    }
+
+    /// The identity of a to-do: its words, with case, whitespace and trailing
+    /// punctuation taken out so cosmetic differences don't lose a tick.
+    static func key(_ task: String) -> String {
+        task.lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".!?;:,"))
+    }
+}
 
 enum DocumentBlock: Identifiable {
     case heading(String)                                  // from a short user note
     case userParagraph(String)                            // a long user note
+    /// A note whose "t" is null: the engine could not vouch for when in the
+    /// meeting it was typed. It has no window to sit in, so it gets its own
+    /// place at the end rather than being coerced to 0:00 — see the "t"
+    /// contract at the top of notes.py.
+    case untimedNote(id: String, text: String)
     case bullet(id: String, text: String, evidence: Turn?)
     case actionItem(id: String, item: ActionItem, evidence: Turn?)
 
@@ -15,6 +77,7 @@ enum DocumentBlock: Identifiable {
         switch self {
         case .heading(let s): return "h-\(s)"
         case .userParagraph(let s): return "p-\(s.prefix(60))"
+        case .untimedNote(let id, _): return id
         case .bullet(let id, _, _): return id
         case .actionItem(let id, _, _): return id
         }
@@ -74,6 +137,21 @@ enum DocumentBuilder {
                 id: "note-\(i)",
                 title: isHeading ? headingCase(text) : nil,
                 blocks: blocks))
+        }
+
+        // Notes the engine has no timestamp for. They were dropped from this
+        // document entirely — typed by the user, stored on disk, folded into
+        // meeting.json, and then filtered out one line above because they had
+        // no "t" to place them by. They keep the order they were written in.
+        let untimedNotes = notes.filter { $0.t == nil }
+            .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if !untimedNotes.isEmpty {
+            sections.append(DocumentSection(
+                id: "untimed-notes", title: "Your notes",
+                blocks: untimedNotes.enumerated().map { i, text in
+                    .untimedNote(id: "un-\(i)", text: text)
+                }))
         }
 
         // Decisions and open questions: their own sections, same grammar.

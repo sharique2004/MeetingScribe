@@ -44,8 +44,33 @@ from config import load_config
 log = logging.getLogger("meetingscribe.summarize")
 
 MAX_CHUNK_CHARS = 10000    # transcript text per model call (4K-token context)
-MAX_TOTAL_CHARS = 240000   # sanity cap for pathological transcripts
 MAP_WORKERS = 3            # map chunks summarized concurrently (= llm MAX_INFLIGHT)
+
+# The most transcript that fits in ONE model prompt, on the cloud path only.
+#
+# THIS IS NOT A TRUNCATION POLICY, and it used to be read as one. The old
+# MAX_TOTAL_CHARS = 240_000 was applied while BUILDING the transcript lines, so
+# it hit every path: the on-device map-reduce, which reads the meeting in
+# 10,000-character portions and has no length limit of its own, was thrown the
+# same 240,000-character wall as the single-prompt cloud call — and neither of
+# them said a word about it. A day-long recording came back as a confident
+# summary of its first two-thirds, with the decisions everybody actually stayed
+# late for silently absent.
+#
+# So the bound now belongs to the path that actually has one:
+#   * the on-device map-reduce reads EVERY turn, however long the meeting;
+#   * the cloud one-shot clips to this, and _clip_to_one_prompt makes noise
+#     about it in three places (the prompt, the stored summary, the export).
+#
+# 480,000 characters is roughly 120,000 tokens: comfortable inside a 200k-token
+# context next to the instructions and the model's own output, and about 53
+# hours of speech at conversational pace, so no meeting anyone actually holds
+# reaches it. Lower it if a CLI with a smaller context becomes the default.
+#
+# The old name MAX_TOTAL_CHARS is deliberately GONE rather than aliased: it
+# meant "the most transcript this module will ever read", and anything still
+# reaching for it wants the behaviour this replaces.
+MAX_ONE_PROMPT_CHARS = 480000
 OPENING_ANCHOR_LINES = 14  # first turns kept verbatim for the reduce call
 OPENING_ANCHOR_CHARS = 1200
 
@@ -510,17 +535,88 @@ def _fmt_time(seconds):
 
 
 def _transcript_lines(meta):
+    """EVERY turn, one line each, in order. Nothing is dropped here.
+
+    Length is the caller's problem now, because the two callers do not have the
+    same one: the on-device path chunks and reads all of it, the cloud path
+    fits what it can in one prompt (_clip_to_one_prompt). See
+    MAX_ONE_PROMPT_CHARS for why a cap applied at this level was wrong.
+    """
     speakers = meta.get("speakers") or {}
-    lines, used = [], 0
+    lines = []
     for t in meta.get("turns") or []:
         name = speakers.get(t["speaker"], t["speaker"])
-        line = f"[{_fmt_time(t.get('start'))}] {name}: {t['text']}"
-        lines.append(line)
-        used += len(line)
-        if used > MAX_TOTAL_CHARS:
-            log.warning("transcript truncated at %d chars for summarizing", used)
-            break
+        lines.append(f"[{_fmt_time(t.get('start'))}] {name}: {t['text']}")
     return lines
+
+
+# The sentence the MODEL reads where the transcript stops. Without it the model
+# is looking at a meeting that appears to end mid-sentence and has no way to
+# know it is not the end, so it writes "the call concluded with…" about a
+# moment nobody chose. Told plainly, it summarises what it was given and says
+# so. Speaker-less and fenced in the same style as the private-note marker, so
+# it can never be read as something somebody said.
+CLIPPED_MARKER = (
+    "«TRANSCRIPT CLIPPED — this meeting was too long to send in one piece. "
+    "The {count} remaining turn(s), covering {span}, are NOT below. Summarise "
+    "only what you were given, and do not describe how the meeting ended.»"
+)
+
+
+def _clip_to_one_prompt(meta, lines, limit=MAX_ONE_PROMPT_CHARS):
+    """(lines, omitted) for a path that has to fit the meeting in one prompt.
+
+    `omitted` is None when everything fits — the overwhelmingly normal case,
+    and the lines come back untouched. Otherwise it is the record of what was
+    left out, in the shape that reaches the user:
+
+        {"turns": 412, "chars": 190334, "from": "200:15", "to": "461:02"}
+
+    The user is told THREE times over, because a summary of two-thirds of a
+    meeting presented as a summary of the meeting is the failure being fixed
+    here, and one channel is too easy to miss:
+      1. the model is told, inline, where the transcript stops (CLIPPED_MARKER),
+         so the summary it writes is not a summary of a phantom ending;
+      2. summary["transcript_omitted"] carries it to the UI and the phone;
+      3. to_markdown() prints it under any export.
+
+    The END is what goes, not the beginning — the opposite of _notes_block, and
+    for the opposite reason. Notes are the user's own writing, and the earliest
+    are the most recoverable from the transcript. A transcript has no other
+    source at all, so there is no "less valuable end" to pick: what there IS is
+    an ordering the model depends on. The opening states what the meeting is
+    (see the OPENING_ANCHOR comment in _summarize_apple — a 62-minute interview
+    summarised without it came back as a note about cloud migration), so
+    dropping the front would cost the framing for every remaining line.
+    """
+    total = sum(len(ln) for ln in lines)
+    if total <= limit:
+        return lines, None
+    kept, used = [], 0
+    for line in lines:
+        if used + len(line) > limit:
+            break
+        kept.append(line)
+        used += len(line)
+    kept = kept or lines[:1]           # never send an empty transcript
+    turns = meta.get("turns") or []
+    dropped = turns[len(kept):]
+    omitted = {
+        "turns": len(lines) - len(kept),
+        "chars": total - used,
+        "from": _fmt_time(dropped[0].get("start")) if dropped else "",
+        "to": _fmt_time((dropped[-1].get("end") or dropped[-1].get("start"))
+                        if dropped else 0),
+    }
+    span = (f"{omitted['from']} to {omitted['to']}"
+            if omitted["from"] else "the rest of the meeting")
+    kept.append(CLIPPED_MARKER.format(count=omitted["turns"], span=span))
+    log.warning(
+        "meeting is too long for one prompt: %d of %d turn(s) (%d chars, %s "
+        "onwards) were not sent to the summarizer, and the summary says so "
+        "(transcript_omitted). The whole transcript is still stored.",
+        omitted["turns"], len(lines), omitted["chars"], omitted["from"] or "?")
+    return kept, omitted
 
 
 def _chunk_lines(lines, limit=MAX_CHUNK_CHARS):
@@ -1005,6 +1101,31 @@ def _mark_notes_omitted(summary, meta):
     return summary
 
 
+def _mark_transcript_omitted(summary, omitted):
+    """Publish, as summary["transcript_omitted"], the turns the prompt could
+    not carry — the same contract as notes_omitted above, for the transcript.
+
+    `omitted` is _clip_to_one_prompt's second return value, and is None for
+    every meeting that fits (which is every meeting anyone actually holds — see
+    MAX_ONE_PROMPT_CHARS). Nothing is written then, so those summaries are
+    byte-identical to what they were before this existed.
+
+    The shape, which the UI and the phone both read:
+
+        {"turns": 412, "chars": 190334, "from": "200:15", "to": "461:02"}
+
+    "from"/"to" are m:ss offsets into the recording, matching the timestamps
+    the transcript itself shows, so a reader can jump straight to the part the
+    summary did not cover. Absent (empty strings) only if the dropped turns
+    somehow carry no times.
+    """
+    if omitted and omitted.get("turns"):
+        summary["transcript_omitted"] = omitted
+    else:
+        summary.pop("transcript_omitted", None)
+    return summary
+
+
 # --------------------------------------------------------------- chunk notes --
 
 def _render_notes(notes):
@@ -1240,8 +1361,11 @@ def _interleave_timed_notes(meta, lines):
     every turn already under way when it was typed — so a note written mid-turn
     lands right after that turn, and ties (note.t == a turn's start) resolve as
     speech-then-note. Notes past the last shown turn sit at the end. `lines` is
-    turn-aligned (_transcript_lines emits one line per turn in order, stopping
-    only on truncation), so lines[i] corresponds to turns[i].
+    turn-aligned — _transcript_lines emits one line per turn, in order — so
+    lines[i] corresponds to turns[i]. _clip_to_one_prompt keeps that alignment:
+    it drops from the END and its closing marker sits at index len(kept), which
+    maps to the first turn NOT sent, so a note written before that moment still
+    lands inside the transcript and a later one lands after the marker.
 
     Only TIMED notes move here; untimed notes and cues stay in the trailing
     block. With no timed notes, `lines` is returned unchanged (byte-identical).
@@ -1484,8 +1608,12 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
 
     engine = _pick_engine()
     if engine != "apple":
+        # A single prompt has a size. The map-reduce path below does not, so
+        # the clip is applied HERE, to the cloud copy only — every fallback
+        # underneath still gets the whole meeting.
+        cloud_lines, omitted = _clip_to_one_prompt(meta, lines)
         try:
-            raw = _summarize_cloud(engine, meta, lines, progress_cb)
+            raw = _summarize_cloud(engine, meta, cloud_lines, progress_cb)
         except (NeedsClaudeError, RuntimeError) as exc:
             # The cloud engine is the preference, not a dependency: when it is
             # missing, signed out, or broken AND the on-device model exists,
@@ -1505,6 +1633,7 @@ def summarize_meeting(meeting_dir, progress_cb=lambda msg: None):
         summary["engine"] = engine
         _mark_unaddressed_cues(summary, raw, meta, model_judged=True)
         _mark_notes_omitted(summary, meta)
+        _mark_transcript_omitted(summary, omitted)
         return _store_summary(meta, meta_path, meeting_dir, summary)
 
     ok, reason = local_llm.available()
@@ -1727,6 +1856,19 @@ def to_markdown(summary):
             f"*Note: your {omitted} earliest note(s) did not fit the summary "
             "prompt and were not read by the summarizer. All of them are still "
             "stored with the meeting.*",
+            "",
+        ]
+    # The louder caveat, for the same reason and in the same place: a summary
+    # that did not read the end of the meeting must not be exported looking
+    # like one that did.
+    clipped = summary.get("transcript_omitted")
+    if isinstance(clipped, dict) and clipped.get("turns"):
+        span = (f" (from {clipped['from']} onwards)" if clipped.get("from") else "")
+        lines += [
+            f"*Note: this meeting was too long to read in one pass. The "
+            f"last {clipped['turns']} turn(s){span} were not read by the "
+            "summarizer, so anything decided in them is not below. The full "
+            "transcript is still stored with the meeting.*",
             "",
         ]
     return "\n".join(lines)

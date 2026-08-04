@@ -49,10 +49,17 @@ final class HUDController {
         }
         self.panel = panel
 
-        cancellable = center.$phase.combineLatest(center.$nudge)
+        // The pill is also the app's one always-visible surface, so it is
+        // where a refused Record or Stop has to appear: the toolbar button
+        // that raised it may be behind a meeting page, or behind nothing at
+        // all if the window is closed.
+        cancellable = center.$phase
+            .combineLatest(center.$nudge, center.$alert)
             .receive(on: RunLoop.main)
-            .sink { [weak panel] phase, nudge in
-                let visible = phase == .recording || (phase == .idle && nudge != nil)
+            .sink { [weak panel] phase, nudge, alert in
+                let visible = phase == .recording
+                    || (phase != .recording && alert != nil)
+                    || (phase == .idle && nudge != nil)
                 if visible {
                     panel?.orderFrontRegardless()
                 } else {
@@ -93,7 +100,8 @@ struct HUDPill: View {
     var body: some View {
         VStack(alignment: .trailing, spacing: 0) {
             content
-                .glassEffect(.regular, in: .rect(cornerRadius: expanded ? 18 : 22))
+                .glassEffect(.regular, in: .rect(
+                    cornerRadius: expanded || center.alert != nil ? 18 : 22))
         }
         .padding(14)
         .animation(.easeInOut(duration: 0.3), value: center.phase)
@@ -121,6 +129,20 @@ struct HUDPill: View {
             VStack(alignment: .trailing, spacing: 0) {
                 controlRow
                     .frame(height: 44)
+                // A Stop the engine refused: the recording is still running,
+                // which is the one thing the person who pressed it does not
+                // believe.
+                if let alert = center.alert {
+                    refusalRow(alert)
+                        .frame(width: 292)
+                        .padding(.bottom, 4)
+                        .transition(.offset(y: -4).combined(with: .opacity))
+                }
+                if let alert = center.captureAlerts.first {
+                    captureRow(alert)
+                        .frame(width: expanded ? 292 : 220)
+                        .transition(.offset(y: -4).combined(with: .opacity))
+                }
                 if expanded {
                     expandedContent
                         .frame(width: 292)
@@ -130,7 +152,15 @@ struct HUDPill: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, expanded ? 12 : 0)
+            .padding(.bottom, expanded || center.alert != nil
+                     || !center.captureAlerts.isEmpty ? 12 : 0)
+            .animation(Motion.enter, value: center.captureAlerts)
+            .animation(Motion.enter, value: center.alert)
+        } else if let alert = center.alert {
+            refusalRow(alert)
+                .frame(width: 292)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 11)
         } else if let nudge = center.nudge {
             nudgeRow(nudge)
                 .frame(height: 44)
@@ -139,6 +169,54 @@ struct HUDPill: View {
     }
 
     // MARK: Rows
+
+    /// The engine said no. Nothing else in the app would have said so: the
+    /// record button fired and returned nothing.
+    private func refusalRow(_ alert: RecorderAlert) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(MS.ink2)
+                .offset(y: 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(alert.headline)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(MS.ink)
+                Text(alert.message)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(MS.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 4)
+            Button {
+                center.alert = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(MS.ink3)
+            }
+            .buttonStyle(PressStyle())
+            .help("Dismiss")
+        }
+    }
+
+    /// A track that has stopped carrying sound, said DURING the meeting. The
+    /// timer used to keep running and the meter used to keep dancing.
+    private func captureRow(_ alert: CaptureAlert) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(MS.ink2)
+                .offset(y: 1.5)
+            Text(alert.title)
+                .font(.system(size: 11))
+                .foregroundStyle(MS.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 2)
+        .help(alert.detail)
+    }
 
     private func nudgeRow(_ nudge: Nudge) -> some View {
         HStack(spacing: 8) {
@@ -178,7 +256,7 @@ struct HUDPill: View {
                 .clockFont(13)
                 .foregroundStyle(MS.ink)
 
-            DancingBars(level: max(center.micLevel, center.systemLevel))
+            TrackMeters(mic: center.micTrack, system: center.systemTrack)
         }
     }
 
@@ -237,6 +315,7 @@ struct RecordStateCircle: View {
     enum RecState { case ready, recording, processing }
     let state: RecState
     @State private var spin = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
@@ -257,8 +336,13 @@ struct RecordStateCircle: View {
                     .stroke(MS.ink2, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .frame(width: 12, height: 12)
                     .rotationEffect(.degrees(spin ? 360 : 0))
-                    .animation(.linear(duration: 1).repeatForever(autoreverses: false), value: spin)
-                    .onAppear { spin = true }
+                    // A spinner that never stops is exactly what Reduce Motion
+                    // is for. Without the guard it turns for the life of the
+                    // panel whatever the user asked the system for.
+                    .animation(reduceMotion ? nil
+                               : .linear(duration: 1).repeatForever(autoreverses: false),
+                               value: spin)
+                    .onAppear { spin = !reduceMotion }
             }
         }
         .frame(width: 21, height: 21)
@@ -266,28 +350,56 @@ struct RecordStateCircle: View {
     }
 }
 
-/// Three mirrored bars in mint, moving only a few points from centre —
-/// alive, never frantic.
-struct DancingBars: View {
-    var level: Double
+/// The two tracks, side by side and never merged.
+///
+/// This used to be one bar fed by max(mic, system), which is the one
+/// arrangement that CANNOT show the failure it exists to show: while you talk
+/// your own mic pins the bar, so a system track recording pure silence looks
+/// exactly like a healthy meeting until the transcript comes back with half
+/// the conversation missing. Two meters, each fed by its own track, and a
+/// glyph that names which is which.
+struct TrackMeters: View {
+    let mic: RecorderTrack
+    let system: RecorderTrack
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-            let t = context.date.timeIntervalSinceReferenceDate
-            let energy = 0.25 + min(level, 1) * 0.75
-            HStack(spacing: 2.5) {
-                bar(t: t, phase: 0.0, amp: 2.5, energy: energy)
-                bar(t: t, phase: 2.1, amp: 4.0, energy: energy)
-                bar(t: t, phase: 4.2, amp: 5.0, energy: energy)
-            }
+        VStack(alignment: .leading, spacing: 4) {
+            TrackMeter(glyph: "mic.fill", track: mic, label: "You")
+            TrackMeter(glyph: "speaker.wave.2.fill", track: system, label: "The meeting")
         }
-        .frame(height: 16)
     }
+}
 
-    private func bar(t: Double, phase: Double, amp: Double, energy: Double) -> some View {
-        let h = 5 + abs(sin(t * 3.1 + phase)) * amp * 2 * energy
-        return Capsule()
-            .fill(MS.playheadFill)
-            .frame(width: 2.5, height: h)
+/// One track: its own glyph, its own level, and a bar that goes hollow the
+/// moment nothing is reaching it.
+struct TrackMeter: View {
+    let glyph: String
+    let track: RecorderTrack
+    let label: String
+    var width: CGFloat = 30
+
+    private var lost: Bool { !track.present || !track.alive }
+    private var silent: Bool { track.level <= RecorderTrack.silenceFloor }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: lost ? "exclamationmark.triangle.fill" : glyph)
+                .font(.system(size: 7.5))
+                .foregroundStyle(lost ? MS.ink : MS.ink3)
+                .frame(width: 9)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(MS.ink4.opacity(0.3))
+                if !lost {
+                    Capsule()
+                        .fill(MS.playheadFill)
+                        .frame(width: max(1.5, width * min(1, track.level * 1.7)))
+                }
+            }
+            .frame(width: width, height: 3)
+            .animation(.easeOut(duration: 0.12), value: track.level)
+        }
+        .help(lost ? "\(label): not being recorded"
+                   : silent ? "\(label): silent" : label)
     }
 }

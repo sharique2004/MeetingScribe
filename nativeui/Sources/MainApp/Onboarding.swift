@@ -4,6 +4,13 @@
 // first real meeting), microphone, system audio (proven with a real 3-second
 // test), calendar, and AI summaries (Claude if present, Apple Intelligence
 // otherwise). Every permission is asked in context, never in a wall.
+//
+// EVERY STEP HAS A WAY OUT. This is a modal sheet over an app that cannot be
+// used behind it, so a step that can only be satisfied by something outside
+// the app — a permission the user denied, an engine that will not start — is
+// a trap unless it also offers a door. The door is always the same one: leave
+// setup, keep whatever was achieved, and let the app say what is missing when
+// it matters.
 import SwiftUI
 import AVFoundation
 
@@ -25,7 +32,7 @@ struct OnboardingFlow: View {
                 case 3: MicrophoneStep(next: advance)
                 case 4: SystemAudioStep(center: center, next: advance)
                 case 5: CalendarStep(next: advance)
-                default: IntelligenceStep(finish: finish)
+                default: IntelligenceStep(finish: { finish() })
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -34,27 +41,45 @@ struct OnboardingFlow: View {
                 removal: .offset(x: -24).combined(with: .opacity)))
             .id(step)
 
-            HStack(spacing: 6) {
-                ForEach(0..<stepCount, id: \.self) { i in
-                    Circle()
-                        .fill(i == step ? MS.interactive : MS.ink4.opacity(0.5))
-                        .frame(width: 6, height: 6)
+            // The dots, and the door. Nothing in setup is compulsory, and
+            // "Set up later" is the honest name for it: the app works with
+            // whatever was granted and asks again where it needs to.
+            ZStack {
+                HStack(spacing: 6) {
+                    ForEach(0..<stepCount, id: \.self) { i in
+                        Circle()
+                            .fill(i == step ? MS.interactive : MS.ink4.opacity(0.5))
+                            .frame(width: 6, height: 6)
+                    }
                 }
+                HStack {
+                    Spacer()
+                    if step < stepCount - 1 {
+                        Button("Set up later") { finish(completed: false) }
+                            .buttonStyle(.plain)
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
+                            .keyboardShortcut(.cancelAction)
+                    }
+                }
+                .padding(.trailing, 24)
             }
             .padding(.bottom, 22)
         }
         .frame(width: 600, height: 560)
         .background(MS.content)
         .animation(Motion.enter, value: step)
-        .interactiveDismissDisabled()
     }
 
     private func advance() {
         withAnimation(Motion.enter) { step += 1 }
     }
 
-    private func finish() {
-        Task { await API.post("api/onboarding/done") }
+    /// Leave setup. The flag is written either way: an onboarding the user
+    /// walked out of must not reappear on every launch, and the engine is
+    /// only told the flow was seen when it was actually seen through.
+    private func finish(completed: Bool = true) {
+        if completed { Task { await API.post("api/onboarding/done") } }
         UserDefaults.standard.set(true, forKey: "ms.onboarded.v1")
         presented = false
     }
@@ -137,12 +162,12 @@ private struct WelcomeStep: View {
         StepPage(
             kicker: "Welcome",
             title: "Meetings, remembered.",
-            subtitle: "MeetingScribe records, transcribes and summarises your meetings — entirely on this Mac. No bots join your calls, and nothing you say ever leaves this machine."
+            subtitle: "MeetingScribe records, transcribes and summarises your meetings, entirely on this Mac. No bots join your calls, and nothing you say ever leaves this machine."
         ) {
             VStack(alignment: .leading, spacing: 12) {
                 CheckRow(done: true, text: "Bot-free capture of every call app")
                 CheckRow(done: true, text: "Live captions while you meet")
-                CheckRow(done: true, text: "Summaries, action items and answers — private by architecture")
+                CheckRow(done: true, text: "Summaries, action items and answers, private by architecture")
                 ContinueButton(label: "Set up", action: next)
                     .padding(.top, 22)
             }
@@ -170,7 +195,7 @@ private struct EngineStep: View {
                 case .checking, .starting:
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text(bootstrapping ? "Setting up — a few minutes, once ever…"
+                        Text(bootstrapping ? "Setting up, a few minutes, once ever…"
                                            : "Starting…")
                             .font(MSFont.body)
                             .foregroundStyle(MS.ink2)
@@ -194,9 +219,20 @@ private struct EngineStep: View {
                         Text(message)
                             .font(MSFont.body)
                             .foregroundStyle(MS.ink2)
-                        ContinueButton(label: "Try again") {
-                            Task { await engine.ensureRunning() }
+                        // A setup that cannot start the engine is not a setup
+                        // the user can finish, and this used to be the end of
+                        // the road: one button that had already failed, and a
+                        // sheet with no way past it. The rest of the flow
+                        // copes with an engine that isn't answering.
+                        HStack(spacing: 12) {
+                            ContinueButton(label: "Try again") {
+                                Task { await engine.ensureRunning() }
+                            }
+                            SkipLink(label: "Carry on without it", action: next)
                         }
+                        Text("The app will keep trying, and offers to restart the engine from the main window.")
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
                     }
                 }
 
@@ -237,7 +273,7 @@ private struct EngineStep: View {
             if ok {
                 Task { await engine.ensureRunning() }
             } else {
-                log.append("Setup failed — scroll up for the reason, then try again.")
+                log.append("Setup failed, scroll up for the reason, then try again.")
             }
         }
     }
@@ -466,7 +502,7 @@ private struct MicrophoneStep: View {
         StepPage(
             kicker: "Step 3 of 6",
             title: "Your microphone.",
-            subtitle: "Your side of every meeting comes from the mic. Audio is written straight to disk on this Mac — nowhere else."
+            subtitle: "Your side of every meeting comes from the mic. Audio is written straight to disk on this Mac, nowhere else."
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 switch status {
@@ -474,6 +510,8 @@ private struct MicrophoneStep: View {
                     CheckRow(done: true, text: "Microphone access granted")
                     ContinueButton(action: next).padding(.top, 12)
                 case .denied, .restricted:
+                    // Denying used to end here: no way to grant it from
+                    // inside the app, and no way past the step either.
                     Text("Microphone access is off. Turn it on in System Settings → Privacy & Security → Microphone, then come back.")
                         .font(MSFont.body)
                         .foregroundStyle(MS.ink2)
@@ -489,13 +527,20 @@ private struct MicrophoneStep: View {
                         .font(MSFont.chrome)
                         .foregroundStyle(MS.ink2)
                     }
+                    SkipLink(label: "Carry on without my microphone", action: next)
+                    Text("Meetings will still be recorded, with everyone but you: your own voice needs the microphone.")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink3)
                 default:
-                    ContinueButton(label: "Allow microphone") {
-                        AVCaptureDevice.requestAccess(for: .audio) { _ in
-                            DispatchQueue.main.async {
-                                status = AVCaptureDevice.authorizationStatus(for: .audio)
+                    HStack(spacing: 12) {
+                        ContinueButton(label: "Allow microphone") {
+                            AVCaptureDevice.requestAccess(for: .audio) { _ in
+                                DispatchQueue.main.async {
+                                    status = AVCaptureDevice.authorizationStatus(for: .audio)
+                                }
                             }
                         }
+                        SkipLink(label: "Not now", action: next)
                     }
                 }
             }
@@ -503,102 +548,308 @@ private struct MicrophoneStep: View {
     }
 }
 
+/// The one step that can prove itself, and used to prove nothing.
+///
+/// It recorded three seconds, threw the result away unread, and announced
+/// "System audio captured — you're fully wired" whatever had happened: with
+/// the permission denied, with no loopback device, with the engine refusing
+/// to start at all. The reassurance was worth less than nothing, because the
+/// person who got it stopped looking. And the throwaway meeting it left
+/// behind was deleted on a best-effort loop that gives up after 80 seconds —
+/// on a fresh Mac, where the test recording sits behind a 2.4 GB model
+/// download before it can be deleted, that loop always loses and a phantom
+/// "Setup test" meeting is the first thing in the library.
+///
+/// Now: a quiet two-note tone is played through this Mac's normal output
+/// while the test records, and the claim is whether the system track heard
+/// it. That is the whole question — a system-audio path with nothing playing
+/// through it is untestable, which is why a silent three seconds could never
+/// have meant anything. Cleanup is handed to RecorderCenter, which keeps
+/// retrying across launches until the engine really lets the meeting go.
 private struct SystemAudioStep: View {
     @ObservedObject var center: RecorderCenter
     let next: () -> Void
-    @State private var phase = 0   // 0 idle, 1 testing, 2 done
+
+    private enum TestPhase: Equatable {
+        case idle
+        case running
+        case heard
+        case unheard(String)
+        case refused(String)
+    }
+
+    @State private var phase: TestPhase = .idle
+    @State private var tone = TonePlayer()
 
     var body: some View {
         StepPage(
             kicker: "Step 4 of 6",
             title: "The other side of the call.",
-            subtitle: "To hear everyone else, macOS asks once for System Audio access. We'll run a three-second test recording — approve the prompt when it appears, and it never asks again."
+            subtitle: "To hear everyone else, macOS asks once for system-audio access. The test below plays a short tone through this Mac and records for three seconds. Approve the prompt when it appears, and it never asks again."
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 switch phase {
-                case 2:
-                    CheckRow(done: true, text: "System audio captured — you're fully wired")
-                    ContinueButton(action: next).padding(.top, 12)
-                case 1:
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Recording three seconds — approve the system prompt if it appears…")
-                            .font(MSFont.body)
-                            .foregroundStyle(MS.ink2)
-                    }
-                default:
-                    ContinueButton(label: "Run the test") { runTest() }
-                    Button("Skip — ask me on my first real recording") { next() }
-                        .buttonStyle(.plain)
+                case .heard:
+                    CheckRow(done: true, text: "System audio captured, tone and all")
+                    Text("The test recording is removed as soon as the engine finishes with it.")
                         .font(MSFont.meta)
                         .foregroundStyle(MS.ink3)
+                    ContinueButton(action: next).padding(.top, 12)
+
+                case .running:
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Playing a tone and recording three seconds. Approve the system prompt if it appears…")
+                            .font(MSFont.body)
+                            .foregroundStyle(MS.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                case .unheard(let why):
+                    CheckRow(done: false, text: "Nothing reached the system-audio track")
+                    Text(why)
+                        .font(MSFont.body)
+                        .foregroundStyle(MS.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        ContinueButton(label: "Test again") { runTest() }
+                        Button("Open System Settings") {
+                            NSWorkspace.shared.open(URL(string:
+                                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                        }
+                        .buttonStyle(.plain)
+                        .font(MSFont.chrome)
+                        .foregroundStyle(MS.ink2)
+                    }
+                    SkipLink(label: "Carry on anyway", action: next)
+
+                case .refused(let why):
+                    CheckRow(done: false, text: "The test recording didn't start")
+                    Text(why)
+                        .font(MSFont.body)
+                        .foregroundStyle(MS.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        ContinueButton(label: "Try again") { runTest() }
+                        SkipLink(label: "Carry on anyway", action: next)
+                    }
+
+                case .idle:
+                    ContinueButton(label: "Run the test") { runTest() }
+                    SkipLink(label: "Skip, ask me on my first real recording", action: next)
                 }
             }
         }
+        .onDisappear { tone.stop() }
     }
 
     private func runTest() {
-        phase = 1
+        phase = .running
         Task {
-            await API.post("api/record/start", body: ["title": "Setup test"])
-            try? await Task.sleep(nanoseconds: 3_200_000_000)
-            // The id comes from the recorder itself, so the right meeting is
-            // removed even if ids drifted.
-            let id = (try? await API.recorderStatus())?.meeting_id
-            await API.post("api/record/stop")
-            phase = 2
-            if let id {
-                Task.detached {
-                    for _ in 0..<20 {
-                        let (ok, _) = await API.deleteMeeting(id)
-                        if ok { break }
-                        try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    }
-                }
+            switch await API.recordStart(["title": "System audio check"]) {
+            case .refused(let why):
+                phase = .refused(why)
+            case .started(let meta):
+                let result = await listen()
+                var id = meta.id
+                if id == nil { id = await API.recorderSnapshot()?.meeting_id }
+                _ = await API.recordStop()
+                // Durable: the engine refuses to delete a meeting it is still
+                // transcribing, and on a fresh Mac that can be a long wait.
+                if let id { center.discardLater(id) }
+                phase = result
             }
         }
     }
+
+    /// Play the tone, watch the system track's level, and report what was
+    /// heard. Every verdict here is about a number that was actually read.
+    private func listen() async -> TestPhase {
+        guard tone.play() else {
+            return .unheard("MeetingScribe couldn't play the test tone through this Mac's output, so there was nothing for the recording to hear. Check the output device in System Settings → Sound, then test again.")
+        }
+        defer { tone.stop() }
+        var peak = 0.0
+        var trackPresent: Bool?
+        var trackError: String?
+        for _ in 0..<14 {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let st = await API.recorderSnapshot(), st.recording else { continue }
+            peak = max(peak, st.levels?["system"] ?? 0)
+            if let tracks = st.tracks {
+                trackPresent = tracks["system"] != nil
+                trackError = tracks["system"]?.error ?? trackError
+            }
+            // Ten times the floor that separates a live stream from digital
+            // silence, and a tenth of what the tone measures at any ordinary
+            // volume: nothing else in a quiet room reaches it.
+            if peak > 0.01 { return .heard }
+        }
+        if trackPresent == false {
+            return .unheard("This Mac opened the recording without a system-audio track at all, so only your microphone would be captured. The engine's log has the reason.")
+        }
+        if let trackError {
+            return .unheard("The system-audio track stopped with: \(trackError)")
+        }
+        return .unheard("The track was recording, but the tone never arrived. macOS usually blocks this the first time: allow MeetingScribe under System Settings → Privacy & Security → Screen & System Audio Recording, then test again. If your Mac's output is muted or set to a device this app can't reach, that would do it too.")
+    }
 }
 
+/// A short, quiet two-note tone through this Mac's ordinary output — the only
+/// way to test the far side of a call when there is no far side yet.
+@MainActor
+private final class TonePlayer {
+    private let engine = AVAudioEngine()
+    private let node = AVAudioPlayerNode()
+    private var running = false
+
+    /// False when this Mac would not play it at all — which is a different
+    /// answer from "the recording heard nothing", and has to be said as one.
+    @discardableResult
+    func play() -> Bool {
+        guard !running else { return true }
+        let rate = engine.outputNode.outputFormat(forBus: 0).sampleRate
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: rate > 0 ? rate : 48_000,
+                                         channels: 2),
+              let buffer = Self.tone(format: format) else { return false }
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: format)
+        guard (try? engine.start()) != nil else { return false }
+        running = true
+        node.scheduleBuffer(buffer, at: nil, options: .loops)
+        node.play()
+        return true
+    }
+
+    func stop() {
+        guard running else { return }
+        node.stop()
+        engine.stop()
+        running = false
+    }
+
+    /// 1.3 seconds, looped: a note, a gap, a second note, a gap. Loud enough
+    /// to measure at 12% of full scale, and faded at both ends so it reads as
+    /// a test tone rather than a click.
+    private static func tone(format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let seconds = 1.3
+        let frames = AVAudioFrameCount(format.sampleRate * seconds)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else {
+            return nil
+        }
+        buffer.frameLength = frames
+        for frame in 0..<Int(frames) {
+            let t = Double(frame) / format.sampleRate
+            let note = t < 0.35 ? (t, 660.0) : (t >= 0.55 && t < 0.9) ? (t - 0.55, 880.0) : (0, 0)
+            var value = 0.0
+            if note.1 > 0 {
+                let fade = min(1, min(note.0, 0.35 - note.0) / 0.03)
+                value = sin(2 * .pi * note.1 * t) * 0.12 * max(0, fade)
+            }
+            for channel in 0..<Int(format.channelCount) {
+                buffer.floatChannelData?[channel][frame] = Float(value)
+            }
+        }
+        return buffer
+    }
+}
+
+/// Calendar access, reported as it actually went.
+///
+/// This step used to declare "Calendar connected" after two fire-and-forget
+/// requests whose answers were discarded — the same green tick appeared when
+/// the user pressed Deny, when the EventKit helper failed to build, and when
+/// the engine was not running at all. The endpoint has always said which of
+/// those happened: `available` is false and `error` carries the reason.
 private struct CalendarStep: View {
     let next: () -> Void
-    @State private var connected = false
-    @State private var asked = false
+    @State private var status: CalendarStatus?
+    @State private var asking = false
 
     var body: some View {
         StepPage(
             kicker: "Step 5 of 6",
             title: "Meetings, by name.",
-            subtitle: "With calendar access, recordings name themselves after the event you're in, and MeetingScribe nudges you to record when a meeting starts. Optional — everything works without it."
+            subtitle: "With calendar access, recordings name themselves after the event you're in, and MeetingScribe nudges you to record when a meeting starts. Optional, everything works without it."
         ) {
             VStack(alignment: .leading, spacing: 14) {
-                if connected {
-                    CheckRow(done: true, text: "Calendar connected")
+                if asking {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Waiting for macOS to ask you about Calendars…")
+                            .font(MSFont.body)
+                            .foregroundStyle(MS.ink2)
+                    }
+                    SkipLink(label: "Carry on without it", action: next)
+                } else if status?.available == true {
+                    CheckRow(done: true, text: connectedLine)
                     ContinueButton(action: next).padding(.top, 12)
+                } else if let status {
+                    CheckRow(done: false, text: "Calendar not connected")
+                    Text(reason(status))
+                        .font(MSFont.body)
+                        .foregroundStyle(MS.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        ContinueButton(label: "Try again") { connect() }
+                        Button("Open System Settings") {
+                            NSWorkspace.shared.open(URL(string:
+                                "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!)
+                        }
+                        .buttonStyle(.plain)
+                        .font(MSFont.chrome)
+                        .foregroundStyle(MS.ink2)
+                    }
+                    SkipLink(label: "Carry on without it", action: next)
+                    Text("Recordings will be named by date and time, and you can rename any of them.")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink3)
                 } else {
                     HStack(spacing: 12) {
-                        ContinueButton(label: asked ? "Checking…" : "Connect calendar",
-                                       enabled: !asked) { connect() }
-                        Button("Skip for now") { next() }
-                            .buttonStyle(.plain)
-                            .font(MSFont.meta)
-                            .foregroundStyle(MS.ink3)
+                        ContinueButton(label: "Connect calendar") { connect() }
+                        SkipLink(label: "Skip for now", action: next)
                     }
                 }
             }
         }
     }
 
+    private var connectedLine: String {
+        let count = status?.events?.filter { !$0.isPast }.count ?? 0
+        if count == 0 { return "Calendar connected, nothing left on today" }
+        return "Calendar connected, \(count) meeting\(count == 1 ? "" : "s") still to come today"
+    }
+
+    private func reason(_ status: CalendarStatus) -> String {
+        let detail = status.error?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if detail.lowercased().contains("denied") || detail.lowercased().contains("not granted") {
+            return "macOS is not allowing MeetingScribe to read your calendar. Turn it on in System Settings → Privacy & Security → Calendars, then try again."
+        }
+        return detail.isEmpty
+            ? "The calendar helper didn't answer, so nothing can be read from it yet."
+            : detail
+    }
+
+    /// Ask, and keep asking while the system prompt is on screen. The first
+    /// request blocks inside the engine until the user answers the macOS
+    /// dialog — far longer than one HTTP timeout — so a single call could
+    /// only ever come back "no" no matter what the user pressed.
     private func connect() {
-        asked = true
+        asking = true
+        status = nil
         Task {
-            // Touching the calendar endpoint spins up the calendar helper,
-            // which raises the system permission prompt on first use.
-            _ = await API.calendarToday()
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            _ = await API.calendarToday()
-            connected = true
-            asked = false
+            var answer = await API.calendarStatus()
+            var waited = 0.0
+            while answer.available != true, waited < 90 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                waited += 2
+                answer = await API.calendarStatus()
+                // A definite refusal is an answer; stop waiting for a prompt
+                // that has already been dismissed.
+                if (answer.error ?? "").lowercased().contains("denied") { break }
+            }
+            status = answer
+            asking = false
         }
     }
 }
@@ -614,18 +865,18 @@ private struct IntelligenceStep: View {
         StepPage(
             kicker: "Step 6 of 6",
             title: "Who writes your summaries.",
-            subtitle: "After each meeting, MeetingScribe writes the recap, to-dos and a follow-up email — and answers questions about it. Apple Intelligence does this on-device, so nothing needs installing."
+            subtitle: "After each meeting, MeetingScribe writes the recap, to-dos and a follow-up email, and answers questions about it. Apple Intelligence does this on-device, so nothing needs installing."
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 if checked {
                     CheckRow(done: appleReady,
                              text: appleReady
-                             ? "Apple Intelligence ready — nothing to install"
+                             ? "Apple Intelligence ready, nothing to install"
                              : (appleMessage ?? "Apple Intelligence unavailable on this Mac"))
                     CheckRow(done: claudeFound,
                              text: claudeFound
-                             ? "Claude also found — switch to it in Settings for richer writing"
-                             : "Claude Code not installed — optional, not needed")
+                             ? "Claude also found, switch to it in Settings for richer writing"
+                             : "Claude Code not installed, optional, not needed")
                     if !appleReady && !claudeFound {
                         Text("Recording and transcription work fully today; summaries switch on the moment either becomes available.")
                             .font(MSFont.meta)

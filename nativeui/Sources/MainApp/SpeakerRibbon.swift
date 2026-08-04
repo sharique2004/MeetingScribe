@@ -12,6 +12,24 @@ private struct SpeakerLane: Identifiable {
     let spans: [(Double, Double)]   // fraction of meeting: (start, width)
     let share: Double
     let seconds: Double
+    /// Pace, questions, words, longest monologue — everything stats.py works
+    /// out about one person, which nothing in this app read until now.
+    let stats: SpeakerStats?
+
+    /// The second line: how they talked, not just how much.
+    var insight: String {
+        guard let stats else { return "" }
+        var parts: [String] = []
+        if let words = stats.words, words > 0 { parts.append("\(words.formatted()) words") }
+        if let wpm = stats.wpm, wpm > 0 { parts.append("\(Int(wpm)) wpm") }
+        if let questions = stats.questions, questions > 0 {
+            parts.append("\(questions) question\(questions == 1 ? "" : "s")")
+        }
+        if let longest = stats.longest_turn_seconds, longest >= 30 {
+            parts.append("longest \(clock(longest))")
+        }
+        return parts.joined(separator: " · ")
+    }
 }
 
 struct SpeakerRibbon: View {
@@ -39,7 +57,8 @@ struct SpeakerRibbon: View {
                 color: MS.speaker(key),
                 spans: spans,
                 share: stats[key]?.share ?? 0,
-                seconds: stats[key]?.seconds ?? 0)
+                seconds: stats[key]?.seconds ?? 0,
+                stats: stats[key])
         }
     }
 
@@ -115,6 +134,13 @@ private struct SpeakerLaneRow: View {
                     .clockFont(11)
                     .foregroundStyle(MS.ink2)
                     .frame(width: 78, alignment: .trailing)
+            }
+
+            if !lane.insight.isEmpty {
+                Text(lane.insight)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(MS.ink3)
+                    .padding(.leading, 11)   // under the name, past the identity dot
             }
 
             if let saved {

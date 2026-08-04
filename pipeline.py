@@ -15,6 +15,7 @@ Steps:
 import difflib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -307,6 +308,108 @@ def _track_duration(path):
         return 0.0
 
 
+# ------------------------------------------------------- reading a track ----
+#
+# WHY THIS IS NOT diarization.load_mono_16k.
+#
+# That function is three whole-track arrays alive at once. Measured on a real
+# 3-hour recording in the recorder's own format (48 kHz stereo 16-bit, what
+# audio_recorder.py writes), peak physical footprint of ONE call:
+#
+#     sf.read(dtype=float32, always_2d=True)   4.15 GB   -> 4.23 GB peak
+#     data.mean(axis=1)                        2.07 GB   -> 6.30 GB peak
+#     resample_poly(...)                       0.69 GB   -> 6.99 GB peak
+#
+# and the track is read TWICE per meeting (once to transcribe, once to embed
+# voices), so a two-track meeting paid that four times over.
+#
+# Nothing downstream needs the stereo file or the intermediate mono copy: they
+# exist only because the conversion is written as three whole-array steps. This
+# reads the file a block at a time and converts each block into its final place
+# in ONE preallocated output array, so the peak is the output plus one block —
+# measured 0.87 GB for the same 3-hour track. The output is BITWISE identical
+# to the whole-file conversion, verified sample for sample on that track and on
+# 8 kHz / 16 kHz / 22.05 kHz / 44.1 kHz / 48 kHz / 96 kHz mono and stereo
+# fixtures; it is a cheaper way to compute the same numbers, not an
+# approximation of them.
+#
+# The resampler is an FIR filter, so a block converted on its own would ring at
+# both ends. Each block is therefore read with _LOAD_PAD_FRAMES of real audio on
+# either side and the padding discarded after conversion — far more context than
+# the filter's support (10 * max(up, down) taps at the up-sampled rate, i.e. 30
+# input samples for 48 kHz -> 16 kHz), which is what makes the result identical
+# to converting the whole track in one go rather than merely close to it.
+_LOAD_BLOCK_FRAMES = 1 << 22   # ~4.2M input frames, ~87 s at 48 kHz
+_LOAD_PAD_FRAMES = 1 << 14     # overlap carried into each block and thrown away
+
+
+def load_mono_16k(path):
+    """Any WAV as float32 mono at 16 kHz, without ever holding it three times.
+
+    Same result as diarization.load_mono_16k, a fraction of the memory. See the
+    note above; use this everywhere in the pipeline.
+    """
+    import soundfile as sf
+    from scipy.signal import resample_poly
+
+    with sf.SoundFile(str(path)) as snd:
+        sr, frames, channels = int(snd.samplerate), int(snd.frames), int(snd.channels)
+        if frames <= 0:
+            return np.zeros(0, dtype=np.float32)
+
+        def mono(block):
+            return block.mean(axis=1) if channels > 1 else block[:, 0]
+
+        if sr == diarization.EMBED_SR:
+            out = np.empty(frames, dtype=np.float32)
+            done = 0
+            while done < frames:
+                block = snd.read(min(_LOAD_BLOCK_FRAMES, frames - done),
+                                 dtype="float32", always_2d=True)
+                if not len(block):
+                    break
+                out[done:done + len(block)] = mono(block)
+                done += len(block)
+            return out[:done]
+
+        g = math.gcd(sr, diarization.EMBED_SR)
+        up, down = diarization.EMBED_SR // g, sr // g
+        # resample_poly returns exactly ceil(n * up / down) samples.
+        total_out = -(-frames * up // down)
+        out = np.empty(total_out, dtype=np.float32)
+        # Whole numbers of `down` keep every block boundary on an exact output
+        # sample, so the pieces butt together with no rounding drift.
+        step = max(down, (_LOAD_BLOCK_FRAMES // down) * down)
+        pad = max(down, (_LOAD_PAD_FRAMES // down) * down)
+        pos = written = 0
+        while pos < frames:
+            take = min(step, frames - pos)
+            left = min(pad, pos)
+            right = min(pad, frames - pos - take)
+            snd.seek(pos - left)
+            block = snd.read(left + take + right, dtype="float32", always_2d=True)
+            # A WAV whose header promises more frames than the file holds (a
+            # recording the machine died in the middle of) reads short. The
+            # whole-file version simply returned what was there, so this does
+            # too — a corrupt track costs its tail, never an exception on a
+            # path whose whole job is to salvage the meeting.
+            short = len(block) < left + take + right
+            piece = resample_poly(mono(block), up, down)
+            del block
+            lo = left * up // down
+            # The tail owns whatever ceil() rounded up to; every other block
+            # owns exactly its own samples.
+            want = (total_out - written if pos + take >= frames
+                    else take * up // down)
+            want = min(want, max(0, len(piece) - lo))
+            out[written:written + want] = piece[lo:lo + want]
+            written += want
+            pos += take
+            if short:
+                break
+        return out[:written]
+
+
 # Segments whose underlying audio is quieter than this (peak, full-scale
 # float) are Whisper hallucinations — silence famously transcribes as
 # "Thank you." The faster-whisper backend avoids these with its VAD filter;
@@ -480,7 +583,7 @@ def _transcribe_parakeet(path, label, cfg, progress_cb):
     # Decode the WAV ourselves (parakeet-mlx's own loader shells out to
     # ffmpeg, which most machines don't have). The model wants 16 kHz mono;
     # load_mono_16k delivers exactly that.
-    audio = diarization.load_mono_16k(path)
+    audio = load_mono_16k(path)
 
     # One meeting transcribes at a time: the lock covers model load AND
     # generate, because a concurrent Reprocess on another meeting would
@@ -491,15 +594,23 @@ def _transcribe_parakeet(path, label, cfg, progress_cb):
         sr = model.preprocessor_config.sample_rate
         if sr != diarization.EMBED_SR:  # never true for the shipped models
             raise RuntimeError(f"unexpected Parakeet sample rate {sr}")
-        data = mx.array(audio)
 
         # Mirrors parakeet_mlx.BaseParakeet.transcribe()'s chunked branch over
         # our own decoded audio, reusing the library's overlap token-merge.
+        #
+        # mx.array COPIES into MLX's own allocator, so converting the whole
+        # track up front held it twice (690 MB each for a 3-hour meeting) for
+        # the entire decode. The chunked branch only ever reads a 120-second
+        # window, so each window is converted as it is used and released with
+        # the iteration — the copy is bounded by PARAKEET_CHUNK_S instead of by
+        # the length of the meeting. The short branch below is one chunk by
+        # definition, so it converts once and is unchanged.
         total = len(audio)
         chunk = int(PARAKEET_CHUNK_S * sr)
         overlap = int(PARAKEET_OVERLAP_S * sr)
         if total <= chunk:
-            result = model.generate(get_logmel(data, model.preprocessor_config))[0]
+            result = model.generate(
+                get_logmel(mx.array(audio), model.preprocessor_config))[0]
         else:
             all_tokens = []
             for start in range(0, total, chunk - overlap):
@@ -507,7 +618,8 @@ def _transcribe_parakeet(path, label, cfg, progress_cb):
                 if end - start < model.preprocessor_config.hop_length:
                     break
                 piece = model.generate(
-                    get_logmel(data[start:end], model.preprocessor_config))[0]
+                    get_logmel(mx.array(audio[start:end]),
+                               model.preprocessor_config))[0]
                 offset = start / sr
                 for sent in piece.sentences:
                     for tok in sent.tokens:
@@ -552,7 +664,7 @@ def _transcribe_mlx(path, label, cfg, progress_cb):
     progress_cb(f"Transcribing {label} on the Apple GPU ({model})…")
     # Decode the WAV ourselves (mlx-whisper would otherwise shell out to
     # ffmpeg, which most machines don't have). Whisper wants 16 kHz mono.
-    audio = diarization.load_mono_16k(path)
+    audio = load_mono_16k(path)
     prompt = _vocab_prompt(cfg)
     result = mlx_whisper.transcribe(
         audio,
@@ -663,14 +775,20 @@ def _transcribe_apple(path, label, cfg, progress_cb):
     # Same silence guard the Whisper paths get: recognizers hallucinate
     # phrases over dead air, and dead air is cheap to detect.
     if out:
+        audio = None
         try:
-            audio = diarization.load_mono_16k(path)
+            audio = load_mono_16k(path)
             filtered = [s for s in out if not _is_hallucination(s, audio)]
             if len(filtered) < len(out):
                 log.info("%s: dropped %d silent segment(s)", label, len(out) - len(filtered))
             out = filtered
         except Exception as exc:  # guard is best-effort
             log.debug("silence guard skipped for %s: %s", label, exc)
+        finally:
+            # This backend transcribes from the FILE, so the waveform exists
+            # only for the guard above. Dropping it here is what keeps it out
+            # of the caller's frame for the rest of the meeting.
+            del audio
     return out, data.get("language")
 
 
@@ -1477,6 +1595,34 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
     return refined, k, True
 
 
+def _embed_track(track_file, segs, progress_cb):
+    """(windows, embeddings) for one track, or None when there is nothing to
+    cluster — the `precomputed` argument diarization.diarize_track wants.
+
+    THIS IS A MEMORY FIX, not a behaviour change. Left to itself diarize_track
+    reads the WAV through diarization.load_mono_16k, which holds the track
+    three times over (stereo float32 + mono copy + resampled copy: 6.99 GB
+    measured on a 3-hour recording). Handing it windows and embeddings computed
+    here means the only read of that file in this phase goes through
+    load_mono_16k above, at 0.87 GB, and the waveform is released the moment
+    the embedder is done with it rather than living to the end of the call.
+
+    The two paths are otherwise the same code: diarize_track's own branch is
+    build_windows() then embed_windows(), which is exactly what happens here.
+    Fewer than two windows is left to diarize_track (returning None) so its
+    one-speaker early return still fires BEFORE `state` is written — a track
+    with nothing to cluster must not seed analysis.npz with an empty cache.
+    """
+    windows = diarization.build_windows(segs)
+    if len(windows) < 2:
+        return None
+    audio = load_mono_16k(track_file)
+    try:
+        return windows, diarization.embed_windows(audio, windows, progress_cb)
+    finally:
+        del audio
+
+
 def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_cb,
                         precomputed=None, collect=None, allow_neural_run=True):
     """Steps 3+4: cluster voices into speakers and build the final transcript.
@@ -1535,7 +1681,8 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 n_speakers=n_speakers,
                 threshold=threshold,
                 progress_cb=progress_cb,
-                precomputed=None if cached is None else cached[:2],
+                precomputed=(cached[:2] if cached is not None
+                             else _embed_track(track_file, segs, progress_cb)),
                 state=state,
             )
         except ModelDownloadError as exc:

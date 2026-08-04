@@ -12,15 +12,20 @@ struct LivePage: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // Dateline: the only red in the window.
-                    HStack(spacing: 7) {
-                        Circle().fill(MS.recordRed).frame(width: 7, height: 7)
-                        Text("Recording")
-                            .font(MSFont.meta)
-                            .foregroundStyle(MS.ink3)
-                        Text(clock(center.elapsed))
-                            .clockFont(12)
-                            .foregroundStyle(MS.ink2)
+                    // Dateline: the only red in the window. The two meters
+                    // ride with it, because "is this being recorded" is the
+                    // one question the recording screen must always answer.
+                    HStack(spacing: 10) {
+                        HStack(spacing: 7) {
+                            Circle().fill(MS.recordRed).frame(width: 7, height: 7)
+                            Text("Recording")
+                                .font(MSFont.meta)
+                                .foregroundStyle(MS.ink3)
+                            Text(clock(center.elapsed))
+                                .clockFont(12)
+                                .foregroundStyle(MS.ink2)
+                        }
+                        TrackMeters(mic: center.micTrack, system: center.systemTrack)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 48)
@@ -29,6 +34,12 @@ struct LivePage: View {
                         .font(MSFont.pageTitle)
                         .foregroundStyle(MS.ink)
                         .padding(.top, 14)
+
+                    // Everything wrong with the capture, while it can still be
+                    // fixed. Until this, a track that died mid-meeting was
+                    // invisible until Stop: the timer kept running and the
+                    // meter simply went flat.
+                    captureNotices
 
                     Rectangle().fill(MS.hairline).frame(height: 1)
                         .padding(.top, 24)
@@ -55,7 +66,7 @@ struct LivePage: View {
                                 .clockFont(11)
                                 .foregroundStyle(MS.ink4.opacity(0.6))
                                 .frame(width: 44, alignment: .trailing)
-                            TextField("Type a note — ⏎ stamps this moment", text: $center.noteDraft, axis: .vertical)
+                            TextField("Type a note, ⏎ stamps this moment", text: $center.noteDraft, axis: .vertical)
                                 .textFieldStyle(.plain)
                                 .font(MSFont.body)
                                 .foregroundStyle(MS.ink)
@@ -112,6 +123,50 @@ struct LivePage: View {
                 withAnimation(Motion.seek) { proxy.scrollTo("live-composer", anchor: .bottom) }
             }
             .onAppear { noteFocused = true }
+        }
+    }
+
+    /// A dead track, a track that never carried anything, whatever the engine
+    /// warned about as the recording started, and the disk running out. All of
+    /// it was previously discoverable only after the meeting had ended.
+    @ViewBuilder
+    private var captureNotices: some View {
+        let alerts = center.captureAlerts
+        let notes = center.startWarnings + [center.diskNote].compactMap { $0 }
+        if center.alert != nil || !alerts.isEmpty || !notes.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                // A Stop that was refused. The recording is still running and
+                // the person who pressed it thinks it isn't.
+                if let refusal = center.alert {
+                    NoticeBand(icon: "exclamationmark.triangle",
+                               text: refusal.headline + ". " + refusal.message) {
+                        Button("Dismiss") { center.alert = nil }
+                            .buttonStyle(.plain)
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
+                    }
+                }
+                ForEach(alerts) { alert in
+                    NoticeBand(icon: "exclamationmark.triangle",
+                               text: alert.title + ". " + alert.detail)
+                }
+                ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10))
+                            .foregroundStyle(MS.ink4)
+                        Text(note)
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            // Inside the branch, so a healthy meeting leaves no gap where a
+            // warning would have been.
+            .padding(.top, 22)
+            .animation(Motion.enter, value: alerts)
         }
     }
 

@@ -9,14 +9,62 @@ let engineBase = URL(string: "http://127.0.0.1:5005")!
 
 struct MeetingListItem: Decodable, Identifiable, Hashable {
     let id: String
-    let title: String
+    /// `var` so a rename can land on the sidebar row the moment the engine
+    /// accepts it, instead of waiting for whatever refetches the list next.
+    var title: String
     let created: String
     let duration: Double?
     let status: String?
     let speakers: Int?
+    // The row view, served with the list. Drawing a row used to fetch the
+    // whole document per row: 43 KB against 191 B on a 400-turn meeting, with
+    // every turn crossing the socket, and /api/meetings/<id> also takes
+    // JOB_LOCK to persist notes, so drawing a list put a lock-taking write in
+    // front of the job the row was reporting on.
+    let brief: String?
+    let has_transcript: Bool?
+    let has_summary: Bool?
+    let has_notes: Bool?
+    let warnings: [String]?
+}
+
+extension MeetingListItem {
+    var rowMeta: RowMeta {
+        var m = RowMeta()
+        m.brief = (brief?.isEmpty == false) ? brief : nil
+        m.hasTranscript = has_transcript ?? false
+        m.hasSummary = has_summary ?? false
+        m.hasNotes = has_notes ?? false
+        m.hasCaptureWarning = (warnings ?? []).contains { isCaptureWarning($0) }
+        return m
+    }
 }
 
 private struct MeetingsPage: Decodable { let items: [MeetingListItem] }
+
+/// The row view of one meeting, and nothing else: no turns, no document, and
+/// no write. For the tick a meeting finishes, when its list entry was read
+/// while the transcript did not exist yet.
+private struct BriefRow: Decodable {
+    let brief: String?
+    let has_transcript: Bool?
+    let has_summary: Bool?
+    let has_notes: Bool?
+    let warnings: [String]?
+}
+
+extension API {
+    static func brief(_ id: String) async throws -> RowMeta {
+        let r = try await get("api/meetings/\(id)/brief", as: BriefRow.self)
+        var m = RowMeta()
+        m.brief = (r.brief?.isEmpty == false) ? r.brief : nil
+        m.hasTranscript = r.has_transcript ?? false
+        m.hasSummary = r.has_summary ?? false
+        m.hasNotes = r.has_notes ?? false
+        m.hasCaptureWarning = (r.warnings ?? []).contains { isCaptureWarning($0) }
+        return m
+    }
+}
 
 struct Turn: Decodable, Hashable {
     let speaker: String?
@@ -54,16 +102,70 @@ struct MeetingSummary: Decodable {
     let engine: String?
 }
 
+/// What stats.py already computes for one speaker, all of it. Talk time,
+/// share, pace, questions, the longest unbroken monologue and the filler
+/// words — the "how did I do?" half of the product, which nothing in the
+/// native app read until now.
 struct SpeakerStats: Decodable {
     let seconds: Double?
     let words: Int?
     let share: Double?
     let wpm: Double?
     let questions: Int?
+    let turns: Int?
+    let longest_turn_seconds: Double?
+    /// Phrase → count, already sorted by the engine (commonest first).
+    let fillers: [String: Int]?
+    let filler_total: Int?
 }
 
 struct MeetingStats: Decodable {
     let per_speaker: [String: SpeakerStats]?
+    let total_spoken_seconds: Double?
+    let total_words: Int?
+    let duration: Double?
+}
+
+/// One recorded audio track as the recorder wrote it. `start_offset` is the
+/// seconds this track began AFTER the earliest one — the two capture threads
+/// do not start on the same sample, and every other reader of this file
+/// (the waveform endpoint, the pipeline's transcript offsets) already
+/// corrects for it. Playback that ignores it plays the two tracks out of step
+/// with each other and with the transcript.
+struct TrackInfo: Decodable, Hashable {
+    let file: String?
+    let device: String?
+    let seconds: Double?
+    let start_offset: Double?
+
+    /// Did this track actually capture anything? A meeting whose system audio
+    /// macOS blocked still carries a `system` entry, with zero seconds in it,
+    /// and offering that as a playable track is offering silence.
+    ///
+    /// `seconds` is only written when the recorder STOPS, so a meeting a crash
+    /// caught mid-recording has tracks with no length at all — and its WAVs
+    /// are on disk, which is the whole premise of Reprocess. Unknown therefore
+    /// means playable; a file that turns out not to be there fails loudly on
+    /// the transport instead of being silently withheld.
+    var hasAudio: Bool { (seconds ?? 1) > 0.05 }
+}
+
+/// How this meeting was transcribed, in the engine's words.
+struct ProcessingInfo: Decodable {
+    let backend: String?
+    let model: String?
+    let seconds: Double?
+
+    /// The name the product uses for each speech backend.
+    var label: String? {
+        switch backend {
+        case "parakeet": return "Parakeet"
+        case "apple": return "Apple Speech"
+        case "mlx": return "Whisper · GPU"
+        case "faster": return "Whisper · CPU"
+        default: return nil
+        }
+    }
 }
 
 struct MeetingDetail: Decodable {
@@ -77,6 +179,16 @@ struct MeetingDetail: Decodable {
     let stats: MeetingStats?
     let summary: MeetingSummary?
     let notes: [MeetingNote]?
+    /// The audio this meeting actually has, keyed "mic" / "system". The
+    /// transport picker is built from this and nothing else — a meeting
+    /// recorded in person on one device has no `system` track, and a picker
+    /// that offers it hands the user a 404.
+    let tracks: [String: TrackInfo]?
+    /// "online" | "inperson".
+    let mode: String?
+    /// Per-track detected language, e.g. ["mic": "en_US"].
+    let languages: [String: String]?
+    let processing: ProcessingInfo?
     /// Why processing stopped, in the engine's own words, e.g. "Interrupted —
     /// press Reprocess to transcribe the saved audio." Set with
     /// status == "error" and nothing else clears it: the audio is still on
@@ -115,12 +227,53 @@ extension MeetingDetail {
     /// The quieter half: true, worth one line, not worth alarm.
     var minorWarnings: [String] { (warnings ?? []).filter { !isCaptureWarning($0) } }
 
-    private func isCaptureWarning(_ w: String) -> Bool {
-        let text = w.lowercased()
-        return ["blocked", "not be recorded", "no microphone", "was silent",
-                "filled with silence", "stopped early", "did not shut down",
-                "could not be routed"].contains { text.contains($0) }
+    /// The tracks with audio in them, mic first. Everything about playback —
+    /// which decks exist, what the picker offers, whether "Mix" is even a
+    /// thing for this meeting — is derived from this one list.
+    var playableTracks: [(key: String, info: TrackInfo)] {
+        guard let tracks, !tracks.isEmpty else {
+            // A meeting.json carrying no tracks block at all. mic.wav is the
+            // file that has always existed, so offer it rather than declaring
+            // a meeting silent on the strength of a missing key; if it isn't
+            // there, the transport says so out loud.
+            return [(key: "mic", info: TrackInfo(file: "mic.wav", device: nil,
+                                                 seconds: nil, start_offset: nil))]
+        }
+        return ["mic", "system"].compactMap { key in
+            guard let info = tracks[key], info.hasAudio else { return nil }
+            return (key, info)
+        }
     }
+
+    /// "Online call" or "In person" — a fact about the recording the document
+    /// never showed, though it decides how the audio was captured.
+    var modeLabel: String? {
+        switch mode {
+        case "inperson": return "In person"
+        case "online": return "Online call"
+        default: return nil
+        }
+    }
+
+    /// The spoken language the engine detected, named in the reader's own
+    /// language. Both tracks agree in every ordinary meeting; the mic is the
+    /// tie-breaker because it is the track that always exists.
+    var languageLabel: String? {
+        guard let code = languages?["mic"] ?? languages?["system"] else { return nil }
+        return Locale.current.localizedString(forIdentifier: code)
+            ?? Locale.current.localizedString(forLanguageCode: String(code.prefix(2)))
+    }
+
+}
+
+/// Did this warning cost the user audio, or is it only about labels?
+/// One definition, because the sidebar row and the meeting page must agree
+/// about which warnings are loud.
+func isCaptureWarning(_ w: String) -> Bool {
+    let text = w.lowercased()
+    return ["blocked", "not be recorded", "no microphone", "was silent",
+            "filled with silence", "stopped early", "did not shut down",
+            "could not be routed"].contains { text.contains($0) }
 }
 
 /// Is the engine still working on this meeting?
@@ -238,7 +391,48 @@ struct AskAnswer: Decodable {
     let answer: String?
     let citations: [Citation]?
     let error: String?
+    /// The engine has no summarizer signed in. Its message says so; this flag
+    /// is how a client knows the fix is Settings, not a retry.
+    let needs_claude: Bool?
 }
+
+/// One earlier turn of the conversation, sent back so a follow-up like "and
+/// what did he say about the deadline?" still has a subject. app.py has taken
+/// `history` since the web UI shipped; the native Ask never sent it, which is
+/// what made every question the first one.
+struct AskMessage: Identifiable, Hashable {
+    enum Role: String { case user, assistant }
+    let id = UUID()
+    let role: Role
+    var text: String
+    var citations: [Citation] = []
+    /// The answer is still being written — a preview, never history.
+    var streaming = false
+
+    var wire: [String: String] { ["role": role.rawValue, "text": text] }
+}
+
+/// An ask that produced no answer. `needsClaude` carries the engine's own
+/// "you have no summarizer signed in" so the UI can point at Settings.
+struct AskFailure: Error {
+    let message: String
+    let needsClaude: Bool
+}
+
+/// One line of the engine's NDJSON ask stream:
+///   {"type":"delta","text":"…"}   zero or more, plain answer text
+///   {"type":"done","answer":"…","citations":[…]}   ends it
+///   {"type":"error","error":"…"}  ends it, if it broke after some text
+private struct AskStreamEvent: Decodable {
+    let type: String?
+    let text: String?
+    let answer: String?
+    let citations: [Citation]?
+    let error: String?
+    let needs_claude: Bool?
+}
+
+let askStreamMediaType = "application/x-ndjson"
 
 // MARK: - Client
 
@@ -276,15 +470,7 @@ private struct VoiceProfilesEnvelope: Decodable { let profiles: [VoiceProfile] }
 /// could still land on the wrong person.
 struct SpeakerRenameResult: Decodable { let voice_profile: VoiceProfile? }
 
-struct CalendarEvent: Decodable, Hashable {
-    let title: String?
-    let start: String?
-}
 
-private struct CalendarToday: Decodable {
-    let available: Bool?
-    let events: [CalendarEvent]?
-}
 
 enum API {
     static func meetings(query: String = "") async throws -> [MeetingListItem] {
@@ -298,10 +484,6 @@ enum API {
 
     static func notes(_ id: String) async throws -> [MeetingNote] {
         try await get("api/meetings/\(id)/notes", as: NotesEnvelope.self).notes
-    }
-
-    static func calendarToday() async -> [CalendarEvent] {
-        (try? await get("api/calendar/today", as: CalendarToday.self).events) ?? []
     }
 
     static func rename(_ id: String, title: String) async -> Bool {
@@ -323,7 +505,7 @@ enum API {
         }
         if (200..<300).contains(code) { return (true, nil) }
         let err = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] as? String
-        return (false, err ?? "Summarize failed (\(code)).")
+        return (false, err ?? "Summarising failed (\(code)).")
     }
 
     /// Rename one speaker of a meeting. Returns the profile the engine
@@ -439,14 +621,121 @@ enum API {
         try await get("api/meetings/\(id)", as: MeetingDetail.self)
     }
 
-    static func ask(_ id: String, question: String) async throws -> AskAnswer {
+    /// Ask one question about one meeting, reading the answer as it is
+    /// written.
+    ///
+    /// Three things the one-shot version didn't do, all of them already
+    /// supported by app.py: it sends `history`, so a follow-up knows what it
+    /// is following up on; it opts into the NDJSON stream, so the words appear
+    /// as the model writes them instead of after up to three minutes of
+    /// nothing; and it keeps the engine's error text, including the
+    /// needs_claude flag that says the fix is signing in rather than asking
+    /// again.
+    ///
+    /// The deltas are a PREVIEW: only the "done" event carries citations
+    /// validated against the turns the model was actually shown, so the
+    /// returned answer — not the accumulated deltas — is what gets kept.
+    @MainActor
+    static func askStream(_ id: String, question: String,
+                          history: [AskMessage],
+                          onDelta: (String) -> Void) async throws -> AskAnswer {
         var req = URLRequest(url: engineBase.appendingPathComponent("api/meetings/\(id)/ask"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: ["question": question])
-        req.timeoutInterval = 180
-        let (data, _) = try await URLSession.shared.data(for: req)
-        return try JSONDecoder().decode(AskAnswer.self, from: data)
+        req.setValue(askStreamMediaType, forHTTPHeaderField: "Accept")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "question": question,
+            "history": history.map(\.wire),
+            "stream": true,
+        ])
+        // The on-device path (Apple Intelligence) writes no deltas at all and
+        // can take minutes, so this is the gap between BYTES the request has
+        // to tolerate, not just the time to first response.
+        req.timeoutInterval = 300
+
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw AskFailure(message: "The engine didn't answer.", needsClaude: false)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let body = try? JSONDecoder().decode(AskAnswer.self, from: await collect(bytes))
+            throw AskFailure(
+                message: body?.error ?? "The engine wouldn't answer that (\(http.statusCode)).",
+                needsClaude: body?.needs_claude == true)
+        }
+        // An engine that doesn't know the flag answers in one object, exactly
+        // as it always has. No version check anywhere — the content type is
+        // the whole test.
+        guard (http.value(forHTTPHeaderField: "Content-Type") ?? "")
+            .contains(askStreamMediaType) else {
+            guard let answer = try? JSONDecoder()
+                .decode(AskAnswer.self, from: await collect(bytes)) else {
+                throw AskFailure(message: "The engine's answer couldn't be read.",
+                                 needsClaude: false)
+            }
+            return answer
+        }
+
+        var settled: AskAnswer?
+        for try await line in bytes.lines {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            // One unparseable line must not cost an answer that is otherwise
+            // arriving: "done" is read on its own line like everything else.
+            guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
+                  let event = try? JSONDecoder().decode(AskStreamEvent.self, from: data)
+            else { continue }
+            switch event.type {
+            case "delta":
+                onDelta(event.text ?? "")
+            case "done":
+                settled = AskAnswer(answer: event.answer, citations: event.citations,
+                                    error: nil, needs_claude: nil)
+            case "error":
+                throw AskFailure(message: event.error ?? "Could not answer that question.",
+                                 needsClaude: event.needs_claude == true)
+            default:
+                continue
+            }
+        }
+        guard let settled else {
+            // The connection dropped between the last delta and the "done"
+            // that carries the citations. There is no answer to keep.
+            throw AskFailure(message: "The answer stopped part-way through. Ask again.",
+                             needsClaude: false)
+        }
+        return settled
+    }
+
+    /// Drain a body we are only going to read as one JSON object — the error
+    /// path, and the path where the engine answered without streaming. A read
+    /// that breaks part-way hands back what arrived; the decode above decides
+    /// whether that was enough.
+    private static func collect(_ bytes: URLSession.AsyncBytes) async -> Data {
+        var data = Data()
+        do {
+            for try await byte in bytes { data.append(byte) }
+        } catch {
+            return data
+        }
+        return data
+    }
+
+    /// The engine's own export of one meeting — the same Markdown or plain
+    /// text the web UI has always offered, built server-side from
+    /// meeting.json, so the file carries the summary and the speaking stats
+    /// and not just the turns. `fmt` is "md" or "txt".
+    static func export(_ id: String, fmt: String) async -> Data? {
+        var comps = URLComponents(
+            url: engineBase.appendingPathComponent("api/meetings/\(id)/export"),
+            resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "fmt", value: fmt)]
+        guard let url = comps?.url else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 30
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode,
+              (200..<300).contains(code) else { return nil }
+        return data
     }
 
     static func audioURL(_ id: String, track: String) -> URL {

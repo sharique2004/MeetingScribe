@@ -15,6 +15,8 @@ struct MeetingPage: View {
 
     @State private var title: String = ""
     @State private var peoplePopover = false
+    @State private var exportError: String?
+    @FocusState private var titleFocused: Bool
 
     private var built: (sections: [DocumentSection], nextSteps: [DocumentBlock]) {
         DocumentBuilder.build(detail: detail, notes: notes)
@@ -30,11 +32,11 @@ struct MeetingPage: View {
                 HStack(spacing: 14) {
                     peopleLine
                     talkShareStrip
-                    if let d = detail.duration {
-                        Text("\(Int(d / 60)) min")
-                            .font(.system(size: 13))
-                            .foregroundStyle(MS.ink3)
-                    }
+                    // How long, how it was captured, what language it was in:
+                    // facts about the recording the document never carried.
+                    Text(headMeta)
+                        .font(.system(size: 13))
+                        .foregroundStyle(MS.ink3)
                 }
                 .padding(.top, 10)
                 PageTabs(mode: $mode)
@@ -70,8 +72,10 @@ struct MeetingPage: View {
                         .padding(.bottom, 28)
                 }
 
+                insights
+
                 if let omitted = detail.summary?.notes_omitted, omitted > 0 {
-                    Text("\(omitted) of your notes didn't fit in the summary pass — they're all still on the transcript.")
+                    Text("\(omitted) of your notes didn't fit in the summary pass, they're all still on the transcript.")
                         .font(MSFont.meta)
                         .foregroundStyle(MS.ink3)
                         .padding(.bottom, 22)
@@ -109,17 +113,52 @@ struct MeetingPage: View {
             + " · " + date.formatted(.dateTime.hour().minute())
     }
 
+    /// The meeting's name, edited in place.
+    ///
+    /// It commits on Return AND on losing focus, because clicking away is how
+    /// people leave a title field and the edit used to be thrown away without
+    /// a word. That is the opposite of the speaker ribbon on purpose: naming a
+    /// speaker enrols a voiceprint, so it asks for an explicit Return; naming
+    /// a meeting writes a string, and quietly discarding it is the only
+    /// surprising thing it could do. Escape abandons the edit, which is the
+    /// way back out.
     private var titleField: some View {
         TextField("Untitled meeting", text: $title, axis: .vertical)
             .textFieldStyle(.plain)
             .font(MSFont.pageTitle)
             .foregroundStyle(MS.ink)
             .lineLimit(1...3)
+            .focused($titleFocused)
             .onSubmit {
-                let t = title.trimmingCharacters(in: .whitespaces)
-                guard !t.isEmpty, t != detail.title else { return }
-                Task { await API.rename(detail.id, title: t) }
+                commitTitle()
+                titleFocused = false
             }
+            .onChange(of: titleFocused) { _, focused in
+                if !focused { commitTitle() }
+            }
+            .onExitCommand {
+                title = detail.title
+                titleFocused = false
+            }
+            // A rename that landed, a reprocess, a fresh poll: whatever
+            // rewrites the document, the field follows it — unless the user
+            // is mid-edit, whose typing outranks any refresh.
+            .onChange(of: detail.title) {
+                if !titleFocused { title = detail.title }
+            }
+    }
+
+    private func commitTitle() {
+        let typed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty, typed != detail.title else {
+            title = detail.title      // an empty or unchanged edit is not an edit
+            return
+        }
+        Task {
+            if await model.rename(to: typed) == false {
+                title = detail.title  // the engine refused: show what is saved
+            }
+        }
     }
 
     private var peopleLine: some View {
@@ -143,6 +182,15 @@ struct MeetingPage: View {
                 .padding(16)
                 .frame(width: 380)
         }
+    }
+
+    /// Duration · how it was captured · the language it was spoken in.
+    private var headMeta: String {
+        var parts: [String] = []
+        if let d = detail.duration, d > 0 { parts.append("\(max(1, Int(d / 60))) min") }
+        if let mode = detail.modeLabel { parts.append(mode) }
+        if let language = detail.languageLabel { parts.append(language) }
+        return parts.joined(separator: " · ")
     }
 
     private var speakerEntries: [(key: String, name: String)] {
@@ -266,6 +314,15 @@ struct MeetingPage: View {
                         .foregroundStyle(MS.ink)
                 }
             }
+            // Said once for the whole section rather than stamped on every
+            // line: these notes have no moment to be shown at, and inventing
+            // one — putting them at 0:00 — would be a quiet lie about where
+            // in the conversation they were written.
+            if section.id == "untimed-notes" {
+                Text("Saved without a position in the meeting.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            }
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(section.blocks) { block in
                     blockView(block)
@@ -287,11 +344,20 @@ struct MeetingPage: View {
                     .foregroundStyle(MS.ink)
                     .textSelection(.enabled)
             }
+        case .untimedNote(_, let text):
+            yourNote {
+                Text(text)
+                    .font(MSFont.body)
+                    .lineSpacing(9)
+                    .foregroundStyle(MS.ink)
+                    .textSelection(.enabled)
+            }
         case .bullet(_, let text, let evidence):
             EvidenceDisclosure(text: text, evidence: evidence, player: player,
                                onOpenTranscript: onOpenTranscript)
         case .actionItem(_, let item, let evidence):
-            ActionRow(item: item, evidence: evidence, player: player)
+            ActionRow(item: item, evidence: evidence, player: player,
+                      meetingID: detail.id)
         }
     }
 
@@ -325,6 +391,125 @@ struct MeetingPage: View {
         }
     }
 
+    // MARK: - The numbers
+
+    /// What stats.py has computed for every meeting since it shipped: talk
+    /// time and share, pace, questions asked, the longest unbroken monologue.
+    /// All of it was sitting in meeting.json, decoded by nobody — the "how did
+    /// I do?" half of the product, invisible in the native app.
+    @ViewBuilder
+    private var insights: some View {
+        let per = detail.stats?.per_speaker ?? [:]
+        let people = speakerEntries.filter { (per[$0.key]?.seconds ?? 0) > 0 }
+        if !people.isEmpty {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("HOW IT WENT")
+                    .font(MSFont.kicker)
+                    .kerning(0.55)
+                    .foregroundStyle(MS.ink3)
+
+                HStack(alignment: .top, spacing: 26) {
+                    ForEach(meetingStats, id: \.label) { stat in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stat.value)
+                                .font(.system(size: 17, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(MS.ink)
+                            Text(stat.label)
+                                .font(MSFont.meta)
+                                .foregroundStyle(MS.ink3)
+                            if let sub = stat.sub {
+                                Text(sub)
+                                    .font(MSFont.meta)
+                                    .foregroundStyle(MS.ink4)
+                            }
+                        }
+                        .fixedSize()
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(people, id: \.key) { person in
+                        speakerInsightRow(person.key, name: person.name,
+                                          stats: per[person.key])
+                    }
+                }
+            }
+            .padding(.bottom, 28)
+        }
+    }
+
+    private var meetingStats: [(label: String, value: String, sub: String?)] {
+        let per = detail.stats?.per_speaker ?? [:]
+        let words = detail.stats?.total_words ?? per.values.reduce(0) { $0 + ($1.words ?? 0) }
+        let questions = per.values.reduce(0) { $0 + ($1.questions ?? 0) }
+        let longest = per.values.compactMap(\.longest_turn_seconds).max() ?? 0
+        let minutes = (detail.duration ?? 0) / 60
+        var out: [(label: String, value: String, sub: String?)] = []
+        if let d = detail.duration, d > 0 {
+            out.append((label: "Length", value: clock(d), sub: nil))
+        }
+        if words > 0 {
+            out.append((label: "Words spoken", value: words.formatted(),
+                        sub: minutes > 0.05 ? "\(Int(Double(words) / minutes)) wpm overall" : nil))
+        }
+        out.append((label: "Questions asked", value: "\(questions)", sub: nil))
+        if longest > 0 {
+            out.append((label: "Longest turn", value: clock(longest),
+                        sub: "one unbroken stretch"))
+        }
+        return out
+    }
+
+    private func speakerInsightRow(_ key: String, name: String,
+                                   stats: SpeakerStats?) -> some View {
+        let share = stats?.share ?? 0
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(name)
+                    .font(MSFont.chromeMedium)
+                    .foregroundStyle(MS.speaker(key))
+                Spacer(minLength: 8)
+                Text(speakerLine(stats))
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink2)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(MS.ink4.opacity(0.2))
+                    Capsule().fill(MS.speaker(key).opacity(0.85))
+                        .frame(width: max(geo.size.width * share, 2))
+                }
+            }
+            .frame(height: 4)
+            if let fillers = topFillers(stats) {
+                Text(fillers)
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            }
+        }
+    }
+
+    private func speakerLine(_ stats: SpeakerStats?) -> String {
+        guard let stats else { return "" }
+        var parts = ["\(Int((stats.share ?? 0) * 100))%"]
+        if let seconds = stats.seconds, seconds > 0 { parts.append(clock(seconds)) }
+        if let wpm = stats.wpm, wpm > 0 { parts.append("\(Int(wpm)) wpm") }
+        if let questions = stats.questions, questions > 0 {
+            parts.append("\(questions) question\(questions == 1 ? "" : "s")")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The three commonest fillers, in the engine's own order.
+    private func topFillers(_ stats: SpeakerStats?) -> String? {
+        guard let fillers = stats?.fillers, !fillers.isEmpty else { return nil }
+        let top = fillers.sorted { $0.value > $1.value }.prefix(3)
+            .map { "\($0.key) ×\($0.value)" }
+        return top.isEmpty ? nil : "Fillers: " + top.joined(separator: " · ")
+    }
+
     private var emptyBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.summarizing {
@@ -346,7 +531,7 @@ struct MeetingPage: View {
                         .background(MS.playheadFill, in: .capsule)
                 }
                 .buttonStyle(PressStyle())
-                Text("Takes a minute or two — the whole transcript is read and distilled on this Mac.")
+                Text("Takes a minute or two, the whole transcript is read and distilled on this Mac.")
                     .font(MSFont.meta)
                     .foregroundStyle(MS.ink3)
             } else {
@@ -367,7 +552,7 @@ struct MeetingPage: View {
             Text(model.summaryProgress ?? "Writing the summary…")
                 .font(MSFont.body)
                 .foregroundStyle(MS.ink2)
-                .generationShimmer(true)
+                .msGenerationShimmer(true)
                 .contentTransition(.opacity)
         }
     }
@@ -383,7 +568,7 @@ struct MeetingPage: View {
                 Text(model.processingProgress ?? "Transcribing this meeting…")
                     .font(MSFont.body)
                     .foregroundStyle(MS.ink2)
-                    .generationShimmer(true)
+                    .msGenerationShimmer(true)
                     .contentTransition(.opacity)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -397,6 +582,39 @@ struct MeetingPage: View {
     // MARK: - Footer
 
     private var footerRail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            footerActions
+            // Its own line: with export in the rail the provenance had
+            // nowhere left to sit without truncating one or the other.
+            Text(footerStats)
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .alert("Couldn't summarise",
+               isPresented: Binding(get: { model.summaryError != nil },
+                                    set: { if !$0 { model.summaryError = nil } })) {
+            Button("OK") { model.summaryError = nil }
+        } message: {
+            Text(model.summaryError ?? "")
+        }
+        .alert("Couldn't rename",
+               isPresented: Binding(get: { model.titleError != nil },
+                                    set: { if !$0 { model.titleError = nil } })) {
+            Button("OK") { model.titleError = nil }
+        } message: {
+            Text(model.titleError ?? "")
+        }
+        .alert("Couldn't export",
+               isPresented: Binding(get: { exportError != nil },
+                                    set: { if !$0 { exportError = nil } })) {
+            Button("OK") { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
+    }
+
+    private var footerActions: some View {
         HStack(spacing: 14) {
             Button {
                 onOpenTranscript(nil)
@@ -409,6 +627,15 @@ struct MeetingPage: View {
             .keyboardShortcut("t", modifiers: .command)
 
             CopyTranscriptButton(detail: detail)
+
+            // Every meeting already has a transcript.md on disk and the
+            // engine will build the Markdown or the plain text on request —
+            // there was simply no way to ask for it from here.
+            ExportMenu(detail: detail, error: $exportError, shortcut: false)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink2)
 
             if detail.summary != nil {
                 if model.summarizing {
@@ -431,25 +658,21 @@ struct MeetingPage: View {
                 }
             }
 
-            Text(footerStats)
-                .font(MSFont.meta)
-                .foregroundStyle(MS.ink3)
             Spacer()
-        }
-        .alert("Couldn't summarise",
-               isPresented: Binding(get: { model.summaryError != nil },
-                                    set: { if !$0 { model.summaryError = nil } })) {
-            Button("OK") { model.summaryError = nil }
-        } message: {
-            Text(model.summaryError ?? "")
         }
     }
 
+    /// The provenance line: how much was said, what transcribed it, what
+    /// wrote the summary, and where all of it ran.
     private var footerStats: String {
         var parts: [String] = []
-        let words = (detail.turns ?? []).reduce(0) { $0 + $1.text.split(separator: " ").count }
+        let words = detail.stats?.total_words
+            ?? (detail.turns ?? []).reduce(0) { $0 + $1.text.split(separator: " ").count }
         if words > 0 { parts.append("\(words.formatted()) words") }
-        if let d = detail.duration { parts.append("\(Int(d / 60)) min") }
+        if let backend = detail.processing?.label { parts.append(backend) }
+        if let engine = detail.summary?.engine, !engine.isEmpty {
+            parts.append("summarised by \(engine)")
+        }
         parts.append("local only")
         return parts.joined(separator: " · ")
     }
@@ -590,14 +813,23 @@ struct ActionRow: View {
     let item: ActionItem
     let evidence: Turn?
     @ObservedObject var player: Playback
-    @State private var checked = false
+    let meetingID: String
+    @ObservedObject private var store = ActionItemStore.shared
     @State private var drawn: CGFloat = 0
+
+    /// The tick is read from the store, not from a local flag: it used to be
+    /// @State, which meant it survived until the next tab switch and no
+    /// longer. See ActionItemStore for where it lives now and why.
+    private var checked: Bool {
+        store.isDone(meeting: meetingID, task: item.task)
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Button {
-                checked.toggle()
-                withAnimation(.easeOut(duration: 0.4)) { drawn = checked ? 1 : 0 }
+                let next = !checked
+                store.set(next, meeting: meetingID, task: item.task)
+                withAnimation(.easeOut(duration: 0.4)) { drawn = next ? 1 : 0 }
             } label: {
                 ZStack {
                     Circle()
@@ -641,6 +873,10 @@ struct ActionRow: View {
                 }
             }
         }
+        // A tick that outlives the view has to be DRAWN when the view comes
+        // back, or a to-do ticked yesterday reappears as an empty circle with
+        // a filled background.
+        .onAppear { drawn = checked ? 1 : 0 }
     }
 }
 

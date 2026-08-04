@@ -94,6 +94,12 @@ SUMMARY_UPLOAD_KEYS = (
     # note text. It travels because a caveat about how a summary was built is
     # worth least where the summary is not; see summarize._mark_notes_omitted.
     "notes_omitted",
+    # Which turns the summary prompt could not carry: counts and m:ss offsets,
+    # no transcript text. Same argument as notes_omitted and a stronger one —
+    # a phone reader with no access to the Mac has nothing else to tell them
+    # the summary stops before the meeting does. See
+    # summarize._mark_transcript_omitted for the shape.
+    "transcript_omitted",
 )
 
 # Withheld on purpose, and already known about — so no warning is logged for
@@ -211,8 +217,37 @@ def _save_queue(items):
         log.warning("could not persist sync queue: %s", exc)
 
 
+# WHY THE QUEUE IS NOT JUST A LIST OF IDS.
+#
+# The queue file holds ids and nothing else, so two enqueues of the same
+# meeting are indistinguishable on disk. drain() has to tell them apart: it
+# decides at the END which ids may leave the queue, and "this id is still here"
+# is not the same fact as "this id is still here for the reason I already
+# handled". A meeting whose push SUCCEEDED early in a drain, and which then
+# queued itself again — a rename lands, the live re-push fails, enqueue() —
+# looked from the end of the drain exactly like an id that had been sitting
+# there all along, and was dropped as done. The user's rename never reached the
+# phone and nothing was left to retry it.
+#
+# So each enqueue stamps a counter. drain() removes an id only when its stamp
+# is the one it started with, which is precisely "nothing new happened to this
+# meeting while I was working". In process only, like _queue_lock itself: two
+# MeetingScribe processes sharing ~/.meetingscribe already race this file, and
+# that is a separate problem from this one.
+_marks = {}
+_mark_seq = 0
+
+
+def _mark(meeting_id):
+    """Stamp this enqueue. Caller holds _queue_lock."""
+    global _mark_seq
+    _mark_seq += 1
+    _marks[meeting_id] = _mark_seq
+
+
 def enqueue(meeting_id):
     with _queue_lock:
+        _mark(meeting_id)          # bumped even when already queued — see above
         items = _load_queue()
         if meeting_id not in items:
             items.append(meeting_id)
@@ -229,12 +264,18 @@ def drain(read_meeting):
     across the network pushes — so a concurrent enqueue() from a request
     handler can't block for the duration of the network calls. _draining
     ensures only one drain runs at a time.
+
+    Nothing is removed from the queue that this drain did not personally
+    settle: an id is dropped only when its push succeeded (or the meeting is
+    gone or no longer syncing) AND nobody re-enqueued it in the meantime. See
+    the _marks note above for the case that costs.
     """
     if not _draining.acquire(blocking=False):
         return  # a drain is already in progress
     try:
         with _queue_lock:
             items = _load_queue()
+            started = {i: _marks.get(i) for i in items}
         if not items:
             return
         failed = []
@@ -247,11 +288,13 @@ def drain(read_meeting):
             except Exception as exc:
                 log.info("queued sync for %s still failing: %s", meeting_id, exc)
                 failed.append(meeting_id)
-        # Re-merge failures with anything enqueued while we were pushing.
         with _queue_lock:
-            current = set(_load_queue())
-            still_pending = (current - set(items)) | set(failed)
+            settled = {i for i in items
+                       if i not in failed and _marks.get(i) == started.get(i)}
+            still_pending = (set(_load_queue()) | set(failed)) - settled
             _save_queue(list(still_pending))
+            for gone in set(_marks) - still_pending:
+                del _marks[gone]
     finally:
         _draining.release()
 

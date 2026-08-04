@@ -112,6 +112,44 @@ MEETING_ID_RE = re.compile(r"^\d{8}-\d{6}$")
 FOLDER_ID_RE = re.compile(r"^(?:.* — )?(\d{8}-\d{6})$")
 LIST_FIELDS = ("id", "title", "created", "duration", "status", "mode", "sync")
 
+# How much of a summary a sidebar row is allowed to carry, when the summary has
+# no headline. Matches what the native row rendered from its own fetch.
+BRIEF_CHARS = 140
+
+
+def _row_view(meta):
+    """The row half of a meeting: the one line it shows and the badges it draws.
+
+    THE POINT OF THIS FUNCTION IS THE REQUEST IT DELETES. Every visible sidebar
+    row used to GET /api/meetings/<id> just to learn whether the meeting has a
+    summary — which answers with the WHOLE document: every turn, every word,
+    the stats and the notes. Forty rows meant forty full transcripts on the
+    wire (megabytes for a library of long meetings, to render forty booleans
+    and one sentence) plus forty passes through _persist_notes, which takes
+    JOB_LOCK and can write meeting.json, competing with the very job the row is
+    reporting on.
+
+    None of it needed a second request. _list_meetings has already parsed this
+    meeting.json to build the row, so the answer is free; it just was not being
+    returned. See /api/meetings for the published contract.
+
+    `warnings` is passed through RAW rather than pre-classified into "capture"
+    and "minor". That split is a list of phrases the client matches on, and it
+    belongs in ONE place; a server-side copy would be a second one, drifting
+    quietly the first time either side edited its list.
+    """
+    summary = meta.get("summary") or {}
+    brief = str(summary.get("headline") or "").strip()
+    if not brief:
+        brief = " ".join(str(summary.get("tldr") or "").split())[:BRIEF_CHARS]
+    return {
+        "brief": brief,
+        "has_summary": bool(summary),
+        "has_transcript": bool(meta.get("turns")),
+        "has_notes": bool(meta.get("notes")),
+        "warnings": list(meta.get("warnings") or []),
+    }
+
 
 # The server binds 127.0.0.1, but a web page in the user's browser can still
 # reach it. Two guards keep a random website from driving the app:
@@ -382,9 +420,18 @@ def _list_meetings(query=""):
                 mtime = meta_path.stat().st_mtime
             except OSError:
                 continue
+            # The cache key is BOTH files this row is built from. notes.jsonl
+            # is the durable record of a note and meeting.json is only caught
+            # up later (see _persist_notes), so a row keyed on meeting.json
+            # alone would keep saying "no notes" about a meeting the user has
+            # been typing into. One extra stat() per row.
+            try:
+                stamp = (mtime, (d / notes_store.NOTES_FILE).stat().st_mtime)
+            except OSError:
+                stamp = (mtime, 0.0)
             seen.add(d.name)
             cached = _LIST_CACHE.get(d.name)
-            if cached and cached[0] == mtime:
+            if cached and cached[0] == stamp:
                 item, haystack = cached[1], cached[2]
             else:
                 try:
@@ -393,10 +440,13 @@ def _list_meetings(query=""):
                     continue
                 item = {k: meta.get(k) for k in LIST_FIELDS}
                 item["speakers"] = len(meta.get("speakers") or {})
+                # The brief and the badges, so no client has to ask again.
+                notes_store.fold(d, meta)
+                item.update(_row_view(meta))
                 haystack = " ".join(
                     [str(meta.get("title") or "")] + list((meta.get("speakers") or {}).values())
                 ).lower()
-                _LIST_CACHE[d.name] = (mtime, item, haystack)
+                _LIST_CACHE[d.name] = (stamp, item, haystack)
             if query and query not in haystack:
                 continue
             items.append(item)
@@ -425,14 +475,32 @@ def _start_processing(meeting_id, claimed=False):
             _push_synced(meeting_id)
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
-            JOBS[meeting_id] = {"state": "error", "message": err}
-            try:
-                meta = _read_meeting(meeting_id)
+            # ORDER MATTERS HERE, and it was wrong.
+            #
+            # This used to publish the error state to JOBS first and only then
+            # read meeting.json, mutate it and write the whole snapshot back —
+            # unlocked, and with the claim already dropped. Both halves of that
+            # lose an edit. Dropping the claim first re-opens the meeting to
+            # every route that stands aside for a running job (a note landing
+            # from the panel, a rename, the reprocess the user presses the
+            # moment they see the failure), and writing a whole snapshot read
+            # outside JOB_LOCK overwrites whatever any of them just saved. A
+            # failed run has no business deleting a note the user typed.
+            #
+            # So: record the failure on the document FIRST, through the same
+            # read-modify-write-under-JOB_LOCK every other writer of this file
+            # uses (the invariant _persist_notes documents), touching only the
+            # two keys this path owns — and release the claim afterwards, so
+            # the meeting is never unowned and half-written at the same time.
+            def mark_failed(meta):
                 meta["status"] = "error"
                 meta["error"] = err
-                _write_meeting(meta)
-            except Exception:
+
+            try:
+                _edit_meeting_json_safe(meeting_id, mark_failed)
+            except Exception:  # the document is beyond saving; JOBS still says so
                 pass
+            JOBS[meeting_id] = {"state": "error", "message": err}
 
     threading.Thread(target=run, daemon=True, name=f"process-{meeting_id}").start()
 
@@ -1212,15 +1280,49 @@ def record_start():
     return _do_record_start(data)
 
 
+def _refused(reason, sentence, status, **extra):
+    """The one shape every refusal to start a recording comes back in.
+
+        {"error": "<a sentence to show the user>",
+         "reason": "<a stable code to branch on>", …}
+
+    WHY BOTH. `error` is the whole point: pressing Record and getting a bare
+    409 tells the user nothing, and "Already recording" was as close as some of
+    these came to a sentence. Every refusal below now carries something a
+    person can read and act on, written here rather than assembled by whoever
+    is rendering it, so the native app, a browser and curl all say the same
+    thing about the same failure.
+
+    `reason` exists because a front end sometimes has to DO something specific
+    (offer Stop for already_recording, open the disk pane for disk_full), and
+    matching on English prose to decide is how a copy edit breaks a button. It
+    is the stable half; `error` is the human half and may be reworded freely.
+
+    The codes, all of them:
+
+      disk_full          no room to record. Carries "disk" (see _disk_state).
+      already_recording  a recording is running right now.
+      too_soon           two starts inside the same second.
+      folder_failed      the meeting folder could not be created.
+      audio_failed       the recorder itself refused. Carries the engine's own
+                         sentence, which names the device or permission at
+                         fault.
+
+    A caller that does not know a code shows `error` and is never worse off
+    than it is today.
+    """
+    return jsonify({"error": sentence, "reason": reason, **extra}), status
+
+
 def _do_record_start(data):
-    """Start a recording. Shared by the record button and nudge-accept."""
+    """Start a recording, or refuse in the shape _refused() documents."""
     # Before anything is created: a meeting that cannot be written is worse
     # than one that never started, because the user believes it is running.
     # Measured fresh (force=True) — a start is rare, and a cached number from
     # 15 seconds ago is not what to bet a meeting on.
     disk = _disk_state(force=True)
     if disk["state"] == "full":
-        return jsonify({"error": disk["message"], "disk": disk}), 507
+        return _refused("disk_full", disk["message"], 507, disk=disk)
 
     expected = data.get("expected_speakers")
     try:
@@ -1251,12 +1353,30 @@ def _do_record_start(data):
     global LIVE
     with RECORD_LOCK:
         if REC.is_recording:
-            return jsonify({"error": "Already recording"}), 409
+            return _refused(
+                "already_recording",
+                "A recording is already running. Stop it before starting "
+                "another one.", 409)
         meeting_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         if _dir_for(meeting_id).exists():  # two starts within the same second
-            return jsonify({"error": "Just started another recording — wait a second"}), 409
+            return _refused(
+                "too_soon",
+                "Another recording just started this second. Wait a moment "
+                "and press Record again.", 409)
         meeting_dir = RECORDINGS_DIR / _folder_name_for({"id": meeting_id, "title": title})
-        meeting_dir.mkdir(parents=True)
+        try:
+            meeting_dir.mkdir(parents=True)
+        except OSError as exc:
+            # Was an uncaught 500 with an HTML body: the one refusal that
+            # reached the user as no sentence at all, on exactly the machine
+            # (read-only volume, missing folder, permissions) where knowing
+            # WHY matters most.
+            app.logger.warning("could not create %s: %s", meeting_dir, exc)
+            return _refused(
+                "folder_failed",
+                f"The folder for this recording could not be created in "
+                f"{RECORDINGS_DIR}: {exc.strerror or exc}. Check that the "
+                "location exists and can be written to.", 500)
 
         # Live captions: bias recognition toward the user's vocabulary,
         # attendee names, and the built-in tech-term list; feed the recorder's
@@ -1288,7 +1408,16 @@ def _do_record_start(data):
             info = REC.start(meeting_dir, meeting_id, auto_route=auto_route, taps=taps)
         except RuntimeError as exc:
             shutil.rmtree(meeting_dir, ignore_errors=True)
-            return jsonify({"error": str(exc)}), 500
+            # The recorder's own sentence names the device or the permission
+            # that failed, so it is passed through rather than replaced — but
+            # never passed through EMPTY, which is what a bare RuntimeError()
+            # would leave the user staring at.
+            detail = str(exc).strip()
+            return _refused(
+                "audio_failed",
+                detail or "The audio devices could not be opened, so the "
+                          "recording did not start. Check the microphone in "
+                          "System Settings and try again.", 500)
     if expected is None and event and event.get("attendees"):
         # Calendar attendees excludes you. Online mode wants "other speakers";
         # in-person wants the total around the shared mic, so add yourself.
@@ -1844,12 +1973,23 @@ def nudges():
 
 @app.post("/api/nudges/<nudge_id>/accept")
 def nudge_accept(nudge_id):
-    """'Record now' on a nudge notification: start recording that meeting."""
+    """'Record now' on a nudge notification: start recording that meeting.
+
+    A start, so it refuses in _refused()'s shape too — the user pressed Record
+    and is owed the same sentence whichever button they pressed it on.
+    """
     if NUDGES is None:
-        return jsonify({"error": "nudges unavailable"}), 404
+        return _refused(
+            "nudges_unavailable",
+            "Meeting reminders are not available on this Mac, so there is "
+            "nothing to record from here. Press Record in the app instead.",
+            404)
     nudge_info = NUDGES.take(nudge_id)
     if nudge_info is None:
-        return jsonify({"error": "unknown or expired nudge"}), 404
+        return _refused(
+            "nudge_expired",
+            "That reminder has already been answered or has expired. Press "
+            "Record in the app to start this meeting.", 404)
     if REC.is_recording:
         return jsonify({"ok": True, "already_recording": True})
     return _do_record_start({
@@ -1900,6 +2040,39 @@ def meetings():
     names BEFORE paging, so search reaches meetings no page has been fetched
     for. A client must therefore send the query here and not filter the page
     it happens to be holding.
+
+    EACH ITEM, and this is the part that is new:
+
+        {"id": "20260204-141500", "title": "…", "created": "…",
+         "duration": 3612.0, "status": "done", "mode": "online",
+         "sync": {…}|null, "speakers": 3,
+         "brief": "Friday launch locked; QA owner still open",
+         "has_summary": true, "has_transcript": true, "has_notes": false,
+         "warnings": []}
+
+    The last five are what a sidebar row draws, and they are here so that
+    drawing a row costs NO further request. A client must not fetch
+    /api/meetings/<id> to render a list row: that returns the entire meeting,
+    transcript included, and doing it per visible row was megabytes of turns on
+    the wire to decide whether to show one sentence and three badges.
+
+      brief           the row's one line: the summary's headline, or the first
+                      140 characters of its tldr, or "" when the meeting has no
+                      summary. Already collapsed to single spaces.
+      has_summary     a summary exists.
+      has_transcript  at least one turn exists.
+      has_notes       the user typed at least one note, counting notes.jsonl
+                      entries meeting.json has not folded in yet.
+      warnings        the engine's warning sentences, verbatim and unclassified
+                      — the client splits them into capture warnings and minor
+                      ones, because that phrase list belongs in one place.
+
+    Every field is always present. `brief` is "" rather than absent when there
+    is nothing to say, so a client never has to distinguish the two.
+
+    /api/meetings/<id>/brief returns the same five for ONE meeting, for the
+    moment a row finishes processing and needs its badges refreshed without
+    refetching the page.
     """
     try:
         limit = max(1, min(MEETINGS_PAGE_MAX,
@@ -1918,6 +2091,32 @@ def meetings():
         "has_more": seen < len(all_items),
         "next_offset": seen if seen < len(all_items) else None,
     })
+
+
+@app.get("/api/meetings/<meeting_id>/brief")
+def meeting_brief(meeting_id):
+    """One meeting's row view: the brief and the badges, nothing else.
+
+        {"id": "20260204-141500", "brief": "…", "has_summary": true,
+         "has_transcript": true, "has_notes": false, "warnings": []}
+
+    Field for field the same as an /api/meetings item (see that docstring),
+    minus the columns the row already has. For refreshing ONE row — the tick a
+    meeting finishes processing, when its brief and badges were last read while
+    the transcript did not exist yet.
+
+    Deliberately NOT /api/meetings/<id>: that returns the whole document, and
+    it also runs _persist_notes, which takes JOB_LOCK and may rewrite
+    meeting.json. Calling that once per visible row put a lock-taking write in
+    the path of drawing a list, competing with the job the row is reporting on.
+    Nothing here writes, and nothing here reads a turn.
+    """
+    folder = _meeting_dir(meeting_id)      # 400 on a bad id
+    meta = _raw_meeting(meeting_id)
+    if meta is None:
+        abort(404, "meeting not found")
+    notes_store.fold(folder, meta)         # read only, exactly as in the list
+    return jsonify(dict(_row_view(meta), id=meeting_id))
 
 
 @app.get("/api/meetings/<meeting_id>")

@@ -12,13 +12,42 @@ final class Settings: ObservableObject {
         didSet { write("summary_engine", summaryEngine) }
     }
 
-    /// Which speech recognizer writes the transcript. "auto" resolves to the
+    /// Which speech recogniser writes the transcript. "auto" resolves to the
     /// most accurate engine this Mac can run (Parakeet, then Apple Speech,
-    /// then Whisper) — see pipeline.pick_backend. Applies from the next
-    /// recording or Re-analyse; the engine reads config fresh per run.
+    /// then Whisper): see pipeline.pick_backend.
+    ///
+    /// APPLIES FROM THE NEXT RECORDING, or from Reprocess audio on a meeting
+    /// that already exists. NOT from Re-analyse, which only rewrites the
+    /// summary from the transcript already on disk and never touches the
+    /// recogniser. Settings said "the next recording or Re-analyse" for
+    /// months, which is why the copy below now names Reprocess.
     @Published var whisperBackend: String {
         didSet { write("whisper_backend", whisperBackend) }
     }
+
+    /// The language the recognisers are told to expect. "auto" is stored as
+    /// JSON null, which is config.py's default.
+    ///
+    /// This existed in config.json from the beginning, the old web UI asked
+    /// for it on every recording, and the native app never surfaced it at
+    /// all — so every fresh install has transcribed every meeting as English,
+    /// silently, whatever was actually spoken.
+    @Published var language: String {
+        didSet { write("language", language == "auto" ? NSNull() : language) }
+    }
+
+    /// The languages the pipeline is actually wired for. Deliberately the
+    /// same list the web recorder offered rather than everything Whisper can
+    /// attempt, because these are the ones the engine routes correctly:
+    /// pipeline.pick_backend sends anything outside Parakeet's coverage
+    /// (hi/ja/ko/zh/ar and the rest) to Apple Speech or Whisper instead.
+    static let languages: [(code: String, name: String)] = [
+        ("auto", "Auto-detect"), ("en", "English"), ("hi", "Hindi"),
+        ("es", "Spanish"), ("fr", "French"), ("de", "German"),
+        ("it", "Italian"), ("pt", "Portuguese"), ("ja", "Japanese"),
+        ("ko", "Korean"), ("zh", "Chinese"), ("ar", "Arabic"),
+        ("ru", "Russian"),
+    ]
 
     /// Whether naming a speaker also teaches this Mac their voice. Same
     /// config.json, read fresh by the engine on every rename, so the switch
@@ -53,6 +82,11 @@ final class Settings: ObservableObject {
         // Matches config.py's default: on, unless this Mac says otherwise.
         voiceProfiles = (cfg["voice_profiles"] as? Bool) ?? true
         whisperBackend = (cfg["whisper_backend"] as? String) ?? "auto"
+        // null, absent, or a code this build doesn't offer all mean the same
+        // thing to the user: nothing is being forced.
+        let stored = (cfg["language"] as? String)?
+            .trimmingCharacters(in: .whitespaces).lowercased() ?? ""
+        language = Self.languages.contains { $0.code == stored } ? stored : "auto"
         if let existing = cfg["summary_engine"] as? String {
             summaryEngine = existing
         } else {
@@ -118,7 +152,11 @@ struct SettingsView: View {
             .padding(.horizontal, 34)
             .padding(.bottom, 30)
         }
-        .frame(width: 520, height: 680)
+        // Was a hard 520×680. Every string in this window wraps, and at a
+        // larger text size a fixed height clips the last section off the
+        // bottom with no way to reach it. Let the window grow instead.
+        .frame(minWidth: 520, idealWidth: 520, maxWidth: 640,
+               minHeight: 420, idealHeight: 680, maxHeight: 900)
         .background(MS.content)
         .task {
             if let probe = try? await API.get("api/cli-engines", as: CLIEngines.self) {
@@ -137,7 +175,7 @@ struct SettingsView: View {
 
     private func cliDetail(_ cli: CLIEngine) -> String {
         if !cli.installed {
-            return "Optional — install the \(cli.label) CLI and sign in to enable this."
+            return "Not on this Mac. Install the \(cli.label) CLI and sign in, then come back."
         }
         switch cli.id {
         case "claude":
@@ -145,10 +183,27 @@ struct SettingsView: View {
         case "gemini":
             return "Uses your Gemini CLI account. Note: Google's free tier may use prompts to improve their models."
         case "copilot":
-            return "Uses your GitHub Copilot plan — each summary or answer spends premium requests."
+            return "Uses your GitHub Copilot plan, and each summary or answer spends premium requests."
         default:
             return "Uses your \(cli.label) account and its default model."
         }
+    }
+
+    /// The engine the config names is not on this Mac.
+    ///
+    /// The old picker let it be chosen anyway and said nothing afterwards, so
+    /// the first sign of trouble was a summary that quietly came out of a
+    /// different model. The engine does fall back on its own; the point of
+    /// this line is that the user finds out here rather than there.
+    private var chosenEngineMissing: String? {
+        let id = settings.summaryEngine
+        if id == "apple" {
+            guard appleReady == false else { return nil }
+            return appleMessage ?? "Apple Intelligence isn't available on this Mac."
+        }
+        guard let cli = clis.first(where: { $0.id == id }) else { return nil }
+        guard !cli.installed else { return nil }
+        return "\(cli.label) isn't installed on this Mac, so summaries and Ask use Apple Intelligence until it is."
     }
 
     private var transcription: some View {
@@ -157,8 +212,9 @@ struct SettingsView: View {
                 .font(MSFont.kicker)
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
+                .accessibilityAddTraits(.isHeader)
 
-            Text("Which recognizer writes the words")
+            Text("Which recogniser writes the words")
                 .font(.system(size: 20, weight: .semibold, design: .serif))
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
@@ -167,7 +223,7 @@ struct SettingsView: View {
                 EngineOption(
                     id: "auto",
                     title: "Best available",
-                    detail: "Picks the most accurate engine this Mac can run — Parakeet for meeting audio, falling back to Apple Speech, then Whisper. Fully on-device either way.",
+                    detail: "Picks the most accurate engine this Mac can run: Parakeet for meeting audio, falling back to Apple Speech, then Whisper. Fully on-device either way.",
                     available: true,
                     recommended: true,
                     selected: settings.whisperBackend == "auto") {
@@ -184,7 +240,7 @@ struct SettingsView: View {
                 EngineOption(
                     id: "apple",
                     title: "Apple Speech",
-                    detail: "The macOS recognizer on the Neural Engine — fastest and coolest, but tuned for clean dictation; it mishears more on meeting audio.",
+                    detail: "The macOS recogniser on the Neural Engine: fastest and coolest, but tuned for clean dictation, so it mishears more on meeting audio.",
                     available: true,
                     selected: settings.whisperBackend == "apple") {
                         settings.whisperBackend = "apple"
@@ -192,7 +248,7 @@ struct SettingsView: View {
                 EngineOption(
                     id: "mlx",
                     title: "Whisper",
-                    detail: "OpenAI's large-v3-turbo on the Apple GPU. Nearly 100 languages, and the one engine that can be biased toward your vocabulary and attendee names.",
+                    detail: "OpenAI's large-v3-turbo on the Apple GPU. Nearly 100 languages, and the one engine that can be biased towards your vocabulary and attendee names.",
                     available: true,
                     selected: settings.whisperBackend == "mlx") {
                         settings.whisperBackend = "mlx"
@@ -200,11 +256,32 @@ struct SettingsView: View {
             }
             .padding(.top, 18)
 
-            Text("Everything here runs on this Mac — audio never leaves it. Applies from the next recording or Re-analyse.")
+            // The setting that has been in config.json since the first
+            // release and in no user interface at all. Without it every
+            // recogniser is told to expect English, so a meeting held in Hindi
+            // came back as English-shaped nonsense and nothing in the app
+            // explained why.
+            SettingPickerRow(
+                title: "Language",
+                detail: languageDetail,
+                options: Settings.languages,
+                selection: $settings.language)
+                .padding(.top, 10)
+
+            Text("Everything here runs on this Mac, and the audio never leaves it. A change applies to your next recording. To apply it to a meeting you already have, open that meeting and use Reprocess audio (⌥⌘R), which transcribes the saved audio again with today's settings. Re-analyse only rewrites the summary, so it will not change the words or the language.")
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
         }
+    }
+
+    /// Auto-detect is only genuinely automatic on one of the four engines, and
+    /// saying otherwise is how a Hindi meeting comes back in English.
+    private var languageDetail: String {
+        settings.language == "auto"
+            ? "Only Whisper truly detects the language on its own. Parakeet and Apple Speech read an unset language as English, so pick yours here if your meetings are not in English."
+            : "Locks speech recognition to this language, which is more accurate than letting the engine guess. Live captions need a chosen language too."
     }
 
     private var intelligence: some View {
@@ -214,6 +291,7 @@ struct SettingsView: View {
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
                 .padding(.top, 26)
+                .accessibilityAddTraits(.isHeader)
 
             Text("Who writes your summaries and answers")
                 .font(.system(size: 20, weight: .semibold, design: .serif))
@@ -226,7 +304,7 @@ struct SettingsView: View {
                     title: "Apple Intelligence",
                     detail: appleReady == false
                         ? (appleMessage ?? "Not available on this Mac")
-                        : "Built in, on-device and fast — usually under a minute, with nothing to install. Paraphrases more loosely than a frontier model on long meetings.",
+                        : "Built in, on-device and fast, usually under a minute, with nothing to install. Paraphrases more loosely than a frontier model on long meetings.",
                     available: appleReady ?? true,
                     recommended: !claudeFound,
                     selected: settings.summaryEngine == "apple") {
@@ -246,10 +324,60 @@ struct SettingsView: View {
             }
             .padding(.top, 18)
 
-            Text("Applies to summaries and to Ask. Cloud engines receive the transcript text — never audio, which stays on this Mac. If the engine you pick is ever unavailable, summaries fall back to Apple Intelligence automatically. Re-analyse any meeting to rewrite it with the engine you pick.")
+            if let missing = chosenEngineMissing {
+                NoticeBand(icon: "exclamationmark.triangle", text: missing)
+                    .padding(.top, 12)
+            }
+
+            Text("Applies to summaries and to Ask. Cloud engines receive the transcript text, never audio, which stays on this Mac. If the engine you pick is ever unavailable, summaries fall back to Apple Intelligence automatically. Re-analyse any meeting to rewrite its summary with the engine you pick.")
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
+        }
+    }
+}
+
+/// SettingToggleRow's anatomy with a menu where the switch was: same card,
+/// same title-over-detail, for a setting that is one of a list.
+private struct SettingPickerRow: View {
+    let title: String
+    let detail: String
+    let options: [(code: String, name: String)]
+    @Binding var selection: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 11) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(MS.ink)
+                Text(detail)
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            // The label is hidden, not absent: labelsHidden() keeps it for
+            // VoiceOver, which is the whole difference between "Language,
+            // pop-up button" and an unnamed control.
+            Picker(title, selection: $selection) {
+                ForEach(options, id: \.code) { option in
+                    Text(option.name).tag(option.code)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .tint(MS.interactive)
+            .fixedSize()
+        }
+        .padding(13)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(MS.raised)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(MS.hairline, lineWidth: 1))
         }
     }
 }
@@ -272,6 +400,7 @@ private struct VoicesSection: View {
                 .font(MSFont.kicker)
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
+                .accessibilityAddTraits(.isHeader)
 
             Text("Who this Mac recognises across meetings")
                 .font(.system(size: 20, weight: .semibold, design: .serif))
@@ -360,7 +489,7 @@ private struct VoicesSection: View {
     }
 
     private func forget(_ profile: VoiceProfile) {
-        withAnimation(Motion.exit) { profiles.removeAll { $0.id == profile.id } }
+        msWithAnimation(Motion.exit) { profiles.removeAll { $0.id == profile.id } }
         Task {
             try? await API.deleteVoiceProfile(profile.id)
             await reload()
@@ -369,7 +498,7 @@ private struct VoicesSection: View {
 
     private func forgetAll() {
         let doomed = profiles
-        withAnimation(Motion.exit) { profiles = [] }
+        msWithAnimation(Motion.exit) { profiles = [] }
         Task {
             for profile in doomed {
                 try? await API.deleteVoiceProfile(profile.id)
@@ -398,10 +527,14 @@ private struct SettingToggleRow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
-            Toggle("", isOn: $on)
+            // The title, not "": labelsHidden() hides it visually and keeps
+            // it for VoiceOver, which otherwise reads this as a bare switch
+            // with no idea what it switches.
+            Toggle(title, isOn: $on)
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(MS.interactive)
+                .accessibilityHint(detail)
         }
         .padding(13)
         .background {
@@ -474,6 +607,7 @@ private struct VoiceProfileRow: View {
             Image(systemName: "waveform.circle")
                 .font(.system(size: 15))
                 .foregroundStyle(MS.ink3)
+                .msDecorative()
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.name)
                     .font(.system(size: 13.5, weight: .medium))
@@ -496,6 +630,13 @@ private struct VoiceProfileRow: View {
             }
             .buttonStyle(PressStyle())
             .help(forgetHelp)
+            // Six rows all saying "Forget" is six identical VoiceOver stops,
+            // and the button that deletes the wrong person's fingerprint
+            // sounds exactly like the right one.
+            .accessibilityLabel(shared
+                ? "Forget \(profile.name), voice \(position) of \(sharingName)"
+                : "Forget \(profile.name)'s voice")
+            .accessibilityHint(forgetHelp)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
@@ -566,5 +707,16 @@ private struct EngineOption: View {
         }
         .buttonStyle(PressStyle())
         .opacity(available ? 1 : 0.55)
+        // A greyed-out card that still takes the click is worse than no card
+        // at all: the app accepted an engine it did not have, wrote it to
+        // config.json, and the user found out at the end of the next meeting.
+        // The badge said "unavailable" the whole time.
+        .disabled(!available)
+        .modifier(OptionalHelp(text: available
+            ? nil : "\(title) isn't available on this Mac yet."))
+        .accessibilityLabel(title)
+        .accessibilityValue(available ? "" : "Unavailable")
+        .accessibilityHint(detail)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 }

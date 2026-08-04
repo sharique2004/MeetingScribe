@@ -14,6 +14,10 @@ struct MeetingScribeApp: App {
             ContentView()
         }
         .defaultSize(width: 1180, height: 780)
+        // The Mac half of the app. Before this the whole product had three
+        // keyboard shortcuts and no menu of its own: see Commands.swift for
+        // the contract other views adopt to hang their own actions off it.
+        .commands { MeetingScribeCommands() }
 
         SwiftUI.Settings {
             SettingsView()
@@ -87,7 +91,7 @@ final class Library: ObservableObject {
             meetings = try await API.meetings(query: query)
             loadError = nil
         } catch {
-            loadError = "The engine isn't answering. Nothing is lost — it just isn't listening yet."
+            loadError = "The engine isn't answering. Nothing is lost, it just isn't listening yet."
         }
         if meetings.contains(where: { meetingIsWorking($0.status) }) {
             await refreshProgress()
@@ -177,20 +181,28 @@ final class Library: ObservableObject {
         }
     }
 
+    /// The row view for one meeting.
+    ///
+    /// The list already carries it, so the common case costs nothing: this
+    /// used to fetch the whole document per visible row (43 KB against 191 B
+    /// on a 400-turn meeting, every turn crossing the socket), and
+    /// /api/meetings/<id> also takes JOB_LOCK to persist notes, which put a
+    /// lock-taking write in front of the very job the row was reporting on.
+    /// Only a row that just finished, whose list entry was read while the
+    /// transcript did not exist yet, asks the engine again, and then for the
+    /// cheap /brief rather than the document.
     func fetchBrief(for id: String) {
         guard meta[id] == nil, !metaFetches.contains(id) else { return }
+        if let row = meetings.first(where: { $0.id == id }), row.brief != nil {
+            let m = row.rowMeta
+            meta[id] = m
+            if let b = m.brief { briefs[id] = b }
+            return
+        }
         metaFetches.insert(id)
         Task {
-            guard let detail = try? await API.meeting(id) else { return }
-            var m = RowMeta()
-            m.hasTranscript = detail.turns?.isEmpty == false
-            m.hasSummary = detail.summary != nil
-            m.hasNotes = detail.notes?.isEmpty == false
-            m.hasCaptureWarning = !detail.captureWarnings.isEmpty
-            if let s = detail.summary {
-                m.brief = s.headline ?? s.tldr.map { String($0.prefix(140)) }
-            }
-            withAnimation(.easeOut(duration: 0.22)) {
+            guard let m = try? await API.brief(id) else { return }
+            msWithAnimation(.easeOut(duration: 0.22)) {
                 meta[id] = m
                 if let b = m.brief { briefs[id] = b }
             }
@@ -211,10 +223,24 @@ struct ContentView: View {
     @State private var showOnboarding =
         !UserDefaults.standard.bool(forKey: "ms.onboarded.v1")
         || CommandLine.arguments.contains("--onboarding")
+    /// The fields of the open meeting that MeetingDetail doesn't decode: the
+    /// speaker count in force and whether a tidy can still be undone. The
+    /// menu bar reads its enablement from these.
+    @State private var corrections: API.Corrections?
+    @State private var showSpeakerCount = false
+    @State private var confirmTidy = false
+    @State private var confirmUndoTidy = false
+    @State private var actionError: String?
+    @State private var busy = false
+    /// Bumped when something rewrites a meeting on disk. It is part of the
+    /// detail column's identity, so the open document reloads itself: the
+    /// same thing clicking away and back would do, without the click.
+    @State private var reloadTokens: [String: Int] = [:]
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(library: library, center: center, route: $route)
+            SidebarView(library: library, center: center, route: $route, query: query)
                 .navigationSplitViewColumnWidth(min: 244, ideal: 272, max: 320)
         } detail: {
             detailColumn
@@ -228,7 +254,7 @@ struct ContentView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
                 }
-                .animation(Motion.enter, value: engine.state)
+                .msAnimation(Motion.enter, value: engine.state)
         }
         .tint(MS.interactive)
         .environmentObject(library)
@@ -239,11 +265,14 @@ struct ContentView: View {
                     Image(systemName: "waveform")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(MS.playhead)
+                        .msDecorative()
                     Text("MeetingScribe")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(MS.ink)
                 }
                 .fixedSize()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("MeetingScribe")
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
@@ -254,13 +283,57 @@ struct ContentView: View {
             OnboardingFlow(presented: $showOnboarding)
                 .environmentObject(center)
         }
+        .sheet(isPresented: $showSpeakerCount) {
+            if let id = currentMeetingID {
+                SpeakerCountSheet(meetingID: id,
+                                  corrections: corrections,
+                                  apply: { await recluster(id, speakers: $0) },
+                                  presented: $showSpeakerCount)
+            }
+        }
+        .alert("Tidy this transcript?", isPresented: $confirmTidy) {
+            Button("Tidy") { tidy() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The on-device model removes echoed duplicate lines, trims stray words and merges speaker labels that are obviously the same person. Nothing leaves this Mac, no words are invented, and the original transcript is backed up so you can undo it.")
+        }
+        .alert("Undo the tidy?", isPresented: $confirmUndoTidy) {
+            Button("Undo Tidy", role: .destructive) { undoTidy() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The transcript goes back to exactly what the recogniser wrote. Notes you have taken since are kept.")
+        }
+        .alert("That didn't work",
+               isPresented: Binding(get: { actionError != nil },
+                                    set: { if !$0 { actionError = nil } })) {
+            Button("OK") { actionError = nil }
+        } message: {
+            Text(actionError ?? "")
+        }
         .searchable(text: $query, placement: .sidebar, prompt: "Search meetings")
+        .searchFocused($searchFocused)
         .onChange(of: query) { library.search(query) }
         .onChange(of: engine.state) {
             // The engine just came up (or came back): fetch for real.
             if engine.state == .running {
-                Task { await library.refresh() }
+                Task { await library.refresh(query: query) }
             }
+        }
+        // One value, published on every change, is the whole of what the menu
+        // bar is allowed to offer. See Commands.swift.
+        .focusedSceneValue(\.msContext, menuContext)
+        .onChange(of: menuContext, initial: true) {
+            CommandBus.shared.publish(menuContext)
+        }
+        .onMSCommands(perform: run)
+        .onMSMeetingChange { id in
+            reloadTokens[id, default: 0] += 1
+            Task { await refreshAfterChange(id) }
+        }
+        .task(id: currentMeetingID) {
+            corrections = nil
+            guard let id = currentMeetingID else { return }
+            corrections = await API.corrections(id)
         }
         .task {
             hud.attach(center: center)
@@ -298,7 +371,7 @@ struct ContentView: View {
             switch route {
             case .meeting(let id):
                 MeetingScreen(meetingID: id, mode: $mode)
-                    .id(id)
+                    .id("\(id)#\(reloadTokens[id] ?? 0)")
             default:
                 TodayPage { id in
                     route = .meeting(id)
@@ -306,6 +379,174 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    // MARK: - What the menu bar is allowed to offer
+
+    private var currentMeetingID: String? {
+        if case .meeting(let id) = route { return id }
+        return nil
+    }
+
+    private var menuContext: MSContext {
+        var ctx = MSContext()
+        ctx.meetingID = currentMeetingID
+        ctx.recording = center.phase == .recording
+        ctx.engineUp = center.phase != .offline
+        ctx.mode = mode
+        // The library's own badges answer this before the second read lands,
+        // so the menu is right on the first frame rather than one fetch late.
+        let known = currentMeetingID.flatMap { library.meta[$0] }
+        ctx.hasTranscript = corrections?.hasTranscript ?? (known?.hasTranscript ?? false)
+        ctx.hasSummary = known?.hasSummary ?? false
+        ctx.canUndoTidy = corrections?.tidied != nil
+        ctx.speakerCount = SpeakerCount.displayed(corrections)
+        ctx.speakerCountLabel = SpeakerCount.label(corrections)
+        ctx.canReorderSelection = library.meetings.count > 1
+        return ctx
+    }
+
+    // MARK: - Running a command
+
+    private func run(_ command: MSCommand) {
+        switch command {
+        case .toggleRecording:
+            center.phase == .recording ? center.stopRecording() : center.startRecording()
+        case .showToday:
+            route = .today
+        case .showNotes:
+            msWithAnimation(Motion.enter) { mode = .document }
+        case .showTranscript:
+            msWithAnimation(Motion.enter) { mode = .transcript }
+        case .nextMeeting:
+            step(by: 1)
+        case .previousMeeting:
+            step(by: -1)
+        case .focusSearch:
+            searchFocused = true
+        case .copyTranscript:
+            copyTranscript()
+        case .revealInFinder:
+            guard let id = currentMeetingID else { return }
+            Task { await API.post("api/meetings/\(id)/reveal") }
+        case .deleteMeeting:
+            // Handled by SidebarView, which owns the confirmation and the
+            // "what do we select afterwards" question. The first adopter of
+            // the contract in Commands.swift, and the reason it exists.
+            break
+        case .reanalyse:
+            guard let id = currentMeetingID else { return }
+            Task {
+                let (ok, err) = await API.summarize(id)
+                if ok { bumpReload(id) } else { actionError = err }
+            }
+        case .reprocessAudio:
+            guard let id = currentMeetingID else { return }
+            Task {
+                let (ok, err) = await API.reprocess(id)
+                if ok { bumpReload(id); await refreshAfterChange(id) } else { actionError = err }
+            }
+        case .speakerCount:
+            guard currentMeetingID != nil else { return }
+            showSpeakerCount = true
+        case .setSpeakerCount(let n):
+            guard let id = currentMeetingID else { return }
+            Task {
+                let (ok, err) = await recluster(id, speakers: n)
+                if !ok { actionError = err }
+            }
+        case .tidyTranscript:
+            guard currentMeetingID != nil else { return }
+            confirmTidy = true
+        case .undoTidy:
+            guard currentMeetingID != nil else { return }
+            confirmUndoTidy = true
+        }
+    }
+
+    private func step(by delta: Int) {
+        let ids = library.meetings.map(\.id)
+        guard !ids.isEmpty else { return }
+        guard let id = currentMeetingID, let i = ids.firstIndex(of: id) else {
+            route = .meeting(ids[delta > 0 ? 0 : ids.count - 1])
+            return
+        }
+        let next = i + delta
+        guard ids.indices.contains(next) else { return }
+        route = .meeting(ids[next])
+    }
+
+    private func copyTranscript() {
+        guard let id = currentMeetingID else { return }
+        Task {
+            guard let detail = try? await API.meeting(id) else {
+                actionError = "The engine didn't answer."
+                return
+            }
+            let text = transcriptText(detail)
+            guard !text.isEmpty else {
+                actionError = "This meeting has no transcript yet."
+                return
+            }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
+        }
+    }
+
+    // MARK: - Mutations, and the reload that follows one
+
+    /// Re-cluster, and tell the rest of the app the document moved under it.
+    /// Returns the engine's own refusal when it refuses, so the sheet can
+    /// print it verbatim.
+    private func recluster(_ id: String, speakers: Int?) async -> (Bool, String?) {
+        guard !busy else { return (false, "Something else is already running on this meeting.") }
+        busy = true
+        let (ok, err) = await API.recluster(id, speakers: speakers)
+        busy = false
+        if ok {
+            bumpReload(id)
+            await refreshAfterChange(id)
+        }
+        return (ok, err)
+    }
+
+    private func tidy() {
+        guard let id = currentMeetingID else { return }
+        Task {
+            let (ok, err) = await API.tidy(id)
+            guard ok else { actionError = err; return }
+            // Tidy runs as an ordinary processing job, so the reloaded page
+            // picks up the engine's own progress line and finishes on its own.
+            bumpReload(id)
+            await refreshAfterChange(id)
+        }
+    }
+
+    private func undoTidy() {
+        guard let id = currentMeetingID else { return }
+        Task {
+            let (ok, err) = await API.undoTidy(id)
+            guard ok else { actionError = err; return }
+            bumpReload(id)
+            await refreshAfterChange(id)
+        }
+    }
+
+    private func bumpReload(_ id: String) {
+        reloadTokens[id, default: 0] += 1
+    }
+
+    /// A meeting was rewritten. `corrections` describes the OPEN meeting and
+    /// nothing else, so it is only re-read when the meeting that changed is
+    /// the one on screen: the sidebar can re-cluster a row nobody is looking
+    /// at, and loading that row's count into this state would leave the menu
+    /// bar ticking a number from the wrong meeting.
+    private func refreshAfterChange(_ id: String) async {
+        if id == currentMeetingID {
+            corrections = await API.corrections(id)
+        }
+        await library.refresh(query: query)
     }
 }
 
@@ -325,6 +566,7 @@ struct EngineBanner: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(MS.ink2)
                 .offset(y: 1)
+                .msDecorative()
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(engine.state.message ?? "")
@@ -389,9 +631,13 @@ struct SidebarView: View {
     @ObservedObject var library: Library
     @ObservedObject var center: RecorderCenter
     @Binding var route: DetailRoute?
+    /// What the user is searching for, so a refresh after an edit doesn't
+    /// silently drop them out of their own search results.
+    var query: String = ""
     @State private var pendingDelete: MeetingListItem?
     @State private var deleteError: String?
     @State private var reprocessError: String?
+    @State private var actionError: String?
 
     var body: some View {
         List(selection: $route) {
@@ -419,6 +665,21 @@ struct SidebarView: View {
                             .tag(DetailRoute.meeting(m.id))
                             .task { library.fetchBrief(for: m.id) }
                             .contextMenu {
+                                // The fast path for the correction that
+                                // matters most. The menu bar's version and
+                                // the sheet act on the OPEN meeting and can
+                                // therefore tick the count in force; this one
+                                // acts on the row under the pointer, which is
+                                // usually what a right-click means, and asks
+                                // the engine nothing until it is used.
+                                Menu("Set Speaker Count") {
+                                    Button("Auto") { recluster(m, speakers: nil) }
+                                    Divider()
+                                    ForEach(1...8, id: \.self) { n in
+                                        Button("\(n)") { recluster(m, speakers: n) }
+                                    }
+                                }
+                                Divider()
                                 // Reprocess is the only way back from a failed
                                 // meeting, and the audio it needs is still on
                                 // disk. It belongs here even when the row looks
@@ -450,12 +711,12 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .onDeleteCommand {
-            if case .meeting(let id) = route,
-               let m = library.meetings.first(where: { $0.id == id }) {
-                pendingDelete = m
-            }
-        }
+        .onDeleteCommand { askToDeleteSelection() }
+        // File ▸ Delete Meeting… (⌘⌫). The command is posted by the menu bar
+        // and adopted HERE rather than in ContentView, because the
+        // confirmation and the "what is selected afterwards" question both
+        // live in this view. See the contract in Commands.swift.
+        .onMSCommand(.deleteMeeting) { askToDeleteSelection() }
         .alert("Delete \u{201C}\(pendingDelete?.title ?? "")\u{201D}?",
                isPresented: Binding(get: { pendingDelete != nil },
                                     set: { if !$0 { pendingDelete = nil } })) {
@@ -480,6 +741,20 @@ struct SidebarView: View {
         } message: {
             Text(reprocessError ?? "")
         }
+        .alert("Couldn't change the speaker count",
+               isPresented: Binding(get: { actionError != nil },
+                                    set: { if !$0 { actionError = nil } })) {
+            Button("OK") { actionError = nil }
+        } message: {
+            Text(actionError ?? "")
+        }
+    }
+
+    private func askToDeleteSelection() {
+        if case .meeting(let id) = route,
+           let m = library.meetings.first(where: { $0.id == id }) {
+            pendingDelete = m
+        }
     }
 
     /// Hand the meeting's saved audio back to the engine. The refresh is what
@@ -489,9 +764,25 @@ struct SidebarView: View {
         Task {
             let (ok, err) = await API.reprocess(m.id)
             if ok {
-                await library.refresh()
+                await library.refresh(query: query)
+                CommandBus.shared.meetingDidChange(m.id)
             } else {
                 reprocessError = err
+            }
+        }
+    }
+
+    /// Re-cluster this row's meeting into a fixed number of voices. The
+    /// broadcast is how the open document finds out it was rewritten: see
+    /// the contract in Commands.swift.
+    private func recluster(_ m: MeetingListItem, speakers: Int?) {
+        Task {
+            let (ok, err) = await API.recluster(m.id, speakers: speakers)
+            if ok {
+                await library.refresh(query: query)
+                CommandBus.shared.meetingDidChange(m.id)
+            } else {
+                actionError = err
             }
         }
     }
@@ -502,7 +793,7 @@ struct SidebarView: View {
             let (ok, err) = await API.deleteMeeting(m.id)
             if ok {
                 if route == .meeting(m.id) { route = .today }
-                await library.refresh()
+                await library.refresh(query: query)
             } else {
                 deleteError = err
             }
@@ -512,14 +803,18 @@ struct SidebarView: View {
     private var liveRow: some View {
         HStack(spacing: 8) {
             Circle().fill(MS.recordRed).frame(width: 7, height: 7)
+                .msDecorative()
             Text("Recording…")
                 .font(MSFont.chromeMedium)
-                .generationShimmer(true)
+                .msGenerationShimmer(true)
             Spacer()
             Text(clock(center.elapsed))
                 .clockFont(11)
                 .foregroundStyle(MS.ink2)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Recording now")
+        .accessibilityValue(clock(center.elapsed))
     }
 
     private var groups: [DayGroup] {
@@ -572,7 +867,7 @@ struct MeetingRow: View {
                 .font(MSFont.chromeMedium)
                 .foregroundStyle(MS.ink)
                 .lineLimit(1)
-                .generationShimmer(processing)
+                .msGenerationShimmer(processing)
 
             HStack(spacing: 6) {
                 Text(timeText)
@@ -582,18 +877,22 @@ struct MeetingRow: View {
                     HStack(spacing: 4) {
                         if meta.hasTranscript {
                             Image(systemName: "quote.bubble").glyph()
+                                .accessibilityLabel("Transcribed")
                         }
                         if meta.hasSummary {
                             Image(systemName: "sparkle").glyph()
+                                .accessibilityLabel("Summarised")
                         }
                         if meta.hasNotes {
                             Image(systemName: "pencil.line").glyph()
+                                .accessibilityLabel("Has your notes")
                         }
                         if meta.hasCaptureWarning {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 10))
                                 .foregroundStyle(MS.ink2)
                                 .help("Something about this recording needs a look. Open it to read what.")
+                                .accessibilityLabel("Needs a look")
                         }
                     }
                 }
@@ -634,6 +933,29 @@ struct MeetingRow: View {
         }
         .padding(.vertical, 4)
         .help(helpText)
+        // Four lines of glyphs and numerals read as noise one fragment at a
+        // time. One row, one sentence.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(voiceOverLabel)
+    }
+
+    /// The row as a sentence: what it is, when it was, and what state it is
+    /// in. Deliberately not the same string as the tooltip: a tooltip is read
+    /// after you have already seen the row, this is instead of seeing it.
+    private var voiceOverLabel: String {
+        var parts = [meeting.title]
+        if !timeText.isEmpty { parts.append(timeText) }
+        if failed {
+            parts.append("not transcribed")
+        } else if processing {
+            parts.append(progress?.isEmpty == false
+                         ? (progress ?? "")
+                         : (meeting.status ?? "working"))
+        } else if let d = meeting.duration, d > 0 {
+            parts.append("\(Int(d / 60)) min")
+        }
+        if let brief = meta?.brief, !brief.isEmpty { parts.append(brief) }
+        return parts.joined(separator: ", ")
     }
 
     private var helpText: String {
@@ -658,8 +980,13 @@ private extension Image {
 // MARK: - Record (toolbar)
 
 /// Recording starts where actions live on a Mac: the toolbar. A quiet
-/// capsule — small red dot + "Record" — that becomes the live elapsed
-/// clock with a stop square while recording. ⌘R either way.
+/// capsule, small red dot plus "Record", that becomes the live elapsed clock
+/// with a stop square while recording.
+///
+/// The ⌘R shortcut now belongs to File ▸ Start Recording. A button and a
+/// menu item cannot both own one key equivalent without the menu quietly
+/// winning, and the menu is the one that works when this window is behind
+/// something else.
 struct RecordToolbarButton: View {
     @ObservedObject var center: RecorderCenter
 
@@ -685,13 +1012,14 @@ struct RecordToolbarButton: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 3)
-            .animation(.easeOut(duration: 0.16), value: recording)
+            .msAnimation(.easeOut(duration: 0.16), value: recording)
         }
         .buttonStyle(.borderedProminent)
         .tint(MS.recordRed)
-        .keyboardShortcut("r", modifiers: .command)
         .disabled(center.phase == .offline)
         .opacity(center.phase == .offline ? 0.4 : 1)
         .help(recording ? "Stop recording (⌘R)" : "Start recording (⌘R)")
+        .accessibilityLabel(recording ? "Stop recording" : "Start recording")
+        .accessibilityValue(recording ? clock(center.elapsed) : "")
     }
 }

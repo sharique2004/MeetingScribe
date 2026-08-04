@@ -2,6 +2,10 @@
 // recorder state, meeting-start nudges, and live captions; exposes actions
 // (start/stop/accept/dismiss/note). The window and the floating pill both
 // read from here, so they can never disagree.
+//
+// It also owns the two things a recording can be silently wrong about:
+// whether the engine agreed to start at all, and whether both tracks are
+// still carrying sound. Both used to be discovered after the meeting.
 import Foundation
 import Combine
 
@@ -9,6 +13,199 @@ struct HUDNote: Identifiable {
     let id = UUID()
     let t: Double?
     let text: String
+}
+
+/// What the user chose before pressing record. Every field has a default that
+/// makes "just press record" the right behaviour, so this is only ever an
+/// opportunity, never a form to fill in.
+struct RecordOptions: Equatable {
+    var title = ""
+    var inPerson = false
+    /// BCP-47-ish code, or "auto" to let the engine decide.
+    var language = "auto"
+    /// An explicit count the user picked. nil means nobody picked one.
+    var expectedSpeakers: Int?
+    /// Attendees on the calendar event this recording is for, when the user
+    /// chose one. The engine's own auto-pick only ever sees the event
+    /// overlapping the current clock time, which is the wrong event when you
+    /// join early, join late, or run back-to-back meetings — so a chosen
+    /// event has to carry its own count here.
+    var attendees: Int?
+
+    /// The count to send. The engine's arithmetic, kept identical: calendar
+    /// attendees exclude you, an online call wants the OTHER speakers, and a
+    /// room around one microphone wants everybody in it.
+    var resolvedSpeakers: Int? {
+        if let expectedSpeakers { return expectedSpeakers }
+        guard let attendees, attendees > 0 else { return nil }
+        return min(8, max(1, inPerson ? attendees + 1 : attendees))
+    }
+
+    var requestBody: [String: Any] {
+        var body: [String: Any] = ["mode": inPerson ? "inperson" : "online"]
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { body["title"] = trimmed }
+        if language != "auto" { body["language"] = language }
+        if let n = resolvedSpeakers { body["expected_speakers"] = n }
+        return body
+    }
+}
+
+/// The engine refused to start or stop a recording, in its own words. The
+/// button used to fire and return nothing: a 507 (no disk), a 409 (already
+/// recording) and an engine that never answered all looked like a click that
+/// did nothing at all.
+struct RecorderAlert: Identifiable, Equatable {
+    enum Kind { case start, stop }
+    let id = UUID()
+    let kind: Kind
+    let message: String
+
+    var headline: String {
+        kind == .start ? "The recording didn't start" : "The recording didn't stop"
+    }
+}
+
+/// One audio track while a meeting runs. `present` is the engine's answer
+/// about whether the track was opened at all; `alive` and `error` come
+/// straight from the recorder thread, so a track that dies mid-meeting is
+/// reported rather than inferred.
+struct RecorderTrack: Equatable {
+    var present = false
+    var alive = true
+    var error: String?
+    var level: Double = 0
+    /// Any sample above digital silence since the recording started.
+    var everCarriedSound = false
+    /// When the track last carried anything other than digital silence.
+    var lastSound: Date?
+
+    /// A live stream is never EXACTLY zero for long — even a quiet room has a
+    /// noise floor. Digital silence means nothing is reaching this track.
+    static let silenceFloor = 0.001
+}
+
+/// Something is wrong with the capture, said while the meeting is still
+/// running and can still be saved.
+struct CaptureAlert: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let detail: String
+}
+
+// MARK: - Engine shapes
+
+struct RecorderDisk: Decodable, Equatable {
+    let state: String?      // "ok" | "low" | "full"
+    let message: String?
+}
+
+struct RecorderTrackState: Decodable, Equatable {
+    let alive: Bool?
+    let error: String?
+}
+
+/// /api/record/status in full. The app's older shape dropped `tracks` and
+/// `disk` on the floor, which is where "the other side was never recorded"
+/// went to hide for the length of a meeting.
+struct RecorderSnapshot: Decodable {
+    let recording: Bool
+    let meeting_id: String?
+    let elapsed: Double?
+    let levels: [String: Double]?
+    let tracks: [String: RecorderTrackState]?
+    let disk: RecorderDisk?
+}
+
+/// GET /api/devices — what this Mac will record with, asked BEFORE the
+/// recording rather than discovered after it.
+struct DevicePreflight: Decodable, Equatable {
+    struct Device: Decodable, Equatable {
+        let name: String?
+        let routing: String?
+        /// "silent" | "no_loopback" | "not_routed", or nil when there is
+        /// nothing to warn about.
+        let routing_alert: String?
+        let routing_note: String?
+        let auto_route: Bool?
+    }
+
+    let recording: Bool?
+    let mic: Device?
+    let system: Device?
+    let disk: RecorderDisk?
+
+    /// Problems worth showing before a recording starts, most serious first.
+    var alerts: [CaptureAlert] {
+        var out: [CaptureAlert] = []
+        if disk?.state == "full", let message = disk?.message {
+            out.append(CaptureAlert(id: "disk", title: "There is no room to record",
+                                    detail: message))
+        }
+        if mic == nil {
+            out.append(CaptureAlert(
+                id: "mic", title: "No microphone found",
+                detail: "Your own voice will not be recorded. Connect a microphone, or check System Settings → Privacy & Security → Microphone."))
+        }
+        if system == nil {
+            out.append(CaptureAlert(
+                id: "system", title: "The other participants will not be recorded",
+                detail: "This Mac has no system-audio capture available, so only your microphone will be saved."))
+        } else if let alert = system?.routing_alert {
+            out.append(CaptureAlert(
+                id: "system",
+                title: alert == "silent" ? "The other participants will not be recorded"
+                                         : "The other participants may not be recorded",
+                detail: system?.routing_note
+                    ?? "System audio is not routed to MeetingScribe."))
+        }
+        if disk?.state == "low", let message = disk?.message {
+            out.append(CaptureAlert(id: "disk-low", title: "Disk space is running low",
+                                    detail: message))
+        }
+        return out
+    }
+}
+
+/// One event on today's calendar. The engine reports epoch seconds and an
+/// attendee count; both are needed to record "this one" rather than whatever
+/// happens to overlap the clock.
+struct DayEvent: Decodable, Hashable, Identifiable {
+    let title: String?
+    let start: Double?
+    let end: Double?
+    let attendees: Int?
+    let organizer: String?
+
+    var id: String { "\(start ?? 0)|\(title ?? "")" }
+    var name: String { (title?.isEmpty == false ? title : nil) ?? "Untitled event" }
+    var startDate: Date? { start.map { Date(timeIntervalSince1970: $0) } }
+
+    /// Happening right now, as far as the clock is concerned.
+    var isNow: Bool {
+        guard let start, let end else { return false }
+        let now = Date().timeIntervalSince1970
+        return start <= now && now < end
+    }
+
+    /// Over, and long enough ago that offering to record it is noise.
+    var isPast: Bool {
+        guard let end else { return false }
+        return end < Date().timeIntervalSince1970 - 300
+    }
+}
+
+/// GET /api/calendar/today. `available` is the only honest basis for saying
+/// the calendar is connected: the helper reports denial and failure here, and
+/// an empty event list is a perfectly normal successful answer.
+struct CalendarStatus: Decodable {
+    let available: Bool?
+    let events: [DayEvent]?
+    let error: String?
+
+    static let unreachable = CalendarStatus(
+        available: false, events: nil,
+        error: "The engine isn't answering, so the calendar can't be checked.")
 }
 
 @MainActor
@@ -22,6 +219,24 @@ final class RecorderCenter: ObservableObject {
     @Published private(set) var systemLevel: Double = 0
     @Published private(set) var nudge: Nudge?
     @Published private(set) var stopping = false
+    @Published private(set) var starting = false
+    /// The engine's refusal of the last Record or Stop. Nothing else reports
+    /// it: both used to be fire-and-forget, so a refusal was a button that
+    /// visibly did nothing.
+    @Published var alert: RecorderAlert?
+    /// Per-track truth for the meeting in progress.
+    @Published private(set) var micTrack = RecorderTrack()
+    @Published private(set) var systemTrack = RecorderTrack()
+    /// What the engine said as the recording started (routing it could not
+    /// fix, a track it could not open, space running out). Saved onto the
+    /// meeting too, but that is hours too late to act on.
+    @Published private(set) var startWarnings: [String] = []
+    /// Free space, while the meeting that will fill it is still running.
+    @Published private(set) var diskNote: String?
+    /// The devices this Mac would record with right now — asked before the
+    /// recording, so "the other side wasn't recorded" is answerable in
+    /// advance instead of at Stop.
+    @Published private(set) var preflight: DevicePreflight?
     @Published private(set) var liveTurns: [LiveTurn] = []
     @Published private(set) var livePartials: [String: LivePartial] = [:]
     @Published var sentNotes: [HUDNote] = []
@@ -52,6 +267,17 @@ final class RecorderCenter: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var nudgeSeenAt: Date?
     private var expiredNudgeIds = Set<String>()
+    private var recordingStartedAt: Date?
+    private var preflightAskedAt = Date.distantPast
+    private var discardSweptAt = Date.distantPast
+    private var sweeping = false
+
+    /// How long a present track may carry nothing at all before it is worth
+    /// saying so. Generous on purpose: a meeting where nobody speaks for a
+    /// while is ordinary, a track that has been digitally silent for minutes
+    /// is not.
+    private let silenceGrace: TimeInterval = 45
+    private let goneQuietGrace: TimeInterval = 120
 
     // The note draft's own state. `draftMeetingID` is the binding that keeps a
     // note on the meeting it was typed in; `pending` is everything handed over
@@ -87,12 +313,13 @@ final class RecorderCenter: ObservableObject {
     }
 
     private func tick() async {
-        guard let st = try? await API.recorderStatus() else {
+        guard let st = await API.recorderSnapshot() else {
             phase = .offline
             nudge = nil
             return
         }
         flushPending()   // the engine is answering: hand over anything waiting
+        sweepDiscards()
         if st.recording {
             if phase != .recording {   // just started (by us, the nudge, or elsewhere)
                 // Text still in the field belongs to an EARLIER meeting (the
@@ -105,6 +332,9 @@ final class RecorderCenter: ObservableObject {
                 livePartials = [:]
                 sentNotes = []
                 nudge = nil
+                micTrack = RecorderTrack()
+                systemTrack = RecorderTrack()
+                recordingStartedAt = Date()
                 phase = .recording
                 onRecordingStarted?()
             }
@@ -112,6 +342,8 @@ final class RecorderCenter: ObservableObject {
             elapsed = st.elapsed ?? elapsed
             micLevel = st.levels?["mic"] ?? 0
             systemLevel = st.levels?["system"] ?? 0
+            readTracks(st)
+            diskNote = st.disk?.state == "ok" ? nil : st.disk?.message
             if let id = st.meeting_id, id != meetingId { meetingId = id }
             if let snap = try? await API.live(since: liveSeq) {
                 if !snap.turns.isEmpty { liveTurns.append(contentsOf: snap.turns) }
@@ -128,6 +360,11 @@ final class RecorderCenter: ObservableObject {
                 strandDraft()
                 meetingId = nil
                 lastRecordingSeen = nil   // a clean stop: nothing was interrupted
+                micTrack = RecorderTrack()
+                systemTrack = RecorderTrack()
+                startWarnings = []
+                diskNote = nil
+                recordingStartedAt = nil
                 onRecordingStopped?()
             } else {
                 phase = .idle
@@ -151,6 +388,9 @@ final class RecorderCenter: ObservableObject {
             } else {
                 nudge = nil
             }
+            // Not awaited: device enumeration is the one idle call that can
+            // take a moment, and the nudge poll is not waiting behind it.
+            Task { await refreshPreflight() }
         }
     }
 
@@ -162,29 +402,188 @@ final class RecorderCenter: ObservableObject {
         return Date().timeIntervalSince(lastRecordingSeen) <= seconds
     }
 
+    // MARK: - What the tracks are doing
+
+    private func readTracks(_ st: RecorderSnapshot) {
+        micTrack = merge(micTrack, key: "mic", st)
+        systemTrack = merge(systemTrack, key: "system", st)
+    }
+
+    private func merge(_ old: RecorderTrack, key: String, _ st: RecorderSnapshot) -> RecorderTrack {
+        var t = old
+        let reported = st.tracks?[key]
+        // A recorder that reports no track map at all (an older engine) is not
+        // evidence that the track is missing; the level key is.
+        t.present = st.tracks.map { $0[key] != nil } ?? (st.levels?[key] != nil)
+        t.alive = reported?.alive ?? true
+        t.error = reported?.error
+        t.level = st.levels?[key] ?? 0
+        if t.level > RecorderTrack.silenceFloor {
+            t.everCarriedSound = true
+            t.lastSound = Date()
+        }
+        return t
+    }
+
+    /// Everything wrong with the capture right now, in the order it matters.
+    /// Empty is the normal case and the whole point: this says nothing at all
+    /// while both tracks are healthy.
+    var captureAlerts: [CaptureAlert] {
+        guard phase == .recording else { return [] }
+        var out: [CaptureAlert] = []
+        for (key, track, who, fix) in [
+            ("mic", micTrack, "Your microphone",
+             "Check that the right input is selected in System Settings → Sound, then stop and start the recording again."),
+            ("system", systemTrack, "The other participants",
+             "Check that the meeting is playing through this Mac's output. Stopping and starting the recording again re-runs the routing."),
+        ] as [(String, RecorderTrack, String, String)] {
+            if !track.present {
+                out.append(CaptureAlert(
+                    id: key,
+                    title: key == "mic" ? "Your microphone is not being recorded"
+                                        : "The other participants are not being recorded",
+                    detail: "This meeting was opened without a \(key == "mic" ? "microphone" : "system audio") track, so that side of it will be missing."))
+                continue
+            }
+            if !track.alive {
+                out.append(CaptureAlert(
+                    id: key, title: "\(who) stopped being recorded",
+                    detail: (track.error.map { $0 + ". " } ?? "")
+                        + "Everything up to that moment is saved. " + fix))
+                continue
+            }
+            guard let quiet = quietFor(track) else { continue }
+            out.append(CaptureAlert(
+                id: key,
+                title: track.everCarriedSound
+                    ? "\(who): no sound for \(minutesPhrase(quiet))"
+                    : "\(who): nothing recorded yet",
+                detail: track.everCarriedSound
+                    ? "The track is running but completely silent. " + fix
+                    : "Not one sound has reached this track since the recording started. " + fix))
+        }
+        return out
+    }
+
+    /// How long a present, live track has been digitally silent, or nil while
+    /// that is still within the ordinary run of a meeting.
+    private func quietFor(_ track: RecorderTrack) -> TimeInterval? {
+        guard let started = recordingStartedAt else { return nil }
+        let since = track.lastSound ?? started
+        let quiet = Date().timeIntervalSince(since)
+        let grace = track.everCarriedSound ? goneQuietGrace : silenceGrace
+        return quiet >= grace ? quiet : nil
+    }
+
+    private func minutesPhrase(_ seconds: TimeInterval) -> String {
+        let minutes = Int(seconds / 60)
+        if minutes < 1 { return "\(Int(seconds)) seconds" }
+        return minutes == 1 ? "a minute" : "\(minutes) minutes"
+    }
+
+    // MARK: - Before the recording
+
+    /// Ask the engine what it would record with. Cheap, cached by the engine
+    /// for a few seconds, and only asked while idle.
+    func refreshPreflight(force: Bool = false) async {
+        guard phase != .recording else { return }
+        guard force || Date().timeIntervalSince(preflightAskedAt) > 8 else { return }
+        preflightAskedAt = Date()
+        if let fresh = await API.devicePreflight() { preflight = fresh }
+    }
+
     // MARK: - Actions
 
     func startRecording(title: String? = nil) {
+        var options = RecordOptions()
+        options.title = title ?? ""
+        start(options)
+    }
+
+    /// Start a meeting with everything the user chose. The engine's answer is
+    /// read: it refuses a start with no disk (507), one already running (409)
+    /// and a device it could not open (500), and each refusal says why.
+    func start(_ options: RecordOptions) {
+        guard !starting, phase != .recording else { return }
+        starting = true
         Task {
-            var body: [String: Any] = [:]
-            if let title, !title.isEmpty { body["title"] = title }
-            await API.post("api/record/start", body: body)
+            switch await API.recordStart(options.requestBody) {
+            case .started(let meta):
+                alert = nil
+                startWarnings = meta.warnings ?? []
+            case .refused(let why):
+                alert = RecorderAlert(kind: .start, message: why)
+            }
             await tick()
+            starting = false
         }
     }
 
     func stopRecording() {
         stopping = true
         Task {
-            await API.post("api/record/stop")
+            let (ok, why) = await API.recordStop()
             await tick()
             stopping = false
+            if ok { alert = nil }   // a refusal the user has now got past
+            // "Not recording" is not a failure worth a word — the recording
+            // the user wanted stopped is stopped. Anything else leaves a
+            // meeting running that the user believes has ended.
+            if !ok, phase != .idle {
+                alert = RecorderAlert(
+                    kind: .stop,
+                    message: why ?? "The engine didn't answer, so the recording may still be running.")
+            }
         }
     }
 
+    /// Remove a meeting the app created for its own purposes (the setup
+    /// test), retrying until the engine actually lets go of it.
+    ///
+    /// The engine refuses to delete a meeting while it is being transcribed,
+    /// and on a fresh Mac that transcription can sit behind a multi-gigabyte
+    /// model download — far longer than the sheet that made it stays open. So
+    /// the id is written down and retried on every poll, across launches: a
+    /// phantom "Setup test" meeting in someone's library is the one trace
+    /// first-run must not leave.
+    func discardLater(_ id: String) {
+        var ids = Self.pendingDiscards
+        guard !ids.contains(id) else { return }
+        ids.append(id)
+        Self.pendingDiscards = ids
+        discardSweptAt = .distantPast
+    }
+
+    private static var pendingDiscards: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "ms.pendingDiscards") ?? [] }
+        set { UserDefaults.standard.set(newValue, forKey: "ms.pendingDiscards") }
+    }
+
+    /// Never awaited by the poll: a delete the engine is sitting on must not
+    /// hold up the timer, the levels or the notes outbox.
+    private func sweepDiscards() {
+        guard !sweeping, !Self.pendingDiscards.isEmpty,
+              Date().timeIntervalSince(discardSweptAt) > 20 else { return }
+        sweeping = true
+        discardSweptAt = Date()
+        Task { [weak self] in
+            defer { self?.sweeping = false }
+            guard let self else { return }
+            for id in Self.pendingDiscards where id != meetingId {
+                if await API.discardMeeting(id) {
+                    Self.pendingDiscards.removeAll { $0 == id }
+                }
+            }
+        }
+    }
+
+    /// "Record" on a meeting reminder. It is a start like any other, so a
+    /// refusal (no disk, the reminder already answered) is shown like any
+    /// other rather than dismissing the nudge and doing nothing.
     func accept(_ n: Nudge) {
         Task {
-            await API.post("api/nudges/\(n.id)/accept")
+            let (ok, why) = await API.acceptNudge(n.id)
+            if !ok { alert = RecorderAlert(kind: .start, message: why ?? "The engine didn't answer.") }
             nudge = nil
             await tick()
         }
@@ -286,5 +685,121 @@ final class RecorderCenter: ObservableObject {
             ? nil
             : NoteDraft(meetingID: draftMeetingID, t: draftT, text: noteDraft)
         drafts.save(NoteDraftStore.Contents(live: live, pending: pending, refused: refused))
+    }
+}
+
+// MARK: - The engine calls this file owns
+//
+// Everything here reads the engine's ANSWER rather than the fact that it was
+// asked. The plain post() helper returns a bare Bool, which is what let a
+// refused start, a refused stop and a denied calendar all pass for success.
+
+extension API {
+    enum StartResult {
+        case started(StartedMeeting)
+        case refused(String)
+    }
+
+    /// The meeting the engine just created. `warnings` is the recorder's own
+    /// account of what it could not do (routing it failed to set up, a track
+    /// it could not open) and it is written at the moment of starting.
+    struct StartedMeeting: Decodable {
+        let id: String?
+        let title: String?
+        let warnings: [String]?
+    }
+
+    static func recordStart(_ body: [String: Any]) async -> StartResult {
+        let (code, data) = await send("api/record/start", method: "POST", body: body, timeout: 20)
+        guard let code else {
+            return .refused("The engine didn't answer. Check that it is running, then try again.")
+        }
+        if (200..<300).contains(code) {
+            let meta = data.flatMap { try? JSONDecoder().decode(StartedMeeting.self, from: $0) }
+            return .started(meta ?? StartedMeeting(id: nil, title: nil, warnings: nil))
+        }
+        return .refused(errorText(data) ?? "The engine wouldn't start a recording (\(code)).")
+    }
+
+    /// (ok, why). A 409 means the recorder was already stopped, which is the
+    /// state the caller wanted, so it is reported honestly and the caller
+    /// decides whether it is worth a word.
+    static func recordStop() async -> (Bool, String?) {
+        let (code, data) = await send("api/record/stop", method: "POST", body: [:], timeout: 30)
+        guard let code else { return (false, "The engine didn't answer.") }
+        if (200..<300).contains(code) { return (true, nil) }
+        return (false, errorText(data) ?? "The engine wouldn't stop the recording (\(code)).")
+    }
+
+    /// Accepting a reminder starts a recording, so it refuses in the same
+    /// shape a start does, and is owed the same sentence.
+    static func acceptNudge(_ id: String) async -> (Bool, String?) {
+        let (code, data) = await send("api/nudges/\(id)/accept", method: "POST",
+                                      body: [:], timeout: 20)
+        guard let code else { return (false, "The engine didn't answer.") }
+        if (200..<300).contains(code) { return (true, nil) }
+        return (false, errorText(data) ?? "The engine wouldn't start that recording (\(code)).")
+    }
+
+    static func recorderSnapshot() async -> RecorderSnapshot? {
+        try? await get("api/record/status", as: RecorderSnapshot.self)
+    }
+
+    static func devicePreflight() async -> DevicePreflight? {
+        try? await get("api/devices", as: DevicePreflight.self)
+    }
+
+    /// Today's events with everything a recording needs from them: which one
+    /// it is, and how many people are on it.
+    static func calendarStatus() async -> CalendarStatus {
+        (try? await get("api/calendar/today", as: CalendarStatus.self)) ?? .unreachable
+    }
+
+    /// Delete a meeting the app made for itself. A 404 is success (it is
+    /// already gone, which is the state asked for) and so is a 400 (the id is
+    /// malformed, so no amount of retrying will ever remove it). Only a 409,
+    /// "still being processed", is worth coming back for.
+    static func discardMeeting(_ id: String) async -> Bool {
+        let (code, _) = await send("api/meetings/\(id)", method: "DELETE", body: nil, timeout: 15)
+        guard let code else { return false }
+        return (200..<300).contains(code) || code == 404 || code == 400
+    }
+
+    private struct CuesEnvelope: Decodable { let cues: [String]? }
+
+    /// The talking points carried into the next meeting. nil means the engine
+    /// didn't answer, which is different from "there are none".
+    static func cues() async -> [String]? {
+        (try? await get("api/cues", as: CuesEnvelope.self))?.cues
+    }
+
+    @discardableResult
+    static func saveCues(_ cues: [String]) async -> Bool {
+        let (code, _) = await send("api/cues", method: "PUT", body: ["cues": cues], timeout: 10)
+        return code.map { (200..<300).contains($0) } ?? false
+    }
+
+    /// One request, one honest answer: (status code or nil when the engine
+    /// never replied, body).
+    private static func send(_ path: String, method: String, body: [String: Any]?,
+                             timeout: TimeInterval) async -> (Int?, Data?) {
+        var req = URLRequest(url: engineBase.appendingPathComponent(path))
+        req.httpMethod = method
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        req.timeoutInterval = timeout
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
+            return (nil, nil)
+        }
+        return ((resp as? HTTPURLResponse)?.statusCode, data)
+    }
+
+    private static func errorText(_ data: Data?) -> String? {
+        guard let data,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let message = object["error"] as? String, !message.isEmpty else { return nil }
+        return message
     }
 }
