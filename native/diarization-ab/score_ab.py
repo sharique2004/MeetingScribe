@@ -114,6 +114,16 @@ def main(argv=None):
     ap.add_argument("--num-speakers", type=int,
                     help="force the count instead of auto (NOT the A/B metric; "
                          "auto is what GEN3 pins)")
+    ap.add_argument("--mode", choices=("offline", "streaming"),
+                    help="fluidaudio only: which pipeline the adapter runs. "
+                         "offline = community-1 CoreML (the fair re-test); "
+                         "streaming = the path 417ef04 mistakenly benchmarked")
+    ap.add_argument("--threshold", type=float,
+                    help="clustering threshold passed through to the candidate "
+                         "(CORRECTION.md requires sweeping this, not one point)")
+    ap.add_argument("--tag",
+                    help="suffix for the results file, e.g. --tag offline-t0.7 "
+                         "writes results/<engine>-offline-t0.7.json")
     ap.add_argument("--keep-segments", action="store_true",
                     help="also keep per-fixture segment JSON under "
                          "results/segments/<engine>/<pseudonym>.json")
@@ -141,7 +151,8 @@ def main(argv=None):
         fixtures = [fx for fx in fixtures if fx["key"] in want]
     fixtures.sort(key=lambda fx: ev.label_of(fx["key"]))
 
-    seg_dir = HERE / "results" / "segments" / args.engine
+    seg_dir = HERE / "results" / "segments" / (
+        args.engine + (f"-{args.tag}" if args.tag else ""))
     if args.keep_segments:
         seg_dir.mkdir(parents=True, exist_ok=True)
 
@@ -174,6 +185,10 @@ def main(argv=None):
         out_json = seg_dir / f"{key}.json" if args.keep_segments \
             else HERE / "results" / f".tmp-{args.engine}.json"
         extra = ("--num-speakers", str(args.num_speakers)) if args.num_speakers else ()
+        if args.mode:
+            extra += ("--mode", args.mode)
+        if args.threshold is not None:
+            extra += ("--threshold", str(args.threshold))
         result, wall, err = run_candidate(binary, wav, out_json, args.timeout, extra)
         if result is None:
             print("%-38s %-4s %6s %5s %5s %6s   FAILED after %.0fs: %s"
@@ -230,11 +245,14 @@ def main(argv=None):
           "i.e. hits = scorable and Demo = 2.\n  Partial runs (--only) are smoke "
           "evidence, not a gate result.")
 
-    out = HERE / "results" / f"{args.engine}.json"
+    name = args.engine + (f"-{args.tag}" if args.tag else "")
+    out = HERE / "results" / f"{name}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "engine": args.engine,
         "binary": str(binary),
+        "mode": args.mode,
+        "threshold": args.threshold,
         "forced_num_speakers": args.num_speakers,
         "gen3_reference": {"date": ev.BASELINE_DATE, "rule": ev.BASELINE_RULE},
         "rows": rows,
