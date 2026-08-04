@@ -33,6 +33,19 @@ echo "Bundling the engine…"
 if [ -d "/Applications/MeetingScribe.app/Contents/Resources/bin" ]; then
     cp -R "/Applications/MeetingScribe.app/Contents/Resources/bin" "$OUT/Contents/Resources/bin"
 fi
+mkdir -p "$OUT/Contents/Resources/bin"
+
+# fluid-diarizer (neural speaker turns) is an SPM package, not a single-file
+# helper; build it fresh and ship it. Its ~22 MB of CoreML models are NOT
+# bundled — they download to <DATA_DIR>/models/fluid-diarization on first
+# use, and diarization falls back to the classic engine until they exist.
+if (cd "$PROJECT/native/fluiddiarizer" && swift build -c release >/dev/null 2>&1); then
+    cp "$PROJECT/native/fluiddiarizer/.build/release/fluid-diarizer" \
+        "$OUT/Contents/Resources/bin/fluid-diarizer"
+    echo "  staged fluid-diarizer"
+else
+    echo "  WARNING: fluid-diarizer failed to build (neural turns will fall back to classic)"
+fi
 
 cp "$PROJECT/tools/appicon/MeetingScribe.icns" "$OUT/Contents/Resources/AppIcon.icns"
 
@@ -47,8 +60,8 @@ cat > "$OUT/Contents/Info.plist" <<'EOF'
     <key>CFBundleDisplayName</key><string>MeetingScribe</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
-    <key>CFBundleShortVersionString</key><string>3.0</string>
-    <key>CFBundleVersion</key><string>3.0</string>
+    <key>CFBundleShortVersionString</key><string>3.1</string>
+    <key>CFBundleVersion</key><string>3.1</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>MeetingScribe records meetings with your microphone. Audio never leaves this Mac.</string>
