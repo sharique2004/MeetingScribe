@@ -185,6 +185,10 @@ final class MeetingModel: ObservableObject {
                 summaryProgress = job.message
                 if job.state == "done" {
                     detail = try? await API.meeting(id)
+                    // The row's sparkle badge and the Meeting menu's verb both
+                    // read the library's cached meta, which no poller refreshes
+                    // for a summary: the meeting's status never changed.
+                    library?.invalidate(id)
                     summarizing = false
                     summaryProgress = nil
                 } else if job.state == "error" {

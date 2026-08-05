@@ -232,7 +232,13 @@ struct MeetingScribeCommands: Commands {
 
         // ── Meeting ─────────────────────────────────────────────────────
         CommandMenu("Meeting") {
-            Button("Re-analyse Summary") { bus.send(.reanalyse) }
+            // One item, two verbs. It was always "Re-analyse Summary", which
+            // reads as "redo the one you have" — so on a meeting with no
+            // summary the single menu route to writing one described itself as
+            // something else, and looked like it would do nothing.
+            Button(ctx.hasSummary ? "Re-analyse Summary" : "Write the Summary") {
+                bus.send(.reanalyse)
+            }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
                 .disabled(!ctx.hasTranscript)
             // No ellipsis: this starts immediately, matching the sidebar's

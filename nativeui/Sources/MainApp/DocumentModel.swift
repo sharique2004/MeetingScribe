@@ -90,9 +90,13 @@ struct DocumentSection: Identifiable {
     var blocks: [DocumentBlock]
 }
 
+/// One built page: the sections in reading order, and the to-dos that always
+/// sit at the end of it.
+typealias Document = (sections: [DocumentSection], nextSteps: [DocumentBlock])
+
 enum DocumentBuilder {
 
-    static func build(detail: MeetingDetail, notes: [MeetingNote]) -> (sections: [DocumentSection], nextSteps: [DocumentBlock]) {
+    static func build(detail: MeetingDetail, notes: [MeetingNote]) -> Document {
         let turns = detail.turns ?? []
         let summary = detail.summary
 

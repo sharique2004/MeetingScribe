@@ -18,7 +18,7 @@ struct MeetingPage: View {
     @State private var exportError: String?
     @FocusState private var titleFocused: Bool
 
-    private var built: (sections: [DocumentSection], nextSteps: [DocumentBlock]) {
+    private var built: Document {
         DocumentBuilder.build(detail: detail, notes: notes)
     }
 
@@ -89,7 +89,7 @@ struct MeetingPage: View {
                     emptyBody
                 }
 
-                footerRail
+                footerRail(doc)
                     .padding(.top, 12)
             }
             .documentMeasure()
@@ -581,9 +581,20 @@ struct MeetingPage: View {
 
     // MARK: - Footer
 
-    private var footerRail: some View {
+    /// Whether the empty body is already offering the summary as the page's
+    /// call to action, in which case the rail must not offer it twice.
+    private func bodyOffersSummary(_ doc: Document) -> Bool {
+        doc.sections.isEmpty && doc.nextSteps.isEmpty
+            && detail.summary == nil && !detail.failed
+            && !model.summarizing && !meetingIsWorking(detail.status)
+            && hasTranscript
+    }
+
+    private var hasTranscript: Bool { detail.turns?.isEmpty == false }
+
+    private func footerRail(_ doc: Document) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            footerActions
+            footerActions(doc)
             // Its own line: with export in the rail the provenance had
             // nowhere left to sit without truncating one or the other.
             Text(footerStats)
@@ -614,7 +625,7 @@ struct MeetingPage: View {
         }
     }
 
-    private var footerActions: some View {
+    private func footerActions(_ doc: Document) -> some View {
         HStack(spacing: 14) {
             Button {
                 onOpenTranscript(nil)
@@ -637,14 +648,35 @@ struct MeetingPage: View {
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink2)
 
-            if detail.summary != nil {
+            // The summary, whenever there is a transcript to write one from.
+            //
+            // This used to appear only once a summary ALREADY EXISTED, and the
+            // only other way in was the button inside `emptyBody` — which stops
+            // rendering the moment the page has anything on it. Typing a single
+            // note during a meeting therefore removed the last on-page way to
+            // summarise it, and left the reader looking at their own notes with
+            // no hint the feature exists. 26 of the 46 transcribed meetings on
+            // this machine have no summary. The old web UI had it right: it
+            // gated on "has turns" and flipped its own verb, which is this.
+            if hasTranscript, !bodyOffersSummary(doc) {
                 if model.summarizing {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.mini)
-                        Text(model.summaryProgress ?? "Re-analysing…")
+                        Text(model.summaryProgress
+                             ?? (detail.summary == nil ? "Writing the summary…" : "Re-analysing…"))
                             .font(MSFont.meta)
                             .foregroundStyle(MS.ink3)
                     }
+                } else if detail.summary == nil {
+                    Button {
+                        model.summarize()
+                    } label: {
+                        Label("Write the summary", systemImage: "sparkles")
+                            .font(MSFont.meta)
+                            .foregroundStyle(MS.ink2)
+                    }
+                    .buttonStyle(PressStyle())
+                    .help("Read the transcript and distil it, on this Mac")
                 } else {
                     Button {
                         model.summarize()

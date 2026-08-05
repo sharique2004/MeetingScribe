@@ -208,6 +208,30 @@ final class Library: ObservableObject {
             }
         }
     }
+
+    /// One row's badges and brief went stale because the meeting was rewritten
+    /// under it — a summary was written, a tidy landed.
+    ///
+    /// Deliberately does NOT go via the list: the cached row is the very thing
+    /// that is stale, so fetchBrief's shortcut would put the same stale answer
+    /// straight back. /brief is the cheap document-free read.
+    ///
+    /// Nothing called this for a summary, so writing one left the sidebar
+    /// without its sparkle and the Meeting menu still offering to write the
+    /// summary that had just been written. Only a status change refreshed a
+    /// row, and summarising is not a status change.
+    func invalidate(_ id: String) {
+        guard !metaFetches.contains(id) else { return }
+        metaFetches.insert(id)
+        Task {
+            defer { metaFetches.remove(id) }
+            guard let m = try? await API.brief(id) else { return }
+            msWithAnimation(.easeOut(duration: 0.22)) {
+                meta[id] = m
+                if let b = m.brief { briefs[id] = b }
+            }
+        }
+    }
 }
 
 // MARK: - Root
