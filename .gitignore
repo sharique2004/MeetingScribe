@@ -60,3 +60,6 @@ recordings
 /sync_queue.json
 /tap_state.json
 /note-drafts/
+
+# iOS simulator build output
+ios/.build/
