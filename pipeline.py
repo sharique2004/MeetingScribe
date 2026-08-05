@@ -1250,13 +1250,21 @@ def _system_track_lost(mic_segs, sys_segs):
     return not (sys_segs or [])
 
 
+# The advice here used to be "install BlackHole", which the Core Audio
+# process tap replaced: nobody needs a driver any more, and sending someone
+# to install one is sending them to fix the wrong thing. On the tap the
+# silent-track causes are, in the order they actually happen: macOS never
+# granted System Audio Recording (the grant is per app identity, so a fresh
+# install or an app update asks again), the call was playing through a
+# device the tap was not following, or the far side genuinely never spoke.
 MIC_ONLY_WARNING = (
     DIARIZATION_WARNING_PREFIX + " fell back to the microphone: the call-audio "
     "track was silent, so both sides of the conversation were recorded on the "
-    "mic. The voices were separated by sound instead — which one is you cannot "
-    "be told apart from the others, so nobody is labelled \"You\"; rename the "
-    "speakers above. To record the call audio on its own track, install "
-    "BlackHole and select it as the meeting app's speaker."
+    "mic. The voices were separated by sound instead, and which one is you "
+    "cannot be told apart from the others, so nobody is labelled \"You\". "
+    "Rename the speakers above. To capture the call on its own track next "
+    "time, open System Settings, Privacy and Security, Screen and System "
+    "Audio Recording, and allow MeetingScribe."
 )
 
 # --- Is that second cluster on the mic a real second person? --------------------

@@ -383,6 +383,11 @@ class _TapTrackRecorder(_BaseTrackRecorder):
         self._ready = threading.Event()
         self._last_event_error = None
         self._silence_warned = False
+        # Sticky for the life of the track: a call that goes quiet for a
+        # minute is not the problem this reports, and a warning that
+        # blinks off the moment somebody coughs is a warning nobody
+        # trusts. Cleared only by a restart of the track.
+        self.silent = False
         self._restarted = False
         self._saw_signal = False
 
@@ -447,6 +452,7 @@ class _TapTrackRecorder(_BaseTrackRecorder):
                 log.info("system tap follows new output: %s", event.get("output"))
             elif kind == "silence" and not self._silence_warned:
                 self._silence_warned = True
+                self.silent = True
                 log.warning("system tap reports sustained digital silence")
             elif kind == "error":
                 self._last_event_error = (
@@ -871,7 +877,19 @@ class MeetingRecorder:
                 "elapsed": time.time() - self.started_at if self.started_at else 0,
                 "levels": dict(self.levels),
                 "tracks": {
-                    key: {"alive": t.is_alive(), "error": t.error}
+                    key: {
+                        "alive": t.is_alive(),
+                        "error": t.error,
+                        # The tap tells us within ten seconds when it is
+                        # writing nothing but zeros, and until now that
+                        # travelled no further than a log line: the user
+                        # learned the far side was never recorded AFTER the
+                        # meeting, from a diarization warning, when the only
+                        # remaining option was to have held it again. It is
+                        # in the live status now because every cause is
+                        # fixable while the meeting is still running.
+                        "silent": bool(getattr(t, "silent", False)),
+                    }
                     for key, t in self._tracks.items()
                 },
             }

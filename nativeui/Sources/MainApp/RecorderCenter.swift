@@ -75,6 +75,9 @@ struct RecorderTrack: Equatable {
     var alive = true
     var error: String?
     var level: Double = 0
+    /// The engine says this track is capturing silence. Believed immediately:
+    /// it is the helper's own watchdog, not an inference from meter values.
+    var reportedSilent = false
     /// Any sample above digital silence since the recording started.
     var everCarriedSound = false
     /// When the track last carried anything other than digital silence.
@@ -103,6 +106,10 @@ struct RecorderDisk: Decodable, Equatable {
 struct RecorderTrackState: Decodable, Equatable {
     let alive: Bool?
     let error: String?
+    /// The capture helper's OWN verdict that it is writing nothing but zeros.
+    /// Authoritative where the level meters are only evidence: the tap knows
+    /// inside ten seconds, and it used to travel no further than a log line.
+    let silent: Bool?
 }
 
 /// /api/record/status in full. The app's older shape dropped `tracks` and
@@ -417,6 +424,7 @@ final class RecorderCenter: ObservableObject {
         t.present = st.tracks.map { $0[key] != nil } ?? (st.levels?[key] != nil)
         t.alive = reported?.alive ?? true
         t.error = reported?.error
+        t.reportedSilent = reported?.silent ?? false
         t.level = st.levels?[key] ?? 0
         if t.level > RecorderTrack.silenceFloor {
             t.everCarriedSound = true
@@ -471,6 +479,11 @@ final class RecorderCenter: ObservableObject {
         guard let started = recordingStartedAt else { return nil }
         let since = track.lastSound ?? started
         let quiet = Date().timeIntervalSince(since)
+        // The helper's own watchdog outranks the grace period. It reports
+        // sustained digital zeros in ten seconds, and waiting another
+        // thirty-five to say so only spends the part of the meeting the user
+        // could still have rescued.
+        if track.reportedSilent, !track.everCarriedSound { return quiet }
         let grace = track.everCarriedSound ? goneQuietGrace : silenceGrace
         return quiet >= grace ? quiet : nil
     }
