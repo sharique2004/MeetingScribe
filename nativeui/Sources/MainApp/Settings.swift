@@ -63,6 +63,34 @@ final class Settings: ObservableObject {
         didSet { write("auto_summarize", autoSummarize) }
     }
 
+    /// Whether the engine reads real names off the conversation itself ("Hi,
+    /// I'm Marcus") and puts them on labels that would otherwise say
+    /// "Speaker 2". Wired end to end in speaker_names.py since it shipped, and
+    /// off by default, with nothing anywhere to switch it on.
+    @Published var speakerNames: Bool {
+        didSet { write("speaker_names", speakerNames) }
+    }
+
+    /// The neural diarization pass. config.py calls it "auto" (run it) or
+    /// "classic" (never), and it is refinement rather than a dependency: every
+    /// failure falls back to the classic assignment, so this is a quality/time
+    /// trade rather than a risk.
+    @Published var neuralDiarization: Bool {
+        didSet { write("diarization_engine", neuralDiarization ? "auto" : "classic") }
+    }
+
+    /// Words this Mac should expect to hear: product names, jargon, the
+    /// surnames a recogniser has never met. Whisper takes them as its initial
+    /// prompt and live captions bias toward them, so they come out spelled the
+    /// way the user spells them rather than phonetically.
+    ///
+    /// Fully wired in pipeline._vocab_prompt and app's live-caption context
+    /// since they shipped. There has never been a way to type one in, and the
+    /// Whisper card in this very view advertises the feature.
+    @Published var vocabulary: [String] {
+        didSet { write("vocabulary", vocabulary) }
+    }
+
     private let path = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".meetingscribe/config.json")
 
@@ -89,6 +117,14 @@ final class Settings: ObservableObject {
         // Matches config.py's defaults: on, unless this Mac says otherwise.
         voiceProfiles = (cfg["voice_profiles"] as? Bool) ?? true
         autoSummarize = (cfg["auto_summarize"] as? Bool) ?? true
+        speakerNames = (cfg["speaker_names"] as? Bool) ?? false
+        // Anything that is not the explicit opt-out means the pass runs, which
+        // is how pipeline.py reads it: only "classic" turns it off.
+        neuralDiarization = (cfg["diarization_engine"] as? String)?.lowercased() != "classic"
+        vocabulary = ((cfg["vocabulary"] as? [Any]) ?? []).compactMap {
+            let word = String(describing: $0).trimmingCharacters(in: .whitespacesAndNewlines)
+            return word.isEmpty ? nil : word
+        }
         whisperBackend = (cfg["whisper_backend"] as? String) ?? "auto"
         // null, absent, or a code this build doesn't offer all mean the same
         // thing to the user: nothing is being forced.
@@ -157,14 +193,17 @@ struct SettingsView: View {
                     .padding(.vertical, 26)
                 VoicesSection(settings: settings)
             }
+            .frame(maxWidth: 640, alignment: .leading)
             .padding(.horizontal, 34)
-            .padding(.bottom, 30)
+            .padding(.top, 8)
+            .padding(.bottom, 40)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        // Was a hard 520×680. Every string in this window wraps, and at a
-        // larger text size a fixed height clips the last section off the
-        // bottom with no way to reach it. Let the window grow instead.
-        .frame(minWidth: 520, idealWidth: 520, maxWidth: 640,
-               minHeight: 420, idealHeight: 680, maxHeight: 900)
+        // No frame of its own any more. This was 520×680, sized for the
+        // floating Settings scene it used to be; in the document column that
+        // pinned it to a narrow strip. The column decides the width now, and
+        // the content caps its own measure at 640 so the prose stays readable
+        // on a wide window.
         .background(MS.content)
         .task {
             if let probe = try? await API.get("api/cli-engines", as: CLIEngines.self) {
@@ -276,6 +315,9 @@ struct SettingsView: View {
                 selection: $settings.language)
                 .padding(.top, 10)
 
+            VocabularyEditor(words: $settings.vocabulary)
+                .padding(.top, 10)
+
             Text("Everything here runs on this Mac, and the audio never leaves it. A change applies to your next recording. To apply it to a meeting you already have, open that meeting and use Reprocess audio (⌥⌘R), which transcribes the saved audio again with today's settings. Re-analyse only rewrites the summary, so it will not change the words or the language.")
                 .font(MSFont.meta)
                 .foregroundStyle(MS.ink3)
@@ -365,6 +407,150 @@ struct SettingsView: View {
     }
 }
 
+/// The words this Mac should expect to hear.
+///
+/// The engine has read `vocabulary` from config.json since the first release —
+/// Whisper takes it as its initial prompt, live captions bias toward it — and
+/// no interface has ever let anyone put a word in it. The Whisper card three
+/// rows above this one advertises the feature by name.
+///
+/// Words are stored trimmed, de-duplicated case-insensitively, and in the
+/// order they were added, because the prompt is truncated at a comma boundary
+/// (pipeline._vocab_prompt) and the first ones in are the ones that survive.
+private struct VocabularyEditor: View {
+    @Binding var words: [String]
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Your words")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(MS.ink)
+                Text("Product names, jargon, and surnames a recogniser has never met. Add them here and they come out spelled your way instead of phonetically. Applies to your next recording.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !words.isEmpty {
+                MSFlowLayout(spacing: 6) {
+                    ForEach(words, id: \.self) { word in
+                        HStack(spacing: 5) {
+                            Text(word)
+                                .font(.system(size: 12))
+                                .foregroundStyle(MS.ink)
+                            Button {
+                                words.removeAll { $0 == word }
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(MS.ink3)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Remove \(word)")
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(MS.raised, in: .capsule)
+                        .overlay(Capsule().stroke(MS.hairline, lineWidth: 1))
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField("Add a word or name", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .focused($focused)
+                    .onSubmit(commit)
+                Button("Add", action: commit)
+                    .buttonStyle(.bordered)
+                    .disabled(cleaned.isEmpty)
+            }
+        }
+        .padding(13)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(MS.raised.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(MS.hairline, lineWidth: 1))
+        }
+    }
+
+    private var cleaned: String {
+        draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func commit() {
+        let word = cleaned
+        guard !word.isEmpty else { return }
+        // Case-insensitive: "Parakeet" and "parakeet" bias the recogniser the
+        // same way, and two of them only eat the prompt budget twice.
+        guard !words.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame })
+        else { draft = ""; return }
+        words.append(word)
+        draft = ""
+        focused = true
+    }
+}
+
+/// Wrapping row of chips. SwiftUI has no flow layout of its own, and a fixed
+/// HStack would push a long vocabulary off the edge of the pane.
+private struct MSFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? .infinity
+        let rows = layout(subviews, in: width)
+        let height = rows.last.map { $0.y + $0.height } ?? 0
+        return CGSize(width: proposal.width ?? rows.map(\.width).max() ?? 0, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        for row in layout(subviews, in: bounds.width) {
+            var x = bounds.minX
+            for i in row.range {
+                let size = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: x, y: bounds.minY + row.y),
+                                  proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+        }
+    }
+
+    private struct Row {
+        var range: Range<Int>
+        var y: CGFloat
+        var height: CGFloat
+        var width: CGFloat
+    }
+
+    private func layout(_ subviews: Subviews, in width: CGFloat) -> [Row] {
+        var rows: [Row] = []
+        var start = 0, x: CGFloat = 0, y: CGFloat = 0, height: CGFloat = 0
+        for i in subviews.indices {
+            let size = subviews[i].sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width {
+                rows.append(Row(range: start..<i, y: y, height: height, width: x - spacing))
+                start = i
+                y += height + spacing
+                x = 0
+                height = 0
+            }
+            x += size.width + spacing
+            height = max(height, size.height)
+        }
+        if start < subviews.count {
+            rows.append(Row(range: start..<subviews.count, y: y, height: height, width: x - spacing))
+        }
+        return rows
+    }
+}
+
 /// SettingToggleRow's anatomy with a menu where the switch was: same card,
 /// same title-over-detail, for a setting that is one of a list.
 private struct SettingPickerRow: View {
@@ -439,6 +625,18 @@ private struct VoicesSection: View {
                 detail: "Naming a speaker saves a mathematical fingerprint of their voice on this Mac, never the audio, so later meetings can label them for you.",
                 on: $settings.voiceProfiles)
                 .padding(.top, 18)
+
+            SettingToggleRow(
+                title: "Take names from the conversation",
+                detail: "Reads introductions out of the transcript (\u{201C}Hi, I'm Marcus\u{201D}, \u{201C}Thanks, Priya\u{201D}) and puts them on labels that would otherwise say Speaker 2. Every name it applies keeps the quote it came from. Off by default: it costs a model pass and it can guess wrong.",
+                on: $settings.speakerNames)
+                .padding(.top, 10)
+
+            SettingToggleRow(
+                title: "Refine speaker turns with the neural pass",
+                detail: "A second, slower pass over the voices that fixes where one person's turn ends and the next begins. It is refinement, not a dependency: if it cannot run, the ordinary result stands.",
+                on: $settings.neuralDiarization)
+                .padding(.top, 10)
 
             if !profiles.isEmpty {
                 VStack(spacing: 8) {

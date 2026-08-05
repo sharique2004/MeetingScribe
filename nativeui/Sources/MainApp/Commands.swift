@@ -54,6 +54,7 @@ import Combine
 enum MSCommand: Equatable {
     case toggleRecording
     case showToday
+    case showSettings
     case showNotes
     case showTranscript
     case nextMeeting
@@ -171,6 +172,15 @@ struct MeetingScribeCommands: Commands {
     private var hasMeeting: Bool { ctx.meetingID != nil }
 
     var body: some Commands {
+        // ── MeetingScribe ───────────────────────────────────────────────
+        // Settings is a route in the main window, not a scene, so the app
+        // menu's own item has to be replaced: without a `SwiftUI.Settings`
+        // scene macOS leaves a "Settings…" that opens nothing.
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { bus.send(.showSettings) }
+                .keyboardShortcut(",", modifiers: .command)
+        }
+
         // ── File ────────────────────────────────────────────────────────
         // "New" on a recorder is a recording. One item, not two: a Mac menu
         // flips its own verb (Play/Pause) rather than greying out a twin.

@@ -18,10 +18,10 @@ struct MeetingScribeApp: App {
         // keyboard shortcuts and no menu of its own: see Commands.swift for
         // the contract other views adopt to hang their own actions off it.
         .commands { MeetingScribeCommands() }
-
-        SwiftUI.Settings {
-            SettingsView()
-        }
+        // No `SwiftUI.Settings` scene: preferences are a route in the main
+        // window now (DetailRoute.settings), and ⌘, selects it. A second
+        // window showing the same controls would be two places to look and
+        // one of them would always be the wrong one.
     }
 }
 
@@ -53,6 +53,13 @@ final class MainAppDelegate: NSObject, NSApplicationDelegate {
 
 enum DetailRoute: Hashable {
     case today
+    /// Settings, in the document column like everything else.
+    ///
+    /// It used to be a `SwiftUI.Settings` scene — a separate floating window,
+    /// declared with no size, which opened short enough to clip its own last
+    /// section under the title bar. A panel you have to know the shortcut for
+    /// and then fight to read is not where a user's preferences should live.
+    case settings
     case meeting(String)
 }
 
@@ -426,6 +433,8 @@ struct ContentView: View {
             case .meeting(let id):
                 MeetingScreen(meetingID: id, mode: $mode)
                     .id("\(id)#\(reloadTokens[id] ?? 0)")
+            case .settings:
+                SettingsView()
             default:
                 TodayPage { id in
                     route = .meeting(id)
@@ -468,6 +477,8 @@ struct ContentView: View {
             center.phase == .recording ? center.stopRecording() : center.startRecording()
         case .showToday:
             route = .today
+        case .showSettings:
+            route = .settings
         case .showNotes:
             msWithAnimation(Motion.enter) { mode = .document }
         case .showTranscript:
@@ -688,6 +699,8 @@ struct SidebarView: View {
     /// What the user is searching for, so a refresh after an edit doesn't
     /// silently drop them out of their own search results.
     var query: String = ""
+    /// So the footer's engine label follows a change made in the pane it opens.
+    @ObservedObject private var settings = Settings.shared
     @State private var pendingDelete: MeetingListItem?
     @State private var deleteError: String?
     @State private var reprocessError: String?
@@ -765,6 +778,11 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // Pinned to the foot of the rail rather than sitting in the list:
+        // preferences are not one of the meetings, and a row that scrolls away
+        // under 51 of them is a row nobody finds. Same place a Mac user already
+        // looks for the account and the app's own controls.
+        .safeAreaInset(edge: .bottom, spacing: 0) { settingsFooter }
         .onDeleteCommand { askToDeleteSelection() }
         // File ▸ Delete Meeting… (⌘⌫). The command is posted by the menu bar
         // and adopted HERE rather than in ContentView, because the
@@ -869,6 +887,66 @@ struct SidebarView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Recording now")
         .accessibilityValue(clock(center.elapsed))
+    }
+
+    /// The foot of the sidebar: where this app's own controls live.
+    ///
+    /// A hairline, then one row that behaves like every other row in the rail
+    /// (same selected tint, same hit area) while living outside the scroll, so
+    /// it is in the same place whether the library holds two meetings or two
+    /// hundred. It carries the one fact worth reading at a glance — who writes
+    /// the summaries — because that is the setting most likely to be wrong and
+    /// the one people forget they chose.
+    private var settingsFooter: some View {
+        let selected = route == .settings
+        return VStack(spacing: 0) {
+            Rectangle().fill(MS.hairline).frame(height: 1)
+            Button {
+                route = .settings
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13))
+                        .foregroundStyle(selected ? MS.ink : MS.ink2)
+                        .msDecorative()
+                    Text("Settings")
+                        .font(MSFont.chromeMedium)
+                        .foregroundStyle(selected ? MS.ink : MS.ink)
+                    Spacer(minLength: 6)
+                    Text(engineLabel)
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink3)
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(selected ? MS.interactive.opacity(0.20) : .clear)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+        }
+        // Opaque, or the list scrolls THROUGH it: a safe-area inset reserves
+        // the space but does not stop the rows passing underneath, so without
+        // a surface the last meeting's title reads straight over the word
+        // "Settings".
+        .background(.bar)
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityLabel("Settings")
+        .accessibilityValue("Summaries by \(engineLabel)")
+    }
+
+    /// Who writes the summaries, in the name the user picked it by.
+    private var engineLabel: String {
+        switch settings.summaryEngine {
+        case "apple": return "Apple Intelligence"
+        case let id: return id.prefix(1).uppercased() + id.dropFirst()
+        }
     }
 
     private var groups: [DayGroup] {
