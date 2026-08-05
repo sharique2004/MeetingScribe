@@ -197,13 +197,17 @@ struct SettingsView: View {
             .padding(.horizontal, 34)
             .padding(.top, 8)
             .padding(.bottom, 40)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // Centred, not left-hugging. The column caps at 640 so the prose
+            // stays readable, which on a wide window leaves a lot of space —
+            // and pinned to the leading edge that read as the pane having
+            // failed to fill rather than as a measure. Text inside each card
+            // stays left-aligned: it is the COLUMN that centres, not the
+            // sentences, which are still meant to be read down an edge.
+            .frame(maxWidth: .infinity, alignment: .center)
         }
         // No frame of its own any more. This was 520×680, sized for the
         // floating Settings scene it used to be; in the document column that
-        // pinned it to a narrow strip. The column decides the width now, and
-        // the content caps its own measure at 640 so the prose stays readable
-        // on a wide window.
+        // pinned it to a narrow strip. The column decides the width now.
         .background(MS.content)
         .task {
             if let probe = try? await API.get("api/cli-engines", as: CLIEngines.self) {
