@@ -56,6 +56,13 @@ final class Settings: ObservableObject {
         didSet { write("voice_profiles", voiceProfiles) }
     }
 
+    /// Whether a meeting summarises itself the moment it finishes
+    /// transcribing. Read fresh by app._auto_summarize at the end of every
+    /// transcription, so the switch applies to the very next meeting.
+    @Published var autoSummarize: Bool {
+        didSet { write("auto_summarize", autoSummarize) }
+    }
+
     private let path = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".meetingscribe/config.json")
 
@@ -79,8 +86,9 @@ final class Settings: ObservableObject {
 
     private init() {
         let cfg = Self.read(path)
-        // Matches config.py's default: on, unless this Mac says otherwise.
+        // Matches config.py's defaults: on, unless this Mac says otherwise.
         voiceProfiles = (cfg["voice_profiles"] as? Bool) ?? true
+        autoSummarize = (cfg["auto_summarize"] as? Bool) ?? true
         whisperBackend = (cfg["whisper_backend"] as? String) ?? "auto"
         // null, absent, or a code this build doesn't offer all mean the same
         // thing to the user: nothing is being forced.
@@ -284,6 +292,19 @@ struct SettingsView: View {
             : "Locks speech recognition to this language, which is more accurate than letting the engine guess. Live captions need a chosen language too."
     }
 
+    /// What auto-summarising actually costs, which is not the same sentence on
+    /// every engine: on-device it is a minute of this Mac, on a cloud CLI it is
+    /// a call per meeting, and a user turning it on deserves to know which.
+    private var autoSummarizeDetail: String {
+        let base = "As soon as a meeting finishes transcribing it writes its own summary, "
+        if settings.summaryEngine == "apple" {
+            return base + "on this Mac, costing nothing but a minute of it. Off, the summary waits for you to ask."
+        }
+        let name = clis.first { $0.id == settings.summaryEngine }?.label
+            ?? settings.summaryEngine.capitalized
+        return base + "which is one \(name) call per meeting. Off, the summary waits for you to ask."
+    }
+
     private var intelligence: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("INTELLIGENCE")
@@ -328,6 +349,12 @@ struct SettingsView: View {
                 NoticeBand(icon: "exclamationmark.triangle", text: missing)
                     .padding(.top, 12)
             }
+
+            SettingToggleRow(
+                title: "Summarise every meeting automatically",
+                detail: autoSummarizeDetail,
+                on: $settings.autoSummarize)
+                .padding(.top, 14)
 
             Text("Applies to summaries and to Ask. Cloud engines receive the transcript text, never audio, which stays on this Mac. If the engine you pick is ever unavailable, summaries fall back to Apple Intelligence automatically. Re-analyse any meeting to rewrite its summary with the engine you pick.")
                 .font(MSFont.meta)

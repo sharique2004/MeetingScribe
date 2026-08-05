@@ -458,6 +458,39 @@ def _list_meetings(query=""):
 
 # ------------------------------------------------------------- processing ----
 
+def _auto_summarize(meeting_id, meta):
+    """Write the summary the moment there is a transcript to write it from.
+
+    Nothing ever did this. A summary only happened if someone pressed a button,
+    and the button was hidden on any meeting that had a note on it, so in
+    practice most meetings never got one: 26 of the 46 on the development
+    machine had a transcript and no summary. A feature you have to remember to
+    ask for is a feature that mostly does not run.
+
+    Skipped when a summary already exists, which is the reprocess case: the
+    user asked for a new transcript, not for the engine to spend a model call
+    replacing a summary behind their back. Re-analyse is one click away and
+    says what it does.
+
+    NEVER FATAL. This runs on the tail of a transcription that SUCCEEDED, and
+    every reason a summary can refuse — no summariser signed in, Apple
+    Intelligence switched off, a recluster holding the file — is a reason to
+    leave the meeting transcribed and quiet, not to fail it.
+    """
+    try:
+        if not load_config().get("auto_summarize", True):
+            return
+        if meta.get("summary") or not meta.get("turns"):
+            return
+        refused = _start_summary(meeting_id)
+    except Exception as exc:  # noqa: BLE001 — a bonus, never the meeting's fate
+        app.logger.warning("auto-summary failed to start for %s: %s", meeting_id, exc)
+        return
+    if refused:
+        app.logger.info("auto-summary skipped for %s: %s",
+                        meeting_id, refused[0].get("error"))
+
+
 def _start_processing(meeting_id, claimed=False):
     if not claimed:  # record_stop path: register the job now
         JOBS[meeting_id] = {"state": "processing", "message": "Loading model…"}
@@ -466,6 +499,7 @@ def _start_processing(meeting_id, claimed=False):
         JOBS[meeting_id]["message"] = msg
 
     def run():
+        transcribed = None
         try:
             pipeline.process_meeting(_dir_for(meeting_id), update)
             meta = _read_meeting(meeting_id)
@@ -473,6 +507,7 @@ def _start_processing(meeting_id, claimed=False):
             JOBS[meeting_id] = {"state": "done", "message": "Complete"}
             _sync_folder_name(meta)  # catch up on renames deferred mid-job
             _push_synced(meeting_id)
+            transcribed = meta
         except Exception:
             err = traceback.format_exc().strip().splitlines()[-1]
             # ORDER MATTERS HERE, and it was wrong.
@@ -501,6 +536,14 @@ def _start_processing(meeting_id, claimed=False):
             except Exception:  # the document is beyond saving; JOBS still says so
                 pass
             JOBS[meeting_id] = {"state": "error", "message": err}
+
+        # OUTSIDE the try, and last. Two reasons, both load-bearing: anything
+        # this raised inside that block would land in the handler above and
+        # mark a meeting that transcribed perfectly well as failed; and
+        # _start_summary blocks on a "processing" entry in JOBS, so claiming
+        # the summary any earlier would refuse against this very job.
+        if transcribed is not None:
+            _auto_summarize(meeting_id, transcribed)
 
     threading.Thread(target=run, daemon=True, name=f"process-{meeting_id}").start()
 
@@ -2536,23 +2579,27 @@ def _engine_precheck():
     return ({"error": _on_device_unavailable(llm_reason)}, 400)
 
 
-@app.post("/api/meetings/<meeting_id>/summarize")
-def summarize_meeting(meeting_id):
-    """Generate a summary + action items with the user's own Claude (or the
-    on-device model if configured). Runs in the background."""
+def _start_summary(meeting_id):
+    """Claim the summary job and run it in the background.
+
+    Returns None once it has started, or an (error, status) pair when it
+    refuses. Shared by the route and by the auto-run on the tail of a
+    transcription, so the two cannot drift in what they check, what they claim,
+    what they block on, or what they clean up afterwards.
+    """
     meta = _read_meeting(meeting_id)
     if not meta.get("turns"):
-        return jsonify({"error": "No transcript to summarize yet"}), 400
+        return {"error": "No transcript to summarize yet"}, 400
     unusable = _engine_precheck()
     if unusable:
-        return jsonify(unusable[0]), unusable[1]
+        return unusable
     # Summarize writes its result back into meeting.json, and a recluster is
     # rewriting that same file — and would summarize stale speaker labels.
     denied = _claim_job(SUMMARY_JOBS, meeting_id, "Summarizing…",
                         blockers=[(JOBS, "Meeting is being processed"),
                                   (RECLUSTER_JOBS, RECLUSTER_BUSY)])
     if denied:
-        return jsonify(denied[0]), denied[1]
+        return denied
 
     def run():
         try:
@@ -2585,6 +2632,16 @@ def summarize_meeting(meeting_id):
                                        meeting_id, exc)
 
     threading.Thread(target=run, daemon=True, name=f"summarize-{meeting_id}").start()
+    return None
+
+
+@app.post("/api/meetings/<meeting_id>/summarize")
+def summarize_meeting(meeting_id):
+    """Generate a summary + action items with the user's own Claude (or the
+    on-device model if configured). Runs in the background."""
+    refused = _start_summary(meeting_id)
+    if refused:
+        return jsonify(refused[0]), refused[1]
     return jsonify({"ok": True})
 
 

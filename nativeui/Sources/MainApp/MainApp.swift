@@ -103,12 +103,18 @@ final class Library: ObservableObject {
     /// the whole library, taken on the same tick as the list rather than by a
     /// second poller racing it.
     private func refreshProgress() async {
-        var next: [String: String] = [:]
-        for (id, job) in await API.processingJobs() where job.state == "processing" {
+        applyProgress(await API.processingJobs())
+    }
+
+    /// The engine's job table as the per-row progress lines. Its own function
+    /// so the poller, which already has the table in hand, does not fetch the
+    /// same document a second time to say the same thing differently.
+    private func applyProgress(_ jobs: [String: EngineJob]) {
+        progress = jobs.compactMapValues { job in
+            guard job.state == "processing" else { return nil }
             let message = job.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !message.isEmpty { next[id] = message }
+            return message.isEmpty ? nil : message
         }
-        progress = next
     }
 
     /// Recording just stopped, so a meeting is on its way that the engine has
@@ -145,22 +151,46 @@ final class Library: ObservableObject {
             // the engine a bounded window to produce it rather than polling on
             // forever if a recording produced nothing at all.
             var ticksWaitingForArrival = force ? 30 : 0
+            // Summaries now start on their own at the end of a transcription
+            // (app._auto_summarize), and they start AFTER the status goes to
+            // "done" — so watching transcription alone stopped this loop at
+            // the exact moment the summary began, and the row that was about
+            // to gain a headline and a sparkle kept neither until relaunch.
+            var summarising = Set<String>()
+            // …and the claim lands a beat AFTER that, with a folder rename and
+            // a phone push in between, so there is a window where transcription
+            // is finished and the summary is not yet registered. Ticking inside
+            // it would see nothing in flight and stop. Hold the loop open across
+            // the gap instead.
+            var ticksAwaitingSummary = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 guard let fresh = try? await API.meetings(query: self.query) else { continue }
                 self.meetings = fresh
-                await self.refreshProgress()
+                let (processing, summaryJobs) = await API.allJobs()
+                self.applyProgress(processing)
                 let stillWorking = Set(fresh.filter { meetingIsWorking($0.status) }.map(\.id))
+                let stillSummarising = Set(summaryJobs.filter { $0.value.state == "processing" }
+                                                      .map(\.key))
                 // Only the rows that finished ON THIS TICK: their brief and
-                // badges were fetched while the transcript did not exist yet.
-                for id in pending.subtracting(stillWorking) {
+                // badges were fetched while the transcript, or the summary,
+                // did not exist yet.
+                let justTranscribed = pending.subtracting(stillWorking)
+                for id in justTranscribed.union(summarising.subtracting(stillSummarising)) {
                     self.metaFetches.remove(id)
                     self.meta[id] = nil
                     self.fetchBrief(for: id)
                 }
+                if !justTranscribed.isEmpty { ticksAwaitingSummary = 5 }
                 pending = stillWorking
-                if !stillWorking.isEmpty { ticksWaitingForArrival = 0; continue }
+                summarising = stillSummarising
+                if !stillWorking.isEmpty || !stillSummarising.isEmpty {
+                    ticksWaitingForArrival = 0
+                    ticksAwaitingSummary = 0
+                    continue
+                }
+                if ticksAwaitingSummary > 0 { ticksAwaitingSummary -= 1; continue }
                 // Nothing is in flight. Keep waiting only while a meeting we
                 // have not seen before is still expected to turn up.
                 if ticksWaitingForArrival > 0, Set(fresh.map(\.id)).subtracting(known).isEmpty {

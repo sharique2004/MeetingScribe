@@ -583,6 +583,15 @@ enum API {
         (try? await get("api/status", as: EngineStatus.self))?.jobs ?? [:]
     }
 
+    /// Both job tables in ONE request. The library poll needs transcription
+    /// progress and summary progress on the same tick, and asking twice would
+    /// fetch the identical document twice a second.
+    static func allJobs() async -> (processing: [String: EngineJob],
+                                    summarising: [String: EngineJob]) {
+        let status = try? await get("api/status", as: EngineStatus.self)
+        return (status?.jobs ?? [:], status?.summary_jobs ?? [:])
+    }
+
     /// Transcribe a meeting's saved audio again — the recovery path for one
     /// that failed, and the only one there is. Returns (ok, engineMessage):
     /// the engine refuses while the meeting is recording, while it is being

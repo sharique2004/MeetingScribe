@@ -104,6 +104,12 @@ DEFAULTS = {
     #    Apple Intelligence switched off gets names the installed CLI as the
     #    way out — see app._on_device_unavailable.
     "summary_engine": "apple",
+    # Summarise every meeting as soon as it finishes transcribing, rather than
+    # waiting to be asked. Off means the summary is a button, which is what it
+    # always was — and why most meetings never had one. Only ever runs on a
+    # meeting that has no summary yet, so a reprocess never silently spends a
+    # model call replacing one; see app._auto_summarize.
+    "auto_summarize": True,
     # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
     "live_captions": True,
     # Voice profiles: renaming a speaker saves their voice locally, so later
