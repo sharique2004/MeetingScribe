@@ -186,8 +186,8 @@ PLIST
 
 # Icon: prefer the committed app icon (tools/appicon/MeetingScribe.icns,
 # rendered from the Icon Composer source tools/appicon/MeetingScribe.icon by
-# tools/appicon/render_icon.py). Fall back to the procedural tools/make_icon.py
-# only if that committed icns is missing.
+# tools/appicon/render_icon.sh, needs Xcode 26+). Fall back to the procedural
+# tools/make_icon.py only if that committed icns is missing.
 if [ -f "$PROJECT/tools/appicon/MeetingScribe.icns" ]; then
     cp "$PROJECT/tools/appicon/MeetingScribe.icns" "$DEST/Contents/Resources/$APP_NAME.icns"
     echo "installed the app icon (tools/appicon/MeetingScribe.icns)"
