@@ -1288,9 +1288,12 @@ const S = {
   q: "",                    // sidebar search
   tq: "",                   // transcript search
   tab: "overview",          // meeting view tab: overview | transcript | insights | chat
-  chat: {},                 // meeting id -> [{role, text, citations, pending}] (this session only)
+  chat: {},                 // meeting id -> [{role, text, citations, pending}] (hydrated from the server's qa.json)
   chatDraft: {},            // meeting id -> half-typed question (survives re-renders)
-  chatBusy: false,          // an /ask request is in flight
+  chatBusy: {},             // meeting id -> an /ask is in flight FOR THAT MEETING (asking about A never locks B)
+  chatHydrating: {},        // meeting id -> its qa.json fetch is in flight
+  askJobs: {},              // server-side ask jobs, from /api/status
+  lastAskJobs: {},
   devices: null,
   calendar: [],
   rec: {recording: false},
@@ -2695,7 +2698,10 @@ function trSearch(v) {
 /* A conversation with one meeting. The transcript TEXT goes to the user's own
    Claude (same account as summaries, same failure path); the audio never moves.
    Answers come back with citations whose "t" is a real turn start time, so each
-   chip is a seek button. Threads live in S.chat for this session only. */
+   chip is a seek button. Threads are server-owned (the meeting's qa.json):
+   S.chat is a cache hydrated by hydrateChat(), asks run as background jobs the
+   engine finishes with or without us, and an answer mid-write when this page
+   loads is picked back up by followAsk(). */
 const ASK_CHIPS = [
   ["What should I send him?", "What should I send him?"],
   ["Where did I ramble?", "Where did I ramble?"],
@@ -2767,7 +2773,7 @@ function renderChat(meta) {
     <div class="field"><label class="vh" for="askInput">Ask about this meeting</label>
       <textarea id="askInput" rows="1" spellcheck="false" placeholder="Ask about this meeting…"
         oninput="askDraft(this)">${esc(S.chatDraft[meta.id] || "")}</textarea>
-      <button class="send" id="askSend" onclick="askSend()" ${S.chatBusy ? "disabled" : ""}
+      <button class="send" id="askSend" onclick="askSend()" ${S.chatBusy[meta.id] ? "disabled" : ""}
         aria-label="Send" title="Send — Enter · Shift+Enter for a new line"><span class="icon">${icon("send", 14, 2)}</span></button>
     </div>
     <div class="privacy-note"><span class="icon">${icon("shield", 12)}</span>Only transcript text is sent to your Claude account. Audio stays on this Mac.</div>
@@ -2897,12 +2903,12 @@ function stickAskScroll() {
   if (sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight < 80) sc.scrollTop = sc.scrollHeight;
 }
 async function askSend() {
-  if (S.chatBusy) return;
   const meta = S.detail, ta = $("askInput");
   if (!meta || !ta) return;
   const question = ta.value.trim();
   if (!question) return;
   const id = meta.id;                    // pin it: the user may switch meetings mid-answer
+  if (S.chatBusy[id]) return;           // per meeting: asking about A never locks B
   const thread = chatThread(id);
   // History is the exchange BEFORE this question — a pending row has no text
   // yet and a streaming one has only a preview of an answer the server has not
@@ -2911,7 +2917,7 @@ async function askSend() {
     .map(m => ({role: m.role, text: m.text}));
   thread.push({role: "user", text: question});
   thread.push({role: "assistant", text: "", citations: [], pending: true});
-  S.chatBusy = true;
+  S.chatBusy[id] = true;
   ta.value = "";
   S.chatDraft[id] = "";
   _askAutoFocus = true;
@@ -2959,7 +2965,7 @@ async function askSend() {
     if (e.data && e.data.needs_claude) claudeSetupPrompt(e.message);
     else toast("⚠ " + e.message, 6000);
   } finally {
-    S.chatBusy = false;
+    delete S.chatBusy[id];
     // Whose composer is on screen right now? The answer arrived for `id`, but
     // the user may have walked to another meeting while we waited.
     const stillOpen = S.detail && S.detail.id === id;
@@ -2972,16 +2978,90 @@ async function askSend() {
     if (stillOpen) {
       _askAutoFocus = true;
       renderMain();
-    } else {
-      // DO NOT re-render for a meeting the user has left: renderMain() would
-      // rebuild the meeting they are looking at — and if they are mid-question
-      // in ITS composer, replace the textarea under their fingers. The only
-      // thing that visibly changed for them is the shared busy flag, so undo
-      // exactly that, in place.
-      const btn = $("askSend");
-      if (btn) btn.disabled = false;
     }
+    // A meeting the user has left needs nothing done in place any more: the
+    // busy flag is per meeting, so their composer was never disabled by this
+    // answer, and the thread they'll come back to renders from state.
   }
+}
+
+/* --- The server-owned conversation ---------------------------------------
+   The engine persists every settled exchange to the meeting's qa.json and
+   runs each ask as a background job, so the thread survives reloads, restarts
+   and whichever client asked. First open of a meeting pulls the store; a job
+   still writing is followed by polling — same cadence rules as every other
+   poll in this file, and never a re-render under a live caret. */
+async function hydrateChat(id) {
+  if ((S.chat[id] && S.chat[id].length) || S.chatHydrating[id]) return;
+  S.chatHydrating[id] = true;
+  try {
+    const qa = await api(`/api/meetings/${id}/qa`);
+    if (S.chat[id] && S.chat[id].length) return;   // a send beat the fetch; its thread wins
+    const thread = chatThread(id);
+    for (const e of (qa.exchanges || [])) {
+      if (!e.question || !e.answer) continue;
+      thread.push({role: "user", text: e.question});
+      thread.push({role: "assistant", text: e.answer, citations: e.citations || []});
+    }
+    if (qa.job && qa.job.state === "processing" && !S.chatBusy[id]) followAsk(id, qa);
+    if (thread.length && S.detail && S.detail.id === id && S.tab === "chat" && !mainEditing()) {
+      renderMain();
+    }
+  } catch (e) { /* no store yet — nothing to hydrate */ }
+  finally { delete S.chatHydrating[id]; }
+}
+/* Follow an answer the server is already writing — asked before a reload, or
+   from the Mac app. The store's `partial` grows exactly like a stream, one
+   second at a time, and the settled exchange arrives with its citations. */
+function followAsk(id, qa) {
+  S.chatBusy[id] = true;
+  const thread = chatThread(id);
+  if (qa.job.question) thread.push({role: "user", text: qa.job.question});
+  thread.push({role: "assistant", text: qa.partial || "", citations: [],
+               pending: !qa.partial, streaming: !!qa.partial});
+  const tick = async () => {
+    let env;
+    try { env = await api(`/api/meetings/${id}/qa`); }
+    catch (e) { setTimeout(tick, 2000); return; }    // engine napping — keep at it
+    const t = chatThread(id);
+    if (env.job && env.job.state === "processing") {
+      const m = t.find(x => x.pending || x.streaming);
+      if (m && env.partial && env.partial.length > (m.text || "").length) {
+        m.text = env.partial;
+        m.pending = false;
+        m.streaming = true;
+        if (S.detail && S.detail.id === id) {
+          const bubble = $("askStreamBubble"), node = $("askStream");
+          if (bubble && node) {
+            bubble.classList.add("is-streaming");
+            node.textContent = m.text;
+            stickAskScroll();
+          }
+        }
+      }
+      setTimeout(tick, 1000);
+      return;
+    }
+    // The job settled while we watched. The exchange in the store is the
+    // authority — it is the only one with validated citations.
+    delete S.chatBusy[id];
+    const i = t.findIndex(x => x.pending || x.streaming);
+    const done = env.job && env.job.state === "done";
+    const settled = (env.exchanges || []).find(e => env.job && e.id === env.job.qa_id)
+                 || (env.exchanges || [])[(env.exchanges || []).length - 1];
+    if (done && settled && settled.answer) {
+      const answer = {role: "assistant", text: settled.answer, citations: settled.citations || []};
+      if (i >= 0) t[i] = answer; else t.push(answer);
+    } else {
+      if (i >= 0) {
+        t.splice(i, 1);
+        if (i > 0 && t[i - 1] && t[i - 1].role === "user") t.splice(i - 1, 1);
+      }
+      if (env.job && env.job.message) toast("⚠ " + env.job.message, 6000);
+    }
+    if (S.detail && S.detail.id === id && !mainEditing()) renderMain();
+  };
+  setTimeout(tick, 1000);
 }
 
 /* Tab order drives both the rail's segmented control and the pill offset. The
@@ -3825,6 +3905,9 @@ async function openMeeting(id) {
     if (meta.status === "done" && (switched || !(AU.mic || AU.sys))) transportSetup(meta);
     renderSidebar();
     renderMain();
+    // The server keeps the conversation: pull it (and any answer still being
+    // written) so the Ask tab opens onto the thread, not onto amnesia.
+    hydrateChat(id);
   } catch (e) { toast("⚠ " + e.message); }
 }
 
@@ -3925,6 +4008,25 @@ async function pollStatus() {
       const mine = S.detail && S.summaryJobs[S.detail.id];
       if (mine && mine.state === "processing" && !S.busySummary && !$("sumBtn")?.disabled) renderMain();
       S.lastSummaryJobs = JSON.parse(JSON.stringify(S.summaryJobs));
+
+      // finished ask jobs -> a nudge toward the answer. Only for asks this
+      // page is NOT already following (its own send, or a followAsk poll):
+      // those paint the thread themselves, and a toast about the meeting the
+      // user is literally reading would be noise.
+      S.askJobs = st.ask_jobs || {};
+      for (const [id, job] of Object.entries(S.askJobs)) {
+        const prev = S.lastAskJobs[id];
+        if (prev && prev.state === "processing" && job.state !== "processing"
+            && !S.chatBusy[id]
+            && !(S.detail && S.detail.id === id && S.tab === "chat")) {
+          delete S.chat[id];   // stale: refetch the store next time it opens
+          if (job.state === "done") {
+            toast("✅ Answer ready — open that meeting's Ask tab", 6000);
+            if (S.detail && S.detail.id === id) hydrateChat(id);
+          }
+        }
+      }
+      S.lastAskJobs = JSON.parse(JSON.stringify(S.askJobs));
     }
   } catch (e) { setConnected(false); }  // backend restarting — banner + auto-resync
   setTimeout(pollStatus, S.rec.recording ? 700 : 1200);

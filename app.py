@@ -22,6 +22,7 @@ from flask import Flask, abort, jsonify, redirect, request, send_from_directory
 
 import ai_cli
 import ask
+import audio_archive
 import diarization
 import insforge_client
 import live_captions
@@ -56,6 +57,17 @@ SUMMARY_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": s
 # Recluster runs inside the request, but it rewrites analysis.npz, so it still
 # needs a claim: an entry lives here only for the duration of one call.
 RECLUSTER_JOBS = {}  # meeting_id -> {"state": "processing", "message": str}
+# FLAC archival (audio_archive.py). An entry lives here only while one
+# meeting's tracks are being compressed; it exists so delete/reprocess/
+# recluster/rename stand aside for the encoder exactly as they do for each
+# other — and vice versa, via the blockers in _compress_one.
+COMPRESS_JOBS = {}  # meeting_id -> {"state": "processing", "message": str}
+# One ask at a time per meeting. Kept deliberately small — /api/status ships
+# every entry to every poller — so the live answer text lives in _ASK_LIVE
+# (below, by the ask routes) and the finished exchange in the meeting's
+# qa.json, never here.
+ASK_JOBS = {}  # meeting_id -> {"state": processing|done|error, "message": str,
+#                               "question": str, "qa_id": str}
 RECORD_LOCK = threading.Lock()  # serializes start/stop transitions across requests
 JOB_LOCK = threading.Lock()  # makes "check job state then register" atomic
 SYNC_ALL = {}  # progress of a "sync all to phone" run
@@ -240,6 +252,10 @@ def _sync_folder_name(meta):
         return  # a summary is holding this exact path for the length of its run
     if RECLUSTER_JOBS.get(meta["id"], {}).get("state") == "processing":
         return  # a recluster is holding this exact path open mid-write
+    if COMPRESS_JOBS.get(meta["id"], {}).get("state") == "processing":
+        return  # the archiver is mid-encode against this exact path
+    if ASK_JOBS.get(meta["id"], {}).get("state") == "processing":
+        return  # an answer is being written against this exact path
     current = _dir_for(meta["id"])
     target = current.with_name(_folder_name_for(meta))
     if not current.exists() or current == target or target.exists():
@@ -544,6 +560,10 @@ def _start_processing(meeting_id, claimed=False):
         # the summary any earlier would refuse against this very job.
         if transcribed is not None:
             _auto_summarize(meeting_id, transcribed)
+            # Archive this meeting once the dust settles. Delayed so the
+            # summary's claim lands first (its blocker then makes the
+            # archiver wait its turn); a no-op unless the user opted in.
+            threading.Timer(5.0, _compress_one, args=(meeting_id,)).start()
 
     threading.Thread(target=run, daemon=True, name=f"process-{meeting_id}").start()
 
@@ -605,10 +625,11 @@ def status():
     # clients read "jobs"/"summary_jobs" by name and ignore the rest.
     with JOB_LOCK:
         jobs, summary_jobs = dict(JOBS), dict(SUMMARY_JOBS)
-        recluster_jobs = dict(RECLUSTER_JOBS)
+        recluster_jobs, ask_jobs = dict(RECLUSTER_JOBS), dict(ASK_JOBS)
     return jsonify({"recorder": REC.status(), "jobs": jobs,
                     "summary_jobs": summary_jobs,
-                    "recluster_jobs": recluster_jobs})
+                    "recluster_jobs": recluster_jobs,
+                    "ask_jobs": ask_jobs})
 
 
 @app.get("/api/devices")
@@ -1248,6 +1269,14 @@ def calendar_today():
 # answered a disk problem with data loss. If retention is ever added it has to
 # be something the user switched on, off by default, and it does not belong in
 # the code path that is trying to start a meeting.
+#
+# COMPRESSION IS NOT RETENTION. The opt-in FLAC archival below
+# (_compress_sweep / audio_archive.py) rewrites a finished meeting's audio
+# into a smaller lossless container and removes the WAV only after decoding
+# the copy back and comparing it sample for sample — the audio a reader gets
+# afterwards is bit-identical, so no information is lost and the policy above
+# stands. It is still off by default ("compress_recordings"), because it
+# rewrites the only copy and that choice belongs to the user.
 RECORDING_BYTES_PER_SECOND = 288 * 1024   # mic mono + system stereo @ 48 kHz
 # Below this a recording is refused. ~2 hours of headroom, which is longer
 # than any meeting this app has recorded, plus room for the pipeline's own
@@ -1315,6 +1344,159 @@ def _disk_state(force=False):
                         f"for {_recording_time_left(free)} of recording."),
         }
     return {"free": free, "state": "ok", "message": None}
+
+
+# ------------------------------------------------------- FLAC archival ----
+# The opt-in follow-through on the policy comment above: finished meetings'
+# WAVs become verified FLACs (audio_archive.py owns the how; this block owns
+# the WHEN — never while anything else holds the meeting).
+
+_COMPRESS_SWEEP_LOCK = threading.Lock()
+_COMPRESS_SWEEP_THREAD = None
+
+
+def _compressible_tracks(meta):
+    """(key, file_name) pairs still on WAV, for a meeting that is done."""
+    if (meta or {}).get("status") != "done":
+        return []
+    return [(key, t.get("file") or f"{key}.wav")
+            for key, t in (meta.get("tracks") or {}).items()
+            if (t.get("file") or f"{key}.wav").endswith(".wav")]
+
+
+def _reclaimable_bytes():
+    """Bytes the archival sweep could still reclaim (approx: WAV size minus
+    the ~4.4x-smaller FLAC it would become, counted as the whole WAV for a
+    simple, conservative-enough headline)."""
+    total = 0
+    for meta in _list_meetings():
+        d = _dir_for(meta["id"])
+        for _key, name in _compressible_tracks(_read_meeting_safe(meta["id"]) or {}):
+            try:
+                total += (d / name).stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _compress_one(meeting_id):
+    """Archive one finished meeting's tracks, standing aside for everything.
+
+    Silent no-op unless the config switch is on and the meeting is done and
+    unowned. Per-track: encode+verify (audio_archive.compress_track), commit
+    the new name to meeting.json under JOB_LOCK, and only then remove the
+    WAV. A meeting that is mid-anything is simply skipped — the next sweep
+    gets it.
+    """
+    if not load_config().get("compress_recordings"):
+        return
+    if REC.is_recording and REC.meeting_id == meeting_id:
+        return
+    meta = _read_meeting_safe(meeting_id)
+    if not meta or meta.get("status") != "done":
+        return
+    d = _dir_for(meeting_id)
+    denied = _claim_job(
+        COMPRESS_JOBS, meeting_id, "Compressing audio…",
+        blockers=[(JOBS, "Meeting is being processed"),
+                  (SUMMARY_JOBS, "Meeting summary is being generated"),
+                  (RECLUSTER_JOBS, RECLUSTER_BUSY)])
+    if denied:
+        return
+    try:
+        for key, track in (meta.get("tracks") or {}).items():
+            name = track.get("file") or f"{key}.wav"
+            if name.endswith(".flac"):
+                # Crash window: meta committed, WAV never removed. Re-verified
+                # before removal inside remove_stranded_wav.
+                audio_archive.remove_stranded_wav(d, key)
+                continue
+            patch = audio_archive.compress_track(d, key, name)
+            if patch is None:
+                continue
+
+            def commit(m, key=key, patch=patch):
+                tracks = m.get("tracks") or {}
+                if key not in tracks:
+                    return ({"error": "track vanished"}, 409)
+                tracks[key].update(patch)
+                return None
+
+            _meta, err = _edit_meeting_json(meeting_id, commit)
+            if err is not None:
+                app.logger.warning("compress %s/%s: meta commit refused (%s); "
+                                   "keeping the WAV", meeting_id, key, err[0])
+                continue
+            audio_archive.remove_wav(d, key)
+    except Exception as exc:
+        app.logger.warning("compress %s failed: %s", meeting_id, exc)
+    finally:
+        with JOB_LOCK:
+            COMPRESS_JOBS.pop(meeting_id, None)
+
+
+def _compress_sweep():
+    """Every finished meeting, oldest wreckage first. One at a time — the
+    encoder is fast (~2,000x realtime) but this is a background nicety and
+    must never compete with a live meeting for I/O."""
+    try:
+        audio_archive.sweep_orphan_temps(RECORDINGS_DIR)
+        for meta in _list_meetings():
+            try:
+                _compress_one(meta["id"])
+            except Exception as exc:  # one bad folder never blocks the rest
+                app.logger.warning("compress sweep skipped %s: %s", meta.get("id"), exc)
+    except Exception as exc:
+        app.logger.warning("compress sweep failed: %s", exc)
+
+
+def _compress_sweep_async():
+    """Single-flight background sweep. Returns False when one is running."""
+    global _COMPRESS_SWEEP_THREAD
+    with _COMPRESS_SWEEP_LOCK:
+        if _COMPRESS_SWEEP_THREAD is not None and _COMPRESS_SWEEP_THREAD.is_alive():
+            return False
+        _COMPRESS_SWEEP_THREAD = threading.Thread(
+            target=_compress_sweep, daemon=True, name="compress-sweep")
+        _COMPRESS_SWEEP_THREAD.start()
+    return True
+
+
+@app.get("/api/storage")
+def storage_state():
+    """The Settings pane's storage card: what is used, what a sweep would buy."""
+    used = compressed = pending = 0
+    for meta in _list_meetings():
+        full = _read_meeting_safe(meta["id"]) or {}
+        d = _dir_for(meta["id"])
+        for key, t in (full.get("tracks") or {}).items():
+            name = t.get("file") or f"{key}.wav"
+            try:
+                used += (d / name).stat().st_size
+            except OSError:
+                continue
+            if name.endswith(".flac"):
+                compressed += 1
+            elif full.get("status") == "done":
+                pending += 1
+    return jsonify({
+        "free": _free_bytes(), "audio_bytes": used,
+        "reclaimable": _reclaimable_bytes(),
+        "compressed_tracks": compressed, "pending_tracks": pending,
+        "enabled": bool(load_config().get("compress_recordings")),
+        "sweeping": _COMPRESS_SWEEP_THREAD is not None and _COMPRESS_SWEEP_THREAD.is_alive(),
+    })
+
+
+@app.post("/api/storage/compress")
+def storage_compress():
+    """Kick a sweep over everything already on disk (the toggle only catches
+    meetings finishing after it was switched on)."""
+    if not load_config().get("compress_recordings"):
+        return jsonify({"error": "Turn on 'Compress finished recordings' first"}), 400
+    started = _compress_sweep_async()
+    return jsonify({"ok": True, "started": started,
+                    "reclaimable": _reclaimable_bytes()})
 
 
 @app.post("/api/record/start")
@@ -2190,7 +2372,8 @@ def meeting_delete(meeting_id):
     denied = _claim_job(JOBS, meeting_id, "Deleting…",
                         busy="Meeting is being processed",
                         blockers=[(SUMMARY_JOBS, "Meeting summary is being generated"),
-                                  (RECLUSTER_JOBS, RECLUSTER_BUSY)])
+                                  (RECLUSTER_JOBS, RECLUSTER_BUSY),
+                                  (COMPRESS_JOBS, "Meeting audio is being compressed")])
     if denied:
         return jsonify(denied[0]), denied[1]
     try:
@@ -2830,37 +3013,148 @@ def _ask_hex(text):
         return None
 
 
-def _ask_events(meeting_dir, question, history):
-    """Run one ask on a worker thread, yielding ("delta"|"done"|"failed", x).
+# The store. Questions and answers used to live only in whichever client asked
+# them: the server computed the answer, handed it over the wire once, and
+# forgot it — navigate away mid-answer and the finished result landed in a
+# queue nobody read. Now every ask runs as a background job (ASK_JOBS, same
+# claim contract as SUMMARY_JOBS) and every settled exchange is appended to
+# qa.json in the meeting's folder, so the conversation outlives the page, the
+# window and the process. Clients hydrate from GET /api/meetings/<id>/qa and
+# poll it while a job is live; a client that wants the words as they are
+# written attaches to the same job's event stream.
 
-    The work has to leave the request thread so this one can decide what the
-    HTTP response even is from the FIRST item: a failure before any text was
-    written is still a plain JSON error with its real status code, and only
-    once words are flowing does the reply become a stream.
-    """
-    events = queue.Queue()
-    answer = _AskAnswerStream()
+_QA_LOCK = threading.Lock()  # one qa.json writer at a time (writes are tiny)
+
+
+def _qa_path(meeting_id):
+    return _dir_for(meeting_id) / "qa.json"
+
+
+def _read_qa(meeting_id):
+    """Every settled exchange for this meeting, oldest first. A missing or
+    unreadable file is an empty history, never an error."""
+    try:
+        raw = json.loads(_qa_path(meeting_id).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (ValueError, OSError) as exc:
+        app.logger.warning("unreadable qa.json for %s: %s", meeting_id, exc)
+        return []
+    exchanges = raw.get("exchanges") if isinstance(raw, dict) else None
+    return exchanges if isinstance(exchanges, list) else []
+
+
+def _append_qa(meeting_id, exchange):
+    """Append one settled exchange. The path is re-resolved at write time so a
+    title rename that happened during the minutes the answer took still lands
+    the file in the meeting's current folder."""
+    with _QA_LOCK:
+        exchanges = _read_qa(meeting_id)
+        exchanges.append(exchange)
+        pipeline._atomic_write_text(
+            _qa_path(meeting_id),
+            json.dumps({"exchanges": exchanges}, ensure_ascii=False, indent=1))
+
+
+def _qa_history(meeting_id):
+    """Default `history` for a caller that sent none: the persisted
+    conversation, in the shape ask.answer_question() takes. Clients that track
+    their own thread keep sending it explicitly and win when they do."""
+    history = []
+    for e in _read_qa(meeting_id)[-6:]:
+        if e.get("question"):
+            history.append({"role": "user", "text": e["question"]})
+        if e.get("answer"):
+            history.append({"role": "assistant", "text": e["answer"]})
+    return history
+
+
+# The live side of an in-flight ask, kept OUT of ASK_JOBS on purpose:
+# "partial" grows to the size of the whole answer while it is being written,
+# and ASK_JOBS is shipped whole to every /api/status poller every couple of
+# seconds. An entry exists exactly while its job is "processing".
+_ASK_LIVE = {}  # meeting_id -> {"partial": str, "subs": [queue.Queue, ...]}
+_ASK_LIVE_LOCK = threading.Lock()
+
+
+def _ask_partial(meeting_id):
+    with _ASK_LIVE_LOCK:
+        live = _ASK_LIVE.get(meeting_id)
+        return live["partial"] if live else ""
+
+
+def _ask_publish(meeting_id, event):
+    """Fan one ("delta"|"done"|"failed", x) event out to every subscriber and
+    keep the replayable partial current. Terminal events retire the entry."""
+    with _ASK_LIVE_LOCK:
+        live = _ASK_LIVE.get(meeting_id)
+        if live is None:
+            return
+        if event[0] == "delta":
+            live["partial"] += event[1]
+        subs = list(live["subs"])
+        if event[0] != "delta":
+            del _ASK_LIVE[meeting_id]
+    for q in subs:
+        q.put(event)
+
+
+def _start_ask(meeting_id, question, history, subscriber=None):
+    """Claim the ask job and run it in the background.
+
+    Returns (None, qa_id) once started, or ((payload, status), None) when it
+    refuses. `subscriber` is registered before the worker starts, so the
+    caller that launched the job cannot miss its first events. Events are
+    ("delta", text) — readable prose, already decoded by _AskAnswerStream —
+    then exactly one ("done", result) or ("failed", (payload, status))."""
+    denied = _claim_job(
+        ASK_JOBS, meeting_id, "Reading the transcript…",
+        busy="Still answering the last question — ask again when it finishes")
+    if denied:
+        return denied, None
+    qa_id = str(int(time.time() * 1000))
+    asked = time.time()
+    ASK_JOBS[meeting_id].update(question=question, qa_id=qa_id)
+    with _ASK_LIVE_LOCK:
+        _ASK_LIVE[meeting_id] = {"partial": "",
+                                 "subs": [subscriber] if subscriber else []}
+    meeting_dir = _dir_for(meeting_id)
+    if history is None:
+        history = _qa_history(meeting_id)
+    decoder = _AskAnswerStream()
 
     def on_delta(raw):
-        text = answer.feed(raw)
+        text = decoder.feed(raw)
         if text:
-            events.put(("delta", text))
+            _ask_publish(meeting_id, ("delta", text))
 
     def run():
         try:
-            events.put(("done", ask.answer_question(meeting_dir, question,
-                                                    history, on_delta=on_delta)))
-        except BaseException as exc:  # noqa: BLE001 — reported to the client
+            result = ask.answer_question(
+                meeting_dir, question, history,
+                progress_cb=lambda msg: ASK_JOBS[meeting_id].update(message=msg),
+                on_delta=on_delta)
+            _append_qa(meeting_id, {
+                "id": qa_id, "question": question,
+                "answer": result.get("answer") or "",
+                "citations": result.get("citations") or [],
+                "asked": asked, "answered": time.time()})
+            ASK_JOBS[meeting_id] = {"state": "done", "message": "Answer ready",
+                                    "question": question, "qa_id": qa_id}
+            _ask_publish(meeting_id, ("done", result))
+        except BaseException as exc:  # noqa: BLE001 — reported to subscribers
             # BaseException, not Exception: a worker that swallowed one would
-            # leave the request thread blocked on this queue forever.
-            events.put(("failed", exc))
+            # leave an attached request thread blocked on its queue forever.
+            payload, status = _ask_error(meeting_id, exc)
+            job = {"state": "error", "message": payload["error"],
+                   "question": question, "qa_id": qa_id}
+            if payload.get("needs_claude"):
+                job["needs_claude"] = True
+            ASK_JOBS[meeting_id] = job
+            _ask_publish(meeting_id, ("failed", (payload, status)))
 
-    threading.Thread(target=run, daemon=True, name="ask").start()
-    while True:
-        item = events.get()
-        yield item
-        if item[0] != "delta":
-            return
+    threading.Thread(target=run, daemon=True, name=f"ask-{meeting_id}").start()
+    return None, qa_id
 
 
 def _ndjson(obj):
@@ -2875,7 +3169,11 @@ def ask_meeting(meeting_id):
     citations the player can seek to.
 
     Answers in one JSON object by default; streams the text as it is written
-    when the caller opts in — see the wire format above."""
+    when the caller opts in — see the wire format above. Either way the ask
+    runs as a background job whose settled exchange is written to the
+    meeting's qa.json, so navigating away no longer throws the answer away.
+    {"background": true} returns immediately with {"ok": true, "qa_id": …};
+    collect the answer from GET /api/meetings/<id>/qa."""
     try:
         meta = _read_meeting(meeting_id)
     except (ValueError, OSError) as exc:  # corrupt/unreadable meeting.json
@@ -2897,24 +3195,36 @@ def ask_meeting(meeting_id):
     if unusable:
         return jsonify(unusable[0]), unusable[1]
 
-    meeting_dir, history = _dir_for(meeting_id), data.get("history")
-    if not _wants_ask_stream(request, data):
-        try:
-            result = ask.answer_question(meeting_dir, question, history)
-        except Exception as exc:  # noqa: BLE001 — never break the JSON contract
-            payload, status = _ask_error(meeting_id, exc)
-            return jsonify(payload), status
-        return jsonify(result)
+    history = data.get("history")
+    if data.get("background"):
+        refused, qa_id = _start_ask(meeting_id, question, history)
+        if refused:
+            return jsonify(refused[0]), refused[1]
+        return jsonify({"ok": True, "qa_id": qa_id})
 
-    events = _ask_events(meeting_dir, question, history)
+    events = queue.Queue()
+    refused, _qa = _start_ask(meeting_id, question, history, subscriber=events)
+    if refused:
+        return jsonify(refused[0]), refused[1]
+
+    if not _wants_ask_stream(request, data):
+        # The old synchronous shape: wait it out, answer in one object.
+        while True:
+            kind, payload = events.get()
+            if kind == "done":
+                return jsonify(payload)
+            if kind == "failed":
+                body, status = payload
+                return jsonify(body), status
+
     # Block until there is something to say. That is the first delta (~4-5s of
     # CLI start-up) on the Claude path, and the finished answer on the Apple
     # one, which has no delta hook — no slower than not streaming at all.
-    first = next(events)
+    first = events.get()
     if first[0] == "failed":
         # Nothing was written, so the status code and body are still free:
         # answer exactly as the non-streaming path would.
-        payload, status = _ask_error(meeting_id, first[1])
+        payload, status = first[1]
         return jsonify(payload), status
 
     def body(item):
@@ -2927,12 +3237,12 @@ def ask_meeting(meeting_id):
                     yield _ndjson({"type": "done", **payload})
                     return
                 else:  # it failed part-way through writing the answer
-                    error, _status = _ask_error(meeting_id, payload)
+                    error, _status = payload
                     yield _ndjson({"type": "error", **error})
                     return
-                item = next(events)
-        except GeneratorExit:  # the browser navigated away mid-answer
-            raise
+                item = events.get()
+        except GeneratorExit:  # the client navigated away mid-answer; the
+            raise               # job runs on and qa.json still gets the answer
         except Exception as exc:  # noqa: BLE001 — a stream must still end
             app.logger.exception("ask stream broke for %s", meeting_id)
             yield _ndjson({"type": "error",
@@ -2944,6 +3254,37 @@ def ask_meeting(meeting_id):
                  "X-Accel-Buffering": "no"})  # never buffer a live answer
 
 
+@app.get("/api/meetings/<meeting_id>/qa")
+def meeting_qa(meeting_id):
+    """The conversation so far: every settled exchange, plus the live job and
+    the partial answer text while one is being written. Poll this while
+    job.state == "processing" — the partial grows as the model writes."""
+    if not (_meeting_dir(meeting_id) / "meeting.json").exists():
+        abort(404, "meeting not found")
+    with JOB_LOCK:
+        job = dict(ASK_JOBS[meeting_id]) if meeting_id in ASK_JOBS else None
+    return jsonify({"exchanges": _read_qa(meeting_id), "job": job,
+                    "partial": _ask_partial(meeting_id)})
+
+
+@app.delete("/api/meetings/<meeting_id>/qa")
+def clear_meeting_qa(meeting_id):
+    """Forget the conversation. Refused while an answer is being written —
+    its append would resurrect half of what this just deleted."""
+    if not (_meeting_dir(meeting_id) / "meeting.json").exists():
+        abort(404, "meeting not found")
+    with JOB_LOCK:
+        if ASK_JOBS.get(meeting_id, {}).get("state") == "processing":
+            return jsonify({"error": "An answer is still being written — "
+                                     "clear when it finishes"}), 409
+    with _QA_LOCK:
+        path = _qa_path(meeting_id)
+        if path.exists():
+            pipeline._atomic_write_text(
+                path, json.dumps({"exchanges": []}, ensure_ascii=False, indent=1))
+    return jsonify({"ok": True})
+
+
 @app.post("/api/shutdown")
 def shutdown():
     """Quit cleanly from the web UI (the .app launcher has no terminal)."""
@@ -2953,9 +3294,13 @@ def shutdown():
     # analysis.npz / meeting.json, and os._exit(0) 0.4s later would kill it
     # between np.savez_compressed's truncate and its final flush, leaving the
     # meeting's cache — and possibly its meeting.json — permanently corrupt.
+    # COMPRESS_JOBS too: killing the process between audio_archive's meta
+    # commit and its WAV removal is recoverable (the stranded-WAV sweep), but
+    # killing it mid-_edit_meeting_json is the same truncation hazard as the
+    # recluster case above.
     if any(j.get("state") == "processing"
            for j in list(JOBS.values()) + list(SUMMARY_JOBS.values())
-           + list(RECLUSTER_JOBS.values())):
+           + list(RECLUSTER_JOBS.values()) + list(COMPRESS_JOBS.values())):
         return jsonify({"error": "A meeting is still being processed — quit when it finishes"}), 409
     threading.Timer(0.4, lambda: os._exit(0)).start()  # reply first, then exit
     return jsonify({"ok": True})
@@ -2965,8 +3310,16 @@ def shutdown():
 def audio(meeting_id, track):
     if track not in ("mic", "system"):
         abort(404)
+    # The track's real filename lives in meeting.json — after archival it is
+    # <track>.flac, not .wav (see audio_archive.py). The mimetype is set
+    # explicitly because Python's mimetypes says "audio/x-flac", which
+    # AVFoundation does not reliably accept; "audio/flac" streams fine
+    # (verified against AVPlayer over this exact route shape).
+    meta = _read_meeting(meeting_id)
+    name = ((meta.get("tracks") or {}).get(track) or {}).get("file") or f"{track}.wav"
+    mimetype = "audio/flac" if name.endswith(".flac") else "audio/wav"
     return send_from_directory(
-        str(_meeting_dir(meeting_id)), f"{track}.wav", conditional=True
+        str(_meeting_dir(meeting_id)), name, mimetype=mimetype, conditional=True
     )
 
 
@@ -3218,5 +3571,9 @@ if __name__ == "__main__":
         threading.Timer(1.2, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
     # Retry any phone-sync pushes that failed while offline.
     threading.Timer(5.0, lambda: sync.drain(_read_meeting_safe)).start()
+    # Archive any finished meetings the last run didn't get to (opt-in;
+    # includes the orphan-temp and stranded-WAV recovery passes). Late enough
+    # to never compete with first paint or the model survey.
+    threading.Timer(20.0, _compress_sweep_async).start()
     print(f"\n  MeetingScribe running at http://127.0.0.1:{port}\n")
     app.run(host="127.0.0.1", port=port, threaded=True, debug=False, use_reloader=False)
