@@ -3,8 +3,8 @@
     {
       "value" : {
         "linear-gradient" : [
-          "display-p3:0.10387,0.75180,0.59685,1.00000",
-          "display-p3:0.13816,1.00000,0.79389,1.00000"
+          "display-p3:0.08729,0.66592,0.53505,1.00000",
+          "display-p3:0.09657,0.73674,0.59195,1.00000"
         ]
       }
     },
@@ -22,33 +22,56 @@
     {
       "layers" : [
         {
-          "blend-mode-specializations" : [
-            {
-              "appearance" : "dark",
-              "value" : "overlay"
-            }
-          ],
           "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "display-p3:0.39224,0.41301,0.40815,1.00000",
+                  "display-p3:0.00000,0.00000,0.00000,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.8624914528176035,
+                    "y" : 0.1258005766488916
+                  },
+                  "stop" : {
+                    "x" : 0.49999999999999983,
+                    "y" : 0.46133251335019376
+                  }
+                }
+              }
+            },
             {
               "appearance" : "dark",
               "value" : {
-                "solid" : "display-p3:0.10941,0.77258,0.61076,1.00000"
+                "linear-gradient" : [
+                  "display-p3:0.06519,0.50000,0.39404,1.00000",
+                  "display-p3:0.13038,1.00000,0.78809,1.00000"
+                ],
+                "orientation" : {
+                  "start" : {
+                    "x" : 0.8322001523446837,
+                    "y" : 0.1399956608973038
+                  },
+                  "stop" : {
+                    "x" : 0.4345405891193646,
+                    "y" : 0.4598314834752477
+                  }
+                }
               }
             },
             {
               "appearance" : "tinted",
-              "value" : {
-                "solid" : "extended-gray:1.00000,1.00000"
-              }
+              "value" : "automatic"
             }
           ],
-          "image-name" : "image-meet 2.png",
-          "name" : "image-meet 2",
+          "image-name" : "meetingscribe-mark-black-512.png",
+          "name" : "meetingscribe-mark-black-512",
           "position" : {
-            "scale" : 1.1,
+            "scale" : 1.75,
             "translation-in-points" : [
-              -11.4921875,
-              19.354687499999955
+              0,
+              7
             ]
           }
         }
