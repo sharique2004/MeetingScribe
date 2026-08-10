@@ -169,6 +169,11 @@ cat > "$DEST/Contents/Info.plist" <<PLIST
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundleIconFile</key><string>$APP_NAME</string>
+  <!-- The appearance-aware icon: CFBundleIconName points into Resources/
+       Assets.car (the compiled Icon Composer document), which is how the
+       icon follows light/dark/tinted mode on macOS 26. The flat icns above
+       stays as the fallback for anything that only reads CFBundleIconFile. -->
+  <key>CFBundleIconName</key><string>$APP_NAME</string>
   <!-- The pre-built Speech/AI helpers link macOS 26 frameworks (minos 26.0),
        so the app is Apple Silicon + macOS 26 only. -->
   <key>LSMinimumSystemVersion</key><string>26.0</string>
@@ -196,6 +201,13 @@ elif [ -x "$VENV_PY" ] && "$VENV_PY" "$PROJECT/tools/make_icon.py" \
     echo "wrote the app icon (procedural fallback)"
 else
     echo "(icon skipped — no committed icns and venv python/numpy unavailable)"
+fi
+# The appearance-aware icon (see CFBundleIconName above). Committed, like the
+# icns, so building needs no Xcode; regenerate both with
+# tools/appicon/render_icon.sh after editing the .icon source.
+if [ -f "$PROJECT/tools/appicon/Assets.car" ]; then
+    cp "$PROJECT/tools/appicon/Assets.car" "$DEST/Contents/Resources/Assets.car"
+    echo "installed the light/dark icon variants (tools/appicon/Assets.car)"
 fi
 
 # Signing. Two shapes:
