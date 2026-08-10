@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeetingScribe · UI directions</title>
+<style>
+  :root{
+    --bg:#0e0f12; --card:#15171c; --line:rgba(255,255,255,.08); --line-2:rgba(255,255,255,.14);
+    --text:#e9eaed; --dim:#9aa0aa; --faint:#6b7079; --accent:#6ea8fe;
+    --ease-out:cubic-bezier(.22,1,.32,1);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","Segoe UI",sans-serif;
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+    padding:56px 28px 80px;
+  }
+  .wrap{max-width:1120px;margin:0 auto}
+  .kicker{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:600;margin:0 0 14px}
+  h1{font-size:clamp(28px,4vw,40px);line-height:1.08;letter-spacing:-.025em;font-weight:680;margin:0 0 16px}
+  .lede{max-width:64ch;color:var(--dim);font-size:15.5px;margin:0 0 10px}
+  .lede b{color:var(--text);font-weight:600}
+  .meta-note{max-width:64ch;color:var(--faint);font-size:13px;margin:14px 0 0}
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:22px;margin-top:44px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;
+    display:flex;flex-direction:column;
+    transition:transform .28s var(--ease-out),border-color .28s var(--ease-out),box-shadow .28s var(--ease-out);
+  }
+  @media(hover:hover) and (pointer:fine){
+    .card:hover{transform:translateY(-4px);border-color:var(--line-2);box-shadow:0 16px 44px rgba(0,0,0,.42)}
+  }
+  .preview{position:relative;height:264px;background:#000;border-bottom:1px solid var(--line);overflow:hidden}
+  .preview iframe{position:absolute;top:0;left:0;width:1400px;height:910px;border:0;transform:scale(.29);transform-origin:top left;pointer-events:none}
+  .preview .veil{position:absolute;inset:0;cursor:pointer;z-index:2;background:linear-gradient(180deg,transparent 60%,rgba(0,0,0,.35))}
+  .num{position:absolute;top:12px;left:14px;z-index:3;font-size:12px;font-weight:600;color:rgba(255,255,255,.6);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+  .body{padding:20px 22px 22px;display:flex;flex-direction:column;gap:12px;flex:1}
+  .name-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .name{font-size:19px;font-weight:670;letter-spacing:-.02em;margin:0}
+  .tag{font-size:11.5px;color:var(--faint)}
+  .thesis{color:var(--dim);font-size:14px;margin:0}
+  ul{margin:2px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
+  li{position:relative;padding-left:16px;font-size:13px;color:var(--dim)}
+  li::before{content:"";position:absolute;left:2px;top:8px;width:5px;height:5px;border-radius:50%;background:var(--faint)}
+  .open{
+    margin-top:auto;align-self:flex-start;
+    display:inline-flex;align-items:center;gap:8px;
+    text-decoration:none;color:var(--text);background:rgba(255,255,255,.04);
+    border:1px solid var(--line-2);border-radius:10px;padding:9px 15px;font-size:13.5px;font-weight:560;
+    transition:transform .14s var(--ease-out),background .18s ease,border-color .18s ease;
+  }
+  .open:hover{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.22)}
+  .open:active{transform:scale(.97)}
+  .open svg{width:14px;height:14px}
+  .foot{margin-top:52px;padding-top:22px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px;max-width:70ch}
+  a.inline{color:var(--accent);text-decoration:none}
+  a.inline:hover{text-decoration:underline}
+  @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="kicker">MeetingScribe · UI exploration</p>
+    <h1>Four takes on a calmer transcript</h1>
+    <p class="lede">The current transcript screen stacks four control bands before a single line of dialogue appears, so nothing leads the eye. These four directions each fix that a different way — by <b>subtraction</b>, by <b>atmosphere</b>, by <b>motion</b>, or by <b>structure</b>. Click into any one and try it: switch tabs, search, resize the text, click a timestamp, hit play.</p>
+    <p class="meta-note">Every demo renders the same dummy meeting (a “Q3 Roadmap Sync” with three speakers) so you’re comparing design, not content. Nothing here is wired to the real app — these live in <code>ui-demos/</code> and change nothing in MeetingScribe.</p>
+
+    <div class="grid">
+
+      <div class="card">
+        <div class="preview">
+          <span class="num">★ combination</span>
+          <iframe src="converged.html" loading="lazy" title="Combination preview" tabindex="-1" aria-hidden="true"></iframe>
+          <a class="veil" href="converged.html" aria-label="Open Combination demo"></a>
+        </div>
+        <div class="body">
+          <div class="name-row"><h2 class="name">Combination</h2><span class="tag">Aurora skin + Split Focus layout</span></div>
+          <p class="thesis">What you asked for: Split Focus's two-pane layout and scrolling, wearing Aurora's UI.</p>
+          <ul>
+            <li>Left transcript reader (lenis scroll) + right context rail (Summary / Speakers / Ask)</li>
+            <li>Aurora night palette, glass, aqua accent, border-beam signature</li>
+            <li>⌘K palette, speaker-minimap seam, number-ticker shares</li>
+          </ul>
+          <a class="open" href="converged.html">Open demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="preview">
+          <span class="num">01</span>
+          <iframe src="manuscript.html" loading="lazy" title="Manuscript preview" tabindex="-1" aria-hidden="true"></iframe>
+          <a class="veil" href="manuscript.html" aria-label="Open Manuscript demo"></a>
+        </div>
+        <div class="body">
+          <div class="name-row"><h2 class="name">Manuscript</h2><span class="tag">radical declutter</span></div>
+          <p class="thesis">The transcript as a document you read — typeset like a published interview, not a dashboard.</p>
+          <ul>
+            <li>One centered reading column; the dialogue is the whole page</li>
+            <li>Speakers as small margin cues, not big stat cards</li>
+            <li>The line at center brightens as you scroll (focus reading)</li>
+          </ul>
+          <a class="open" href="manuscript.html">Open demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="preview">
+          <span class="num">02</span>
+          <iframe src="aurora.html" loading="lazy" title="Aurora preview" tabindex="-1" aria-hidden="true"></iframe>
+          <a class="veil" href="aurora.html" aria-label="Open Aurora demo"></a>
+        </div>
+        <div class="body">
+          <div class="name-row"><h2 class="name">Aurora</h2><span class="tag">atmospheric / premium</span></div>
+          <p class="thesis">Premium and a little magical, but calm — slow ambient light and glass carry the richness instead of controls.</p>
+          <ul>
+            <li>Aurora wash, glass toolbar, spotlight speaker cards</li>
+            <li>Active line glows; edges melt with a soft blur fade</li>
+            <li>Talk-share counts up; scroll follows the spoken line</li>
+          </ul>
+          <a class="open" href="aurora.html">Open demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="preview">
+          <span class="num">03</span>
+          <iframe src="studio.html" loading="lazy" title="Studio preview" tabindex="-1" aria-hidden="true"></iframe>
+          <a class="veil" href="studio.html" aria-label="Open Studio demo"></a>
+        </div>
+        <div class="body">
+          <div class="name-row"><h2 class="name">Studio</h2><span class="tag">tactile / motion</span></div>
+          <p class="thesis">A pro audio console that’s fun to touch — springy, physical, with one moving highlight doing the work.</p>
+          <ul>
+            <li>Waveform header; tabs with a springing pill indicator</li>
+            <li>Fiddly controls collapse into a floating bottom dock</li>
+            <li>Rows share one glide highlight; stats count up</li>
+          </ul>
+          <a class="open" href="studio.html">Open demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="preview">
+          <span class="num">04</span>
+          <iframe src="split-focus.html" loading="lazy" title="Split Focus preview" tabindex="-1" aria-hidden="true"></iframe>
+          <a class="veil" href="split-focus.html" aria-label="Open Split Focus demo"></a>
+        </div>
+        <div class="body">
+          <div class="name-row"><h2 class="name">Split Focus</h2><span class="tag">two-pane workspace</span></div>
+          <p class="thesis">Separate reading from acting. The transcript stays bare; everything else moves to a context rail plus a ⌘K palette.</p>
+          <ul>
+            <li>Clean left transcript, swapping right rail (Summary / Speakers / Ask)</li>
+            <li>⌘K command palette is the one place to do anything</li>
+            <li>Speaker minimap seam shows who talks where</li>
+          </ul>
+          <a class="open" href="split-focus.html">Open demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17 17 7M9 7h8v8"/></svg></a>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="foot">Previews above are live but scaled down and non-interactive — open a demo to actually use it. Built from your three references (inspira-ui, animate-ui, lenis) plus the taste/animation skills you added. Tell me what lands in each and we’ll converge on one.</p>
+  </div>
+</body>
+</html>
