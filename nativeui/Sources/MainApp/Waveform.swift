@@ -12,7 +12,6 @@ struct WaveformScrubber: View {
     let onScrub: (Double) -> Void
 
     @State private var dragTime: Double?
-    @State private var hovering = false
 
     private let barWidth: CGFloat = 2
     private let gap: CGFloat = 1.5
@@ -39,7 +38,9 @@ struct WaveformScrubber: View {
                         // The bar under the playhead: split fill for a crisp edge.
                         ctx.fill(path, with: .color(accent.opacity(0.55)))
                     } else {
-                        ctx.fill(path, with: .color(.primary.opacity(0.22)))
+                        // The unplayed track: palette ink rather than
+                        // `.primary`, so Increase Contrast reaches it too.
+                        ctx.fill(path, with: .color(MS.ink4.opacity(0.55)))
                     }
                 }
                 // Playhead needle.
@@ -48,7 +49,7 @@ struct WaveformScrubber: View {
                     ctx.fill(needle, with: .color(accent.opacity(0.9)))
                 }
             }
-            .contentShape(Rectangle())
+            .contentShape(.rect)
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
@@ -60,17 +61,31 @@ struct WaveformScrubber: View {
                         onScrub(f * duration)
                         dragTime = nil
                     })
-            .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.1), value: fraction)
+            .msAnimation(Motion.micro, value: fraction)
             .overlay(alignment: .top) {
                 if let t = dragTime {
                     Text(clock(t))
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .clockFont(10, weight: .semibold)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(.thinMaterial, in: .capsule)
                         .offset(x: scrubBubbleOffset(geo: geo, t: t), y: -22)
                         .allowsHitTesting(false)
+                }
+            }
+            // A Canvas is one opaque rectangle to VoiceOver, and a drag is
+            // not a gesture a keyboard has. This is the whole scrubber for
+            // anyone not holding a mouse: where you are, in words, and
+            // twentieths of the recording per arrow key.
+            .accessibilityElement()
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(clock(shownTime))
+            .accessibilityAdjustableAction { direction in
+                let step = max(1, duration / 20)
+                switch direction {
+                case .increment: onScrub(min(duration, shownTime + step))
+                case .decrement: onScrub(max(0, shownTime - step))
+                @unknown default: break
                 }
             }
         }

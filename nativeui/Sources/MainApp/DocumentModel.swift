@@ -27,7 +27,16 @@ import SwiftUI
 final class ActionItemStore: ObservableObject {
     static let shared = ActionItemStore()
 
-    @Published private var done: [String: Set<String>] = [:]
+    /// The read-through cache of what is on disk. Deliberately NOT
+    /// `@Published`: `loaded(_:)` fills it on first read, and the first read
+    /// happens inside a row's `body` — publishing from there is a write to
+    /// state SwiftUI is in the middle of reading, which is exactly the
+    /// "Publishing changes from within view updates" it warns about. Nothing
+    /// observes this dictionary; `revision` below is what views watch.
+    private var done: [String: Set<String>] = [:]
+    /// The one thing this store publishes, bumped when a tick actually
+    /// changes. Reading a to-do's state stays silent; changing one redraws.
+    @Published private(set) var revision = 0
     private let defaults = UserDefaults.standard
 
     private func storageKey(_ meetingID: String) -> String { "ms.todos.v1.\(meetingID)" }
@@ -49,6 +58,7 @@ final class ActionItemStore: ObservableObject {
         if isDone { items.insert(key) } else { items.remove(key) }
         done[meeting] = items
         defaults.set(Array(items), forKey: storageKey(meeting))
+        revision += 1
     }
 
     /// The identity of a to-do: its words, with case, whitespace and trailing
@@ -63,7 +73,6 @@ final class ActionItemStore: ObservableObject {
 }
 
 enum DocumentBlock: Identifiable {
-    case heading(String)                                  // from a short user note
     case userParagraph(String)                            // a long user note
     /// A note whose "t" is null: the engine could not vouch for when in the
     /// meeting it was typed. It has no window to sit in, so it gets its own
@@ -75,7 +84,6 @@ enum DocumentBlock: Identifiable {
 
     var id: String {
         switch self {
-        case .heading(let s): return "h-\(s)"
         case .userParagraph(let s): return "p-\(s.prefix(60))"
         case .untimedNote(let id, _): return id
         case .bullet(let id, _, _): return id
@@ -100,6 +108,12 @@ enum DocumentBuilder {
         let turns = detail.turns ?? []
         let summary = detail.summary
 
+        // Every claim on the page is matched against every turn, so the turns
+        // are tokenised once here rather than once per claim: the same
+        // hundreds of Sets were being rebuilt for each key point, decision,
+        // question and to-do (116ms on a document measured on this machine).
+        let turnWords = turns.map { contentWords($0.text) }
+
         // Timed short notes become headings; long ones stay paragraphs.
         let timedNotes = notes.filter { $0.t != nil }.sorted { ($0.t ?? 0) < ($1.t ?? 0) }
 
@@ -117,7 +131,7 @@ enum DocumentBuilder {
         var overview: [DocumentBlock] = []
         var perWindow: [Int: [DocumentBlock]] = [:]
         for (i, point) in (summary?.key_points ?? []).enumerated() {
-            let ev = evidence(for: point, in: turns)
+            let ev = evidence(for: point, in: turns, words: turnWords)
             let block = DocumentBlock.bullet(id: "kp-\(i)", text: point, evidence: ev)
             if let t = ev?.start, let wi = windows.firstIndex(where: { t >= $0.lo && t < $0.hi }) {
                 perWindow[wi, default: []].append(block)
@@ -162,24 +176,27 @@ enum DocumentBuilder {
         if let decisions = summary?.decisions, !decisions.isEmpty {
             sections.append(DocumentSection(id: "decisions", title: "Decisions",
                 blocks: decisions.enumerated().map { i, d in
-                    .bullet(id: "dec-\(i)", text: d, evidence: evidence(for: d, in: turns))
+                    .bullet(id: "dec-\(i)", text: d,
+                            evidence: evidence(for: d, in: turns, words: turnWords))
                 }))
         }
         if let questions = summary?.open_questions, !questions.isEmpty {
             sections.append(DocumentSection(id: "questions", title: "Open questions",
                 blocks: questions.enumerated().map { i, q in
-                    .bullet(id: "q-\(i)", text: q, evidence: evidence(for: q, in: turns))
+                    .bullet(id: "q-\(i)", text: q,
+                            evidence: evidence(for: q, in: turns, words: turnWords))
                 }))
         }
 
         // To-dos: committed action items first, then things left for later.
         var nextSteps: [DocumentBlock] = (summary?.action_items ?? []).enumerated().map { i, item in
-            .actionItem(id: "ai-\(i)", item: item, evidence: evidence(for: item.task, in: turns))
+            .actionItem(id: "ai-\(i)", item: item,
+                        evidence: evidence(for: item.task, in: turns, words: turnWords))
         }
         for (i, f) in (summary?.follow_ups ?? []).enumerated() {
             nextSteps.append(.actionItem(id: "fu-\(i)",
                                          item: ActionItem(owner: nil, task: f, due: nil),
-                                         evidence: evidence(for: f, in: turns)))
+                                         evidence: evidence(for: f, in: turns, words: turnWords)))
         }
 
         return (sections, nextSteps)
@@ -195,13 +212,16 @@ enum DocumentBuilder {
 
     /// Nearest transcript turn by content-word overlap; nil when nothing
     /// vouches for the claim (the hover glyph simply doesn't appear).
-    static func evidence(for claim: String, in turns: [Turn]) -> Turn? {
+    ///
+    /// `words` is the turns already tokenised, positionally — see `build`.
+    static func evidence(for claim: String, in turns: [Turn],
+                         words: [Set<String>]) -> Turn? {
         guard !turns.isEmpty else { return nil }
         let claimWords = contentWords(claim)
         guard claimWords.count >= 2 else { return nil }
         var best: (turn: Turn, score: Double)?
-        for turn in turns {
-            let turnWords = contentWords(turn.text)
+        for (i, turn) in turns.enumerated() {
+            let turnWords = words[i]
             guard !turnWords.isEmpty else { continue }
             let overlap = Double(claimWords.intersection(turnWords).count)
             let score = overlap / Double(claimWords.count)

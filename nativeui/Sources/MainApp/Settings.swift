@@ -63,6 +63,18 @@ final class Settings: ObservableObject {
         didSet { write("auto_summarize", autoSummarize) }
     }
 
+    /// Whether a finished meeting's WAVs are re-encoded to FLAC once the
+    /// pipeline has no further use for them. Lossless, so the audio itself is
+    /// untouched, and the engine only removes an original once the compressed
+    /// copy has been verified against it. Playback needs nothing from this
+    /// side: the audio route serves whichever file is on disk.
+    ///
+    /// Off by default, matching config.py. It rewrites recordings the user
+    /// already has, so it waits to be asked.
+    @Published var compressRecordings: Bool {
+        didSet { write("compress_recordings", compressRecordings) }
+    }
+
     /// Whether the engine reads real names off the conversation itself ("Hi,
     /// I'm Marcus") and puts them on labels that would otherwise say
     /// "Speaker 2". Wired end to end in speaker_names.py since it shipped, and
@@ -118,12 +130,19 @@ final class Settings: ObservableObject {
         voiceProfiles = (cfg["voice_profiles"] as? Bool) ?? true
         autoSummarize = (cfg["auto_summarize"] as? Bool) ?? true
         speakerNames = (cfg["speaker_names"] as? Bool) ?? false
+        compressRecordings = (cfg["compress_recordings"] as? Bool) ?? false
         // Anything that is not the explicit opt-out means the pass runs, which
         // is how pipeline.py reads it: only "classic" turns it off.
         neuralDiarization = (cfg["diarization_engine"] as? String)?.lowercased() != "classic"
+        // De-duplicated on the way in, case-insensitively, as the doc comment
+        // on `vocabulary` promises: a config.json holding both "Parakeet" and
+        // "parakeet" spent the prompt budget twice for one word, and the
+        // editor's own check only ever guarded what was typed after launch.
+        var seen = Set<String>()
         vocabulary = ((cfg["vocabulary"] as? [Any]) ?? []).compactMap {
             let word = String(describing: $0).trimmingCharacters(in: .whitespacesAndNewlines)
-            return word.isEmpty ? nil : word
+            guard !word.isEmpty, seen.insert(word.lowercased()).inserted else { return nil }
+            return word
         }
         whisperBackend = (cfg["whisper_backend"] as? String) ?? "auto"
         // null, absent, or a code this build doesn't offer all mean the same
@@ -172,7 +191,9 @@ private struct CLIEngines: Decodable {
 }
 
 struct SettingsView: View {
-    @StateObject private var settings = Settings.shared
+    // Observed, not owned: the settings store is a singleton that outlives
+    // this pane, and @StateObject would claim the view creates and owns it.
+    @ObservedObject private var settings = Settings.shared
     @State private var appleReady: Bool?
     @State private var appleMessage: String?
     // The engine probe is the backend's (ai_cli.detect_all) so the path list
@@ -189,6 +210,9 @@ struct SettingsView: View {
                 Rectangle().fill(MS.hairline).frame(height: 1)
                     .padding(.vertical, 26)
                 transcription
+                Rectangle().fill(MS.hairline).frame(height: 1)
+                    .padding(.vertical, 26)
+                recordings
                 Rectangle().fill(MS.hairline).frame(height: 1)
                     .padding(.vertical, 26)
                 VoicesSection(settings: settings)
@@ -330,6 +354,31 @@ struct SettingsView: View {
         }
     }
 
+    /// What becomes of the audio once the pipeline is finished with it. Its
+    /// own section rather than a row under INTELLIGENCE, which is about who
+    /// writes the summaries: this is storage, and it is the only thing in
+    /// Settings that changes files the user already has.
+    private var recordings: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("RECORDINGS")
+                .font(MSFont.kicker)
+                .kerning(0.55)
+                .foregroundStyle(MS.ink3)
+                .accessibilityAddTraits(.isHeader)
+
+            Text("What happens to the audio afterwards")
+                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .foregroundStyle(MS.ink)
+                .padding(.top, 8)
+
+            SettingToggleRow(
+                title: "Compress finished recordings",
+                detail: "Store finished recordings as FLAC. Lossless — the audio is identical, and every check must pass before the original is removed. Saves about three quarters of the space.",
+                on: $settings.compressRecordings)
+                .padding(.top, 18)
+        }
+    }
+
     /// Auto-detect is only genuinely automatic on one of the four engines, and
     /// saying otherwise is how a Hindi meeting comes back in English.
     private var languageDetail: String {
@@ -445,15 +494,20 @@ private struct VocabularyEditor: View {
                             Text(word)
                                 .font(.system(size: 12))
                                 .foregroundStyle(MS.ink)
-                            Button {
+                            // An 8-point glyph is an 8-point target: the hit
+                            // area was the mark itself, which is a quarter of
+                            // the smallest thing a pointer is expected to
+                            // find. The frame gives it a real one without
+                            // making the mark any bigger.
+                            Button("Remove \(word)", systemImage: "xmark") {
                                 words.removeAll { $0 == word }
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(MS.ink3)
                             }
+                            .labelStyle(.iconOnly)
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(MS.ink3)
+                            .frame(width: 20, height: 20)
+                            .contentShape(.rect)
                             .buttonStyle(.plain)
-                            .accessibilityLabel("Remove \(word)")
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -493,8 +547,11 @@ private struct VocabularyEditor: View {
         guard !word.isEmpty else { return }
         // Case-insensitive: "Parakeet" and "parakeet" bias the recogniser the
         // same way, and two of them only eat the prompt budget twice.
+        // Same exit as the success path, focus included: a word that was
+        // already there cleared the field and quietly dropped the keyboard,
+        // which reads as the app having lost the entry rather than kept it.
         guard !words.contains(where: { $0.caseInsensitiveCompare(word) == .orderedSame })
-        else { draft = ""; return }
+        else { draft = ""; focused = true; return }
         words.append(word)
         draft = ""
         focused = true
@@ -644,7 +701,7 @@ private struct VoicesSection: View {
 
             if !profiles.isEmpty {
                 VStack(spacing: 8) {
-                    ForEach(Array(profiles.enumerated()), id: \.element.id) { i, profile in
+                    ForEach(profiles.enumerated(), id: \.element.id) { i, profile in
                         VoiceProfileRow(profile: profile,
                                         sharingName: sharingName(profile),
                                         position: position(of: i)) { forget(profile) }
@@ -814,16 +871,12 @@ private struct VoiceProfileRow: View {
                                        : "\(seconds)s of speech")
         }
         if shared, let updated = profile.updated {
-            parts.append("named \(Self.day.string(from: Date(timeIntervalSince1970: updated)))")
+            let day = Date(timeIntervalSince1970: updated)
+                .formatted(.dateTime.day().month(.abbreviated))
+            parts.append("named \(day)")
         }
         return parts.joined(separator: " · ")
     }
-
-    private static let day: DateFormatter = {
-        let f = DateFormatter()
-        f.setLocalizedDateFormatFromTemplate("d MMM")
-        return f
-    }()
 
     private var forgetHelp: String {
         shared
@@ -893,8 +946,7 @@ private struct EngineOption: View {
             HStack(alignment: .top, spacing: 11) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
                     .font(.system(size: 15))
-                    .foregroundStyle(selected ? AnyShapeStyle(MS.interactive)
-                                              : AnyShapeStyle(MS.ink4))
+                    .foregroundStyle(selected ? MS.interactive : MS.ink4)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
                         Text(title)
@@ -943,7 +995,10 @@ private struct EngineOption: View {
         .disabled(!available)
         .modifier(OptionalHelp(text: available
             ? nil : "\(title) isn't available on this Mac yet."))
-        .accessibilityLabel(title)
+        // The badge is a coloured word beside the title and nothing else, so
+        // the one card the app is steering the user towards sounded exactly
+        // like the three it isn't.
+        .accessibilityLabel(recommended && available ? "\(title), recommended" : title)
         .accessibilityValue(available ? "" : "Unavailable")
         .accessibilityHint(detail)
         .accessibilityAddTraits(selected ? [.isSelected] : [])

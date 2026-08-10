@@ -90,11 +90,15 @@ private struct HUDRoot: View {
 struct HUDPill: View {
     @ObservedObject var center: RecorderCenter
     @State private var hoverExpanded = false
+    /// Opened by a click, and STICKY: hover opens the card while the pointer
+    /// is on the pill, this is what keeps it open once the pointer leaves so
+    /// there is a note field to walk to.
+    @State private var clickExpanded = false
     @State private var hoverTask: Task<Void, Never>?
     @FocusState private var noteFocused: Bool
 
     private var expanded: Bool {
-        hoverExpanded && center.phase == .recording
+        (hoverExpanded || clickExpanded) && center.phase == .recording
     }
 
     var body: some View {
@@ -104,24 +108,61 @@ struct HUDPill: View {
                     cornerRadius: expanded || center.alert != nil ? 18 : 22))
         }
         .padding(14)
-        .animation(.easeInOut(duration: 0.3), value: center.phase)
-        .animation(.easeInOut(duration: 0.3), value: center.nudge)
+        .msAnimation(Motion.enter, value: center.phase)
+        .msAnimation(Motion.enter, value: center.nudge)
         .onHover { h in
             // Debounced: a graze doesn't open it, a twitch doesn't close it,
             // and the size change never re-triggers itself mid-flight.
             hoverTask?.cancel()
             hoverTask = Task {
-                try? await Task.sleep(nanoseconds: h ? 100_000_000 : 260_000_000)
+                try? await Task.sleep(for: h ? .milliseconds(100) : .milliseconds(260))
                 guard !Task.isCancelled else { return }
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
-                    hoverExpanded = h
-                }
+                msWithAnimation(Motion.springy) { hoverExpanded = h }
             }
+        }
+        // The note field is the reason the card exists, and it used to open
+        // with the cursor nowhere: every note began with a second click nobody
+        // was told to make.
+        //
+        // Focus follows the CLICK and not the hover. Clicking makes this panel
+        // key (see HUDWindow.canBecomeKey), so the cursor lands somewhere that
+        // can actually receive what gets typed next; hovering deliberately does
+        // not — the panel is non-activating so that Zoom keeps the keyboard —
+        // and taking first responder there would put a cursor in a window
+        // nothing can be typed into.
+        .onChange(of: expanded) { _, open in
+            noteFocused = open && clickExpanded
+        }
+        // A card pinned open must not outlive the recording it belongs to, or
+        // the next meeting starts with a note field sitting over the screen.
+        .onChange(of: center.phase) { _, phase in
+            if phase != .recording { clickExpanded = false }
+        }
+    }
+
+    /// Click to open, click to close, hover unchanged.
+    ///
+    /// `hoverExpanded` is cleared on the way down because the pointer is still
+    /// sitting on the pill as the card collapses under it: left set, it would
+    /// re-open the card on the same frame and the click would look like it did
+    /// nothing. Hover comes back the next time the pointer leaves and returns,
+    /// which is the only thing onHover reports anyway.
+    private func toggleExpanded() {
+        guard center.phase == .recording else { return }
+        let next = !expanded
+        hoverTask?.cancel()      // a debounce in flight must not overrule this
+        msWithAnimation(Motion.springy) {
+            clickExpanded = next
+            hoverExpanded = next
         }
     }
 
     @ViewBuilder
     private var content: some View {
+        // Read once. `captureAlerts` builds its list from scratch on every
+        // access, and this body ran it three times for one answer — four
+        // times a second, for the length of a meeting.
+        let alerts = center.captureAlerts
         if center.phase == .recording {
             // Trailing-aligned: the panel is pinned by its top-right corner,
             // so the dot, clock and bars stay planted while the notes card
@@ -138,7 +179,7 @@ struct HUDPill: View {
                         .padding(.bottom, 4)
                         .transition(.offset(y: -4).combined(with: .opacity))
                 }
-                if let alert = center.captureAlerts.first {
+                if let alert = alerts.first {
                     captureRow(alert)
                         .frame(width: expanded ? 292 : 220)
                         .transition(.offset(y: -4).combined(with: .opacity))
@@ -153,9 +194,9 @@ struct HUDPill: View {
             }
             .padding(.horizontal, 12)
             .padding(.bottom, expanded || center.alert != nil
-                     || !center.captureAlerts.isEmpty ? 12 : 0)
-            .animation(Motion.enter, value: center.captureAlerts)
-            .animation(Motion.enter, value: center.alert)
+                     || !alerts.isEmpty ? 12 : 0)
+            .msAnimation(Motion.enter, value: alerts)
+            .msAnimation(Motion.enter, value: center.alert)
         } else if let alert = center.alert {
             refusalRow(alert)
                 .frame(width: 292)
@@ -197,6 +238,7 @@ struct HUDPill: View {
             }
             .buttonStyle(PressStyle())
             .help("Dismiss")
+            .accessibilityLabel("Dismiss")
         }
     }
 
@@ -221,7 +263,7 @@ struct HUDPill: View {
     private func nudgeRow(_ nudge: Nudge) -> some View {
         HStack(spacing: 8) {
             RecordStateCircle(state: .ready)
-            Text(nudge.meeting_title?.isEmpty == false ? nudge.meeting_title! : nudge.title)
+            Text(nudge.meeting_title.flatMap { $0.isEmpty ? nil : $0 } ?? nudge.title)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MS.ink)
                 .lineLimit(1)
@@ -239,6 +281,7 @@ struct HUDPill: View {
             }
             .buttonStyle(PressStyle())
             .help("Not this meeting")
+            .accessibilityLabel("Not this meeting")
         }
     }
 
@@ -251,13 +294,65 @@ struct HUDPill: View {
             }
             .buttonStyle(PressStyle())
             .help("Stop recording")
+            // The label is a shape, so without these the one control that
+            // ends a meeting is announced as "button" and answers to nothing.
+            .accessibilityLabel("Stop recording")
+            .accessibilityInputLabels(["Stop", "Stop recording"])
 
             Text(clock(center.elapsed))
                 .clockFont(13)
                 .foregroundStyle(MS.ink)
 
             TrackMeters(mic: center.micTrack, system: center.systemTrack)
+
+            expandChevron
         }
+        // The whole collapsed pill opens the card, not just the chevron: the
+        // card used to answer to hover and nothing else, which is unreachable
+        // by keyboard, invisible to anyone who does not happen to park the
+        // pointer here, and gone the moment the pointer moves. The child
+        // buttons keep their own clicks — a Button inside this row wins the
+        // hit test — so Stop still stops.
+        .contentShape(Rectangle())
+        .onTapGesture { toggleExpanded() }
+        // Handling clicks over these pixels is what stops AppKit moving the
+        // window from them (isMovableByWindowBackground only drags from parts
+        // no view is taking clicks on), so the drag is handed back explicitly.
+        // The pill floats over whatever the user is presenting; it has to stay
+        // movable. No event to drag with, no drag — which is exactly where
+        // this started.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 4).onChanged { _ in
+                if let event = NSApp.currentEvent {
+                    event.window?.performDrag(with: event)
+                }
+            })
+    }
+
+    /// The hint that the pill opens at all.
+    ///
+    /// DESIGN.md put a chevron on the collapsed capsule from the first draft
+    /// and the native pill shipped without one, so the note field — the whole
+    /// reason for the card underneath — was a secret kept by the pointer.
+    ///
+    /// It is a real Button rather than a trait on the row above: the row also
+    /// holds Stop and the two track meters, each of which already says what it
+    /// is, and a button trait on their container relabels all three at once.
+    private var expandChevron: some View {
+        Button {
+            toggleExpanded()
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(MS.ink3)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
+        }
+        .buttonStyle(PressStyle())
+        .msAnimation(Motion.enter, value: expanded)
+        .help(expanded ? "Hide the note field" : "Take a note")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(expanded ? "Hide the note field" : "Take a note")
+        .accessibilityValue(expanded ? "Open" : "Closed")
     }
 
     private var expandedContent: some View {
@@ -295,7 +390,7 @@ struct HUDPill: View {
                                     .init(color: .black, location: 0.18)],
                             startPoint: .leading, endPoint: .trailing)
                     }
-                    .animation(Motion.enter, value: caption)
+                    .msAnimation(Motion.enter, value: caption)
             }
         }
     }
@@ -397,9 +492,15 @@ struct TrackMeter: View {
                 }
             }
             .frame(width: width, height: 3)
-            .animation(.easeOut(duration: 0.12), value: track.level)
+            .msAnimation(Motion.micro, value: track.level)
         }
         .help(lost ? "\(label): not being recorded"
                    : silent ? "\(label): silent" : label)
+        // The glyph and the bar say it in shapes; this says it in words, so
+        // "is this being recorded" is answerable without seeing the meter.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(lost ? "Not being recorded"
+                            : silent ? "Silent" : "Recording")
     }
 }

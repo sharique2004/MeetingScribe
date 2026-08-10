@@ -28,6 +28,18 @@ final class MeetingModel: ObservableObject {
     weak var library: Library?
     private var meetingID: String?
     private var processingWatch: Task<Void, Never>?
+    private var summaryWatch: Task<Void, Never>?
+
+    /// The screen is gone; the pollers must not outlive it. Without this the
+    /// two watchers below held the model strongly and kept asking the engine
+    /// every two seconds for as long as the app ran — once per transcribing
+    /// meeting the user ever visited.
+    func stop() {
+        processingWatch?.cancel()
+        processingWatch = nil
+        summaryWatch?.cancel()
+        summaryWatch = nil
+    }
 
     func load(_ id: String) async {
         meetingID = id
@@ -72,11 +84,14 @@ final class MeetingModel: ObservableObject {
         guard processingWatch == nil else { return }
         processingWatch = Task { [weak self] in
             defer { self?.processingWatch = nil }
-            guard let self else { return }
-            processingProgress = await API.processingJobs()[id]?.message
-            while meetingID == id {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard meetingID == id else { return }
+            // Weak per iteration, not strong for the loop: a strong `self`
+            // here plus `self.processingWatch` holding the Task is a cycle
+            // that only a loop exit can break — and cancellation must break
+            // it even when the engine never answers again.
+            self?.processingProgress = await API.processingJobs()[id]?.message
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self, self.meetingID == id else { return }
                 processingProgress = await API.processingJobs()[id]?.message
                 guard let fresh = try? await API.meeting(id) else { continue }
                 guard meetingID == id else { return }
@@ -178,13 +193,20 @@ final class MeetingModel: ObservableObject {
     }
 
     private func watchSummaryJob(_ id: String) {
-        Task {
-            while summarizing, meetingID == id {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+        summaryWatch?.cancel()
+        summaryWatch = Task { [weak self] in
+            defer { self?.summaryWatch = nil }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled, let self,
+                      self.summarizing, self.meetingID == id else { return }
                 guard let job = await API.summaryJob(id) else { continue }
                 summaryProgress = job.message
                 if job.state == "done" {
-                    detail = try? await API.meeting(id)
+                    // Keep the loaded meeting when a refetch hiccups: nilling
+                    // `detail` here stranded the whole page on a spinner that
+                    // nothing would ever replace.
+                    if let fresh = try? await API.meeting(id) { detail = fresh }
                     // The row's sparkle badge and the Meeting menu's verb both
                     // read the library's cached meta, which no poller refreshes
                     // for a summary: the meeting's status never changed.
@@ -230,7 +252,8 @@ struct MeetingScreen: View {
                     }
                 }
                 .overlay(alignment: .bottom) {
-                    FloatingBar(detail: detail, waveform: model.waveform, player: player)
+                    FloatingBar(detail: detail, waveform: model.waveform, player: player,
+                                ask: AskCenter.shared.conversation(for: detail.id))
                 }
                 // Export where a Mac user looks for it: the window's toolbar,
                 // alongside the transcript's own copy button on the page.
@@ -251,6 +274,10 @@ struct MeetingScreen: View {
         }
         .navigationTitle("")
         .task {
+            // Who is on screen decides whether a finishing answer earns the
+            // sidebar's "answer ready" mark, so the center hears about every
+            // arrival and departure.
+            AskCenter.shared.pageAppeared(meetingID)
             model.library = library
             await model.load(meetingID)
             if let detail = model.detail { player.prepare(detail) }
@@ -261,6 +288,15 @@ struct MeetingScreen: View {
         .onChange(of: model.detail?.tracks) {
             if let detail = model.detail { player.prepare(detail) }
         }
+        // What the menu bar's Playback section is allowed to offer, published
+        // the same two ways ContentView publishes MSContext — see the contract
+        // in Commands.swift. Without it the keys would be offered on a meeting
+        // whose recording saved no audio at all, and Play could never say
+        // "Pause" while this meeting is running.
+        .focusedSceneValue(\.msPlayback, playbackContext)
+        .onChange(of: playbackContext, initial: true) {
+            CommandBus.shared.publish(playback: playbackContext)
+        }
         .alert("Couldn't export",
                isPresented: Binding(get: { exportError != nil },
                                     set: { if !$0 { exportError = nil } })) {
@@ -268,7 +304,20 @@ struct MeetingScreen: View {
         } message: {
             Text(exportError ?? "")
         }
-        .onDisappear { player.pause() }
+        .onDisappear {
+            player.dispose()
+            model.stop()
+            CommandBus.shared.retirePlayback(for: meetingID)
+            AskCenter.shared.pageDisappeared(meetingID)
+        }
+    }
+
+    /// The transport, as the menu bar needs to see it.
+    private var playbackContext: MSPlaybackContext {
+        MSPlaybackContext(meetingID: meetingID,
+                          available: player.hasAudio,
+                          playing: player.playing,
+                          rate: player.rate)
     }
 }
 
@@ -432,6 +481,11 @@ private final class Deck {
         self.key = key
         self.offset = offset
         let item = AVPlayerItem(url: url)
+        // Above 1× this is the difference between a colleague talking quickly
+        // and a chipmunk: the time-domain algorithm is the one Apple documents
+        // for voice, and it holds the pitch across the whole 1–2× ladder for a
+        // fraction of the cost of the spectral one, which is tuned for music.
+        item.audioTimePitchAlgorithm = .timeDomain
         player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = false
     }
@@ -463,6 +517,9 @@ final class Playback: ObservableObject {
     /// Why playback can't happen, or why it stopped — one sentence, on the
     /// bar. Silence used to be the whole story for a missing or broken file.
     @Published private(set) var failure: String?
+    /// How fast the meeting plays, as a multiple of real time. The ladder it
+    /// climbs lives in PlaybackSpeed, next to the menu that offers it.
+    @Published private(set) var rate = PlaybackSpeed.normal
 
     private var decks: [Deck] = []
     private var fingerprint: String?
@@ -513,6 +570,9 @@ final class Playback: ObservableObject {
             if deck.waiting { deck.player.seek(to: .zero) }
         }
         applyMuting()
+        // Rebuilding the decks — a reprocess rewrote the tracks — must not
+        // quietly put the speed back to 1× underneath someone listening at 2×.
+        applyRate()
     }
 
     func toggle() {
@@ -526,7 +586,7 @@ final class Playback: ObservableObject {
         playing = true
         for deck in decks where !deck.waiting {
             deck.ended = false
-            deck.player.play()
+            start(deck)
         }
     }
 
@@ -552,8 +612,49 @@ final class Playback: ObservableObject {
                 deck.waiting = false
                 deck.player.seek(to: CMTime(seconds: local, preferredTimescale: 600),
                                  toleranceBefore: .zero, toleranceAfter: .zero)
-                if playing { deck.player.play() }
+                if playing { start(deck) }
             }
+        }
+    }
+
+    /// Jump along the meeting's timeline — the keyboard's whole job. Negative
+    /// goes back. Clamping is `seek`'s, which already holds the answer inside
+    /// [origin, duration], so the ends of a meeting absorb a held-down arrow
+    /// key instead of running the clock past them.
+    func skip(_ seconds: Double) {
+        guard hasAudio else { return }
+        seek(time + seconds)
+    }
+
+    /// Play at `newRate` times real time, from now on.
+    func setRate(_ newRate: Double) {
+        guard newRate != rate, newRate > 0 else { return }
+        rate = newRate
+        applyRate()
+    }
+
+    func cycleRate() {
+        setRate(PlaybackSpeed.next(after: rate))
+    }
+
+    /// Start one deck at the chosen speed.
+    ///
+    /// `play()` always resumes at 1×, so a bare play() on a deck is a silent
+    /// reset of the speed the user picked. `defaultRate` is what AVFoundation
+    /// resumes AT — set once per deck — and the explicit rate afterwards
+    /// covers the paths that don't consult it.
+    private func start(_ deck: Deck) {
+        deck.player.play()
+        deck.player.rate = Float(rate)
+    }
+
+    /// Hand the current speed to every deck, so the meeting stays one sound.
+    /// A deck that hasn't reached its first sample is left at zero: giving it
+    /// a rate would start it playing early and out of step with the others.
+    private func applyRate() {
+        for deck in decks {
+            deck.player.defaultRate = Float(rate)
+            if playing && !deck.waiting { deck.player.rate = Float(rate) }
         }
     }
 
@@ -618,7 +719,7 @@ final class Playback: ObservableObject {
         for deck in decks where deck.waiting && time + 0.02 >= deck.offset {
             deck.waiting = false
             deck.player.seek(to: .zero)
-            if playing { deck.player.play() }
+            if playing { start(deck) }
         }
     }
 
@@ -635,6 +736,14 @@ final class Playback: ObservableObject {
         failure = "The \(name.lowercased()) track wouldn't play\(why)."
         // A meeting whose only track is broken isn't playing anything.
         if decks.count == 1 { pause() }
+    }
+
+    /// The deterministic cleanup for the screen going away: teardown on the
+    /// main actor, where every one of these properties lives. `deinit` below
+    /// stays as the last-resort backstop, but by the time it runs this has
+    /// normally emptied everything it would touch.
+    func dispose() {
+        teardown()
     }
 
     /// An AVPlayer deallocated with a live periodic observer still attached

@@ -18,14 +18,11 @@ struct TranscriptPage: View {
     /// Every turn, always. Find used to FILTER this list, which answered
     /// "where was that said?" by deleting everything around it — the one
     /// question a transcript search is asked.
-    private var turns: [(id: Int, turn: Turn)] {
-        (detail.turns ?? []).enumerated().map { (id: $0.offset, turn: $0.element) }
-    }
+    private var turns: [Turn] { detail.turns ?? [] }
 
     private var activeIndex: Int? {
         guard player.playing || player.time > 0 else { return nil }
-        let all = detail.turns ?? []
-        return all.lastIndex(where: { $0.start <= player.time })
+        return turns.lastIndex(where: { $0.start <= player.time })
     }
 
     /// Which occurrence inside a given turn is the one being looked at.
@@ -42,21 +39,33 @@ struct TranscriptPage: View {
                     header
                         .padding(.top, 48)
                         .padding(.bottom, 24)
+                    // Both worked out once per pass. `activeIndex` used to be
+                    // read inside the row closure, which is a scan of the
+                    // whole transcript per row, ten times a second.
+                    let rows = turns
+                    let active = activeIndex
+                    if rows.isEmpty {
+                        emptyTranscript
+                    }
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        ForEach(turns, id: \.id) { item in
+                        ForEach(rows.indices, id: \.self) { i in
+                            let turn = rows[i]
                             TranscriptTurn(
-                                turn: item.turn,
-                                name: name(item.turn.speaker),
-                                color: MS.speaker(item.turn.speaker),
-                                active: item.id == activeIndex,
-                                time: player.time,
+                                turn: turn,
+                                name: name(turn.speaker),
+                                color: MS.speaker(turn.speaker),
+                                active: i == active,
+                                // Only the turn being spoken has a travelling
+                                // word to move; handing the clock to the rest
+                                // invalidates the whole transcript at 10Hz.
+                                time: i == active ? player.time : 0,
                                 query: query,
-                                currentOccurrence: currentOccurrence(in: item.id)
+                                currentOccurrence: currentOccurrence(in: i)
                             ) {
-                                player.seek(item.turn.start)
+                                player.seek(turn.start)
                                 player.play()
                             }
-                            .id(item.id)
+                            .id(i)
                         }
                     }
                 }
@@ -69,7 +78,7 @@ struct TranscriptPage: View {
             }
             .onChange(of: activeIndex) {
                 guard following, player.playing, let idx = activeIndex, query.isEmpty else { return }
-                withAnimation(Motion.seek) {
+                msWithAnimation(Motion.seek) {
                     proxy.scrollTo(idx, anchor: UnitPoint(x: 0.5, y: 0.4))
                 }
             }
@@ -86,7 +95,7 @@ struct TranscriptPage: View {
                     Button {
                         following = true
                         if let idx = activeIndex {
-                            withAnimation(Motion.seek) { proxy.scrollTo(idx, anchor: .center) }
+                            msWithAnimation(Motion.seek) { proxy.scrollTo(idx, anchor: .center) }
                         }
                     } label: {
                         Label("Now", systemImage: "arrow.down.to.line")
@@ -106,9 +115,47 @@ struct TranscriptPage: View {
         }
     }
 
+    /// A transcript with nothing in it, said out loud.
+    ///
+    /// The header used to sit over blank space, which reads as a page that
+    /// failed to load rather than as a recording nobody spoke in — and the
+    /// difference matters most to the person wondering whether their meeting
+    /// was captured at all.
+    private var emptyTranscript: some View {
+        Text(emptyTranscriptText)
+            .font(MSFont.body)
+            .lineSpacing(9)
+            .foregroundStyle(MS.ink2)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 96)
+            .padding(.horizontal, 20)
+    }
+
+    /// Which silence this is. Notes change what it means: a meeting somebody
+    /// wrote in is not empty, only unspoken, and the sentence should point
+    /// back at the page their words are on. And neither sentence is true while
+    /// the engine is still working or after it gave up — nothing was detected
+    /// yet because nothing has finished listening.
+    private var emptyTranscriptText: String {
+        if meetingIsWorking(detail.status) {
+            return "The transcript is still being written. It appears here as soon as the engine is done."
+        }
+        if detail.failed {
+            return detail.failureText
+        }
+        let written = (detail.notes ?? []).contains {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return written
+            ? "No speech was detected, so this meeting is only what you wrote down."
+            : "No speech was detected in this recording, so there is nothing to read here."
+    }
+
     private func show(match index: Int, with proxy: ScrollViewProxy) {
         guard matches.indices.contains(index) else { return }
-        withAnimation(Motion.seek) {
+        msWithAnimation(Motion.seek) {
             proxy.scrollTo(matches[index].turn, anchor: UnitPoint(x: 0.5, y: 0.35))
         }
     }
@@ -144,13 +191,15 @@ struct TranscriptPage: View {
     /// it, Return and ⌘G walk the hits, esc puts the page back.
     private var findBar: some View {
         HStack(spacing: 5) {
-            Button {
+            // Four glyphs and not a word between them. The name is the string;
+            // `.iconOnly` keeps the bar looking exactly as it did while giving
+            // VoiceOver something better to read than "chevron up, button".
+            Button("Find in transcript", systemImage: "magnifyingglass") {
                 findFocused = true
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 10))
-                    .foregroundStyle(MS.ink3)
             }
+            .labelStyle(.iconOnly)
+            .font(.system(size: 10))
+            .foregroundStyle(MS.ink3)
             .buttonStyle(PressStyle())
             .keyboardShortcut("f", modifiers: .command)
             .help("Find in transcript (⌘F)")
@@ -165,33 +214,33 @@ struct TranscriptPage: View {
 
             if !query.isEmpty {
                 Text(countText)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(MSFont.kicker)
                     .monospacedDigit()
                     .foregroundStyle(matches.isEmpty ? MS.ink3 : MS.ink2)
                     .fixedSize()
 
-                Button { step(-1) } label: {
-                    Image(systemName: "chevron.up").font(.system(size: 9, weight: .bold))
-                }
-                .buttonStyle(PressStyle())
-                .disabled(matches.isEmpty)
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-                .help("Previous match (⇧⌘G)")
+                Button("Previous match", systemImage: "chevron.up") { step(-1) }
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 9, weight: .bold))
+                    .buttonStyle(PressStyle())
+                    .disabled(matches.isEmpty)
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .help("Previous match (⇧⌘G)")
 
-                Button { step(1) } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
-                }
-                .buttonStyle(PressStyle())
-                .disabled(matches.isEmpty)
-                .keyboardShortcut("g", modifiers: .command)
-                .help("Next match (⌘G)")
+                Button("Next match", systemImage: "chevron.down") { step(1) }
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 9, weight: .bold))
+                    .buttonStyle(PressStyle())
+                    .disabled(matches.isEmpty)
+                    .keyboardShortcut("g", modifiers: .command)
+                    .help("Next match (⌘G)")
 
-                Button { closeFind() } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                }
-                .buttonStyle(PressStyle())
-                .foregroundStyle(MS.ink3)
-                .help("Clear (esc)")
+                Button("Clear the search", systemImage: "xmark") { closeFind() }
+                    .labelStyle(.iconOnly)
+                    .font(.system(size: 9, weight: .bold))
+                    .buttonStyle(PressStyle())
+                    .foregroundStyle(MS.ink3)
+                    .help("Clear (esc)")
             }
         }
         .foregroundStyle(MS.ink2)
@@ -279,13 +328,13 @@ struct CopyTranscriptButton: View {
             pb.setString(transcriptText(detail), forType: .string)
             withAnimation(Motion.micro) { copied = true }
             Task {
-                try? await Task.sleep(nanoseconds: 1_600_000_000)
+                try? await Task.sleep(for: .milliseconds(1600))
                 withAnimation(Motion.exit) { copied = false }
             }
         } label: {
             Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                 .font(MSFont.meta)
-                .foregroundStyle(copied ? AnyShapeStyle(MS.playhead) : AnyShapeStyle(MS.ink2))
+                .foregroundStyle(copied ? MS.playhead : MS.ink2)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
                 .background(MS.raised, in: .capsule)
@@ -314,7 +363,7 @@ struct TranscriptTurn: View {
             Button(action: onSeek) {
                 Text(clock(turn.start))
                     .clockFont(11)
-                    .foregroundStyle(active ? AnyShapeStyle(MS.playhead) : AnyShapeStyle(MS.ink4))
+                    .foregroundStyle(active ? MS.playhead : MS.ink4)
             }
             .buttonStyle(PressStyle())
             .frame(width: 48, alignment: .trailing)
@@ -348,13 +397,13 @@ struct TranscriptTurn: View {
                 }
             }
         }
-        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: active)
+        .msAnimation(Motion.enter, value: active)
     }
 
     private var foundText: Text {
         Text(TranscriptFind.highlight(turn.text, query: query, current: currentOccurrence))
             .font(MSFont.spoken)
-            .foregroundColor(active ? MS.ink : MS.ink2)
+            .foregroundStyle(active ? MS.ink : MS.ink2)
     }
 
     /// The travelling word: interpolate the spoken word within the active
@@ -364,7 +413,7 @@ struct TranscriptTurn: View {
         guard active, let end = turn.end, end > turn.start else {
             return Text(turn.text)
                 .font(MSFont.spoken)
-                .foregroundColor(active ? MS.ink : MS.ink2)
+                .foregroundStyle(active ? MS.ink : MS.ink2)
         }
         let progress = min(max((time - turn.start) / (end - turn.start), 0), 1)
         let words = turn.text.split(separator: " ", omittingEmptySubsequences: false)
@@ -378,20 +427,25 @@ struct TranscriptTurn: View {
                 break
             }
         }
-        var result = Text(verbatim: "")
-        for (i, w) in words.enumerated() {
-            var piece = Text(String(w)).font(MSFont.spoken)
-            if i == activeWord {
-                piece = piece.foregroundColor(MS.ink)
-                    .customAttribute(ActiveWordAttribute())
-            } else if i < activeWord {
-                piece = piece.foregroundColor(MS.ink)
-            } else {
-                piece = piece.foregroundColor(MS.ink2)
-            }
-            result = i == 0 ? piece : result + Text(verbatim: " ") + piece
-        }
-        return result
+        // Three runs, not one per word: said, saying, unsaid. The line used to
+        // be built by adding a Text per word, which is deprecated and grows
+        // with the turn; interpolation composes the same three styles once.
+        // The separating spaces live INSIDE the runs so the word carrying
+        // ActiveWordAttribute is exactly one word wide and the underglow
+        // capsule hugs it rather than the space beside it.
+        let said = words[..<activeWord].joined(separator: " ")
+        let unsaid = words[(activeWord + 1)...].joined(separator: " ")
+        let head = Text(said.isEmpty ? "" : said + " ")
+            .font(MSFont.spoken)
+            .foregroundStyle(MS.ink)
+        let saying = Text(String(words[activeWord]))
+            .font(MSFont.spoken)
+            .foregroundStyle(MS.ink)
+            .customAttribute(ActiveWordAttribute())
+        let tail = Text(unsaid.isEmpty ? "" : " " + unsaid)
+            .font(MSFont.spoken)
+            .foregroundStyle(MS.ink2)
+        return Text("\(head)\(saying)\(tail)")
     }
 }
 

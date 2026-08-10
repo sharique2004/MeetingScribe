@@ -29,6 +29,23 @@
 //       .focusedSceneValue(\.msContext, context)    // an MSContext value
 //       CommandBus.shared.publish(context)          // the same value
 //
+//   MENU → TRANSPORT.  Playback rides the same notification under its own
+//   payload type, `MSPlaybackCommand`, adopted the same way:
+//
+//       .onMSPlaybackCommands { command in … }
+//
+//     A separate type because the two have different audiences. Every
+//     MSCommand is answered once, centrally, by ContentView's switch; a
+//     playback command means nothing at all unless a transport is on screen,
+//     so the bar that owns the AVPlayers is the only sensible handler and
+//     ContentView has no business knowing these exist. They also arrive far
+//     more often — an arrow key on auto-repeat — and on plain keys, which is
+//     a different conversation about focus than ⌘-anything is.
+//
+//   TRANSPORT → MENU.  MeetingScreen publishes an `MSPlaybackContext` by both
+//     of the routes above, so the Playback items know whether there is
+//     anything to play, what it is doing, and how fast.
+//
 //     Both, on purpose. The focused scene value is the idiomatic macOS route
 //     and the one that goes quiet when this window is not the key window; the
 //     bus is the fallback the menu reads when no scene value has arrived, so
@@ -74,6 +91,18 @@ enum MSCommand: Equatable {
     case undoTidy
 }
 
+/// The transport's own verbs, kept apart from `MSCommand` on purpose — see
+/// the contract at the top of this file.
+enum MSPlaybackCommand: Equatable {
+    case togglePlayback
+    /// Jump this many seconds along the meeting's timeline; negative is back.
+    case seekBy(Double)
+    /// Play at this multiple of real time.
+    case setSpeed(Double)
+    /// The next rung of the speed ladder, wrapping past the top back to 1×.
+    case cycleSpeed
+}
+
 /// What the current window has to offer, so the menu can be honest about it.
 struct MSContext: Equatable {
     var meetingID: String?
@@ -93,22 +122,37 @@ struct MSContext: Equatable {
     var canReorderSelection = false
 }
 
-struct MSContextKey: FocusedValueKey {
-    typealias Value = MSContext
+/// What the transport on screen can currently do.
+///
+/// Its own value rather than three more fields on MSContext: the transport is
+/// owned by the meeting screen, which comes and goes underneath the window
+/// that publishes MSContext, and "is anything playing" changes ten times a
+/// minute where the rest of MSContext changes once a meeting.
+struct MSPlaybackContext: Equatable {
+    /// The meeting this transport belongs to; nil when none is on screen. It
+    /// is what lets a departing screen tell whether the value on the bus is
+    /// still its own — the next meeting's screen is built before this one
+    /// goes away, and must not be wiped by its predecessor.
+    var meetingID: String?
+    /// There is audio to play. False for a meeting whose recording saved no
+    /// track at all, which is the whole reason these items can be disabled.
+    var available = false
+    var playing = false
+    var rate = PlaybackSpeed.normal
 }
 
 extension FocusedValues {
     /// What the key window can currently do. Set it with
     /// `.focusedSceneValue(\.msContext, …)`; read it with
     /// `@FocusedValue(\.msContext)`.
-    var msContext: MSContext? {
-        get { self[MSContextKey.self] }
-        set { self[MSContextKey.self] = newValue }
-    }
+    @Entry var msContext: MSContext?
+
+    /// What the transport in the key window can currently do.
+    @Entry var msPlayback: MSPlaybackContext?
 }
 
 extension Notification.Name {
-    /// A menu command fired. `object` is the `MSCommand`.
+    /// A menu command fired. `userInfo["command"]` is the `MSCommand`.
     static let msCommand = Notification.Name("MeetingScribe.command")
     /// A meeting changed on disk. `object` is the meeting id (a `String`).
     static let msMeetingDidChange = Notification.Name("MeetingScribe.meetingDidChange")
@@ -119,6 +163,7 @@ final class CommandBus: ObservableObject {
     static let shared = CommandBus()
 
     @Published private(set) var context = MSContext()
+    @Published private(set) var playback = MSPlaybackContext()
 
     private init() {}
 
@@ -127,8 +172,35 @@ final class CommandBus: ObservableObject {
         self.context = context
     }
 
+    func publish(playback: MSPlaybackContext) {
+        guard playback != self.playback else { return }
+        self.playback = playback
+    }
+
+    /// The transport for this meeting has left the screen. Only clears when
+    /// the value on the bus is still that meeting's: switching meetings builds
+    /// the next screen before the last one disappears, and the departing one
+    /// must not take its successor's answer down with it.
+    func retirePlayback(for meetingID: String) {
+        guard playback.meetingID == meetingID else { return }
+        playback = MSPlaybackContext()
+    }
+
     func send(_ command: MSCommand) {
-        NotificationCenter.default.post(name: .msCommand, object: command)
+        // The payload rides in userInfo, not in `object`: `object` is the
+        // SENDER, and NotificationCenter filters observers by it, so a command
+        // parked there would be matched against senders nobody registered for.
+        NotificationCenter.default.post(name: .msCommand,
+                                        object: nil,
+                                        userInfo: ["command": command])
+    }
+
+    /// The same channel, a different key: a view that adopts one payload type
+    /// never has to know the other exists, and both stay one notification.
+    func send(_ command: MSPlaybackCommand) {
+        NotificationCenter.default.post(name: .msCommand,
+                                        object: nil,
+                                        userInfo: ["playback": command])
     }
 
     func meetingDidChange(_ id: String) {
@@ -140,7 +212,7 @@ extension View {
     /// Adopt one command.
     func onMSCommand(_ command: MSCommand, perform: @escaping () -> Void) -> some View {
         onReceive(NotificationCenter.default.publisher(for: .msCommand)) { note in
-            guard let sent = note.object as? MSCommand, sent == command else { return }
+            guard let sent = note.userInfo?["command"] as? MSCommand, sent == command else { return }
             perform()
         }
     }
@@ -148,7 +220,16 @@ extension View {
     /// Adopt all of them, and switch.
     func onMSCommands(perform: @escaping (MSCommand) -> Void) -> some View {
         onReceive(NotificationCenter.default.publisher(for: .msCommand)) { note in
-            guard let sent = note.object as? MSCommand else { return }
+            guard let sent = note.userInfo?["command"] as? MSCommand else { return }
+            perform(sent)
+        }
+    }
+
+    /// Adopt the transport's verbs. The view that owns the players is the one
+    /// that should: nothing else can honour them.
+    func onMSPlaybackCommands(perform: @escaping (MSPlaybackCommand) -> Void) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: .msCommand)) { note in
+            guard let sent = note.userInfo?["playback"] as? MSPlaybackCommand else { return }
             perform(sent)
         }
     }
@@ -167,9 +248,11 @@ extension View {
 struct MeetingScribeCommands: Commands {
     @ObservedObject private var bus = CommandBus.shared
     @FocusedValue(\.msContext) private var focused
+    @FocusedValue(\.msPlayback) private var focusedPlayback
 
     private var ctx: MSContext { focused ?? bus.context }
     private var hasMeeting: Bool { ctx.meetingID != nil }
+    private var transport: MSPlaybackContext { focusedPlayback ?? bus.playback }
 
     var body: some Commands {
         // ── MeetingScribe ───────────────────────────────────────────────
@@ -242,6 +325,63 @@ struct MeetingScribeCommands: Commands {
 
         // ── Meeting ─────────────────────────────────────────────────────
         CommandMenu("Meeting") {
+            // Playback first, because it is the thing this app is FOR: the
+            // core loop is "jump back to the moment it was said", and until
+            // now the transport was mouse-only — no play key, no seek keys,
+            // no speed at all, on a screen where the same three gestures get
+            // made a hundred times in a review.
+            //
+            // The keys are the ones every Mac media app has trained people to
+            // expect (QuickTime, Music, Voice Memos, Podcasts): Space plays,
+            // the arrows scrub, ⌥ makes the jump the long one. Plain key
+            // equivalents, which is the whole convention: a field editor with
+            // the keyboard consumes the key before the menu is ever offered
+            // it, so Space still types a space in the search field and ← still
+            // moves the caret. The bar guards the two plain verbs against a
+            // focused composer as well — see FloatingBar.run — because that is
+            // the one failure worth wearing a belt for.
+            //
+            // One item, two verbs, the way Start/Stop Recording does it.
+            Button(transport.playing ? "Pause" : "Play") {
+                bus.send(.togglePlayback)
+            }
+                .keyboardShortcut(.space, modifiers: [])
+                .disabled(!transport.available)
+
+            // Five and fifteen: five is "what was that word", fifteen is
+            // "what was that sentence". Both directions, because a transport
+            // that can only go back is half a transport.
+            Button("Back 5 Seconds") { bus.send(.seekBy(-5)) }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+                .disabled(!transport.available)
+            Button("Forward 5 Seconds") { bus.send(.seekBy(5)) }
+                .keyboardShortcut(.rightArrow, modifiers: [])
+                .disabled(!transport.available)
+            Button("Back 15 Seconds") { bus.send(.seekBy(-15)) }
+                .keyboardShortcut(.leftArrow, modifiers: .option)
+                .disabled(!transport.available)
+            Button("Forward 15 Seconds") { bus.send(.seekBy(15)) }
+                .keyboardShortcut(.rightArrow, modifiers: .option)
+                .disabled(!transport.available)
+
+            // The rate in force is ticked, so the menu answers "how fast am I
+            // listening" as well as it sets it.
+            Picker(selection: Binding(get: { transport.rate },
+                                      set: { bus.send(.setSpeed($0)) })) {
+                ForEach(PlaybackSpeed.ladder, id: \.self) { rate in
+                    Text(PlaybackSpeed.label(rate)).tag(rate)
+                }
+            } label: {
+                Text("Playback Speed")
+            }
+                .disabled(!transport.available)
+
+            Button("Cycle Playback Speed") { bus.send(.cycleSpeed) }
+                .keyboardShortcut(".", modifiers: [.command, .shift])
+                .disabled(!transport.available)
+
+            Divider()
+
             // One item, two verbs. It was always "Re-analyse Summary", which
             // reads as "redo the one you have" — so on a meeting with no
             // summary the single menu route to writing one described itself as
@@ -264,10 +404,23 @@ struct MeetingScribeCommands: Commands {
             // people are in the room is the thing a person can always beat.
             // Picking a number re-clusters the saved voice analysis; no
             // re-transcription, usually under a second.
+            //
+            // 0 is a real count here ("just you", what a fallback revert
+            // leaves behind), so it cannot double as Auto: nil is Auto, and an
+            // off-list count — 0, or a converted total past 8 — gets a row of
+            // its own under -1 rather than leaving the menu with nothing
+            // ticked and the setting in force invisible. -1 is unsendable by
+            // construction; picking it means "leave things alone".
             Picker(selection: Binding(
-                get: { ctx.speakerCount ?? 0 },
-                set: { bus.send(.setSpeakerCount($0 == 0 ? nil : $0)) })) {
+                get: {
+                    guard let n = ctx.speakerCount else { return 0 }
+                    return SpeakerCount.offList(n) ? -1 : n
+                },
+                set: { if $0 >= 0 { bus.send(.setSpeakerCount($0 == 0 ? nil : $0)) } })) {
                     Text("Auto").tag(0)
+                    if let n = ctx.speakerCount, SpeakerCount.offList(n) {
+                        Text(n == 0 ? "0 (just you)" : "\(n)").tag(-1)
+                    }
                     ForEach(1...8, id: \.self) { n in
                         Text("\(n)").tag(n)
                     }
@@ -288,6 +441,36 @@ struct MeetingScribeCommands: Commands {
             Button("Undo Tidy") { bus.send(.undoTidy) }
                 .disabled(!ctx.canUndoTidy)
         }
+    }
+}
+
+// MARK: - How fast the meeting plays
+
+/// The speed ladder, in one place, because three surfaces climb it: the menu's
+/// Playback Speed picker, the bar's one-click stepper, and the transport that
+/// has to hand the number to AVFoundation.
+///
+/// It stops at 2×. Past that a meeting recording stops being listenable —
+/// speech, not music, and the point of the feature is to hear the sentence
+/// again, faster, not to skim past it.
+enum PlaybackSpeed {
+    static let normal: Double = 1
+    static let ladder: [Double] = [1, 1.25, 1.5, 1.75, 2]
+
+    /// "1×", "1.25×", "2×" — no trailing zeros, one form everywhere it shows.
+    static func label(_ rate: Double) -> String {
+        String(format: "%g", rate) + "×"
+    }
+
+    /// The same number for VoiceOver, which reads "×" as "multiplication sign".
+    static func spoken(_ rate: Double) -> String {
+        String(format: "%g", rate) + " times normal speed"
+    }
+
+    /// The next rung up, wrapping back to the bottom past the top. A rate that
+    /// is off the ladder entirely climbs onto it rather than being stranded.
+    static func next(after rate: Double) -> Double {
+        ladder.first(where: { $0 > rate + 0.001 }) ?? normal
     }
 }
 

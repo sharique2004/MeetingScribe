@@ -8,7 +8,10 @@ import SwiftUI
 struct MeetingPage: View {
     let detail: MeetingDetail
     let notes: [MeetingNote]
-    @ObservedObject var player: Playback
+    /// Not observed: this page only ever tells the player to seek or play. The
+    /// clock ticks ten times a second, and observing it here would redraw the
+    /// whole document for a number nothing on this page prints.
+    let player: Playback
     @ObservedObject var model: MeetingModel
     @Binding var mode: PageMode
     var onOpenTranscript: (Double?) -> Void
@@ -66,6 +69,11 @@ struct MeetingPage: View {
                     nextStepsView(doc.nextSteps)
                         .padding(.bottom, 28)
                 }
+
+                // After the to-dos, before the email: the to-dos are what came
+                // out of the meeting, and this is what you carried in and may
+                // still be carrying.
+                talkingPointsSection
 
                 if let email = detail.summary?.follow_up_email, email.isUseful {
                     FollowUpEmailCard(email: email)
@@ -169,6 +177,7 @@ struct MeetingPage: View {
                 ForEach(speakerEntries, id: \.key) { entry in
                     HStack(spacing: 5) {
                         Circle().fill(MS.speaker(entry.key)).frame(width: 6, height: 6)
+                            .msDecorative()
                         Text(entry.name)
                             .font(.system(size: 13))
                             .foregroundStyle(MS.ink2)
@@ -177,6 +186,11 @@ struct MeetingPage: View {
             }
         }
         .buttonStyle(.plain)
+        // A row of coloured dots and names is one control, not one per person:
+        // said as a list, with what it opens.
+        .accessibilityLabel("People in this meeting")
+        .accessibilityValue(speakerEntries.map { $0.name }.joined(separator: ", "))
+        .accessibilityHint("Rename speakers")
         .popover(isPresented: $peoplePopover, arrowEdge: .bottom) {
             SpeakerRibbon(detail: detail, model: model)
                 .padding(16)
@@ -202,6 +216,11 @@ struct MeetingPage: View {
         }.map { (key: $0.key, name: $0.value) }
     }
 
+    /// The bar's width, stated once. It used to be measured by a
+    /// GeometryReader that could only ever report this number back — the
+    /// frame below is what fixed it in the first place.
+    private static let talkShareWidth: Double = 180
+
     /// One stacked bar: who owned the meeting, at a glance. Click the
     /// people line above it for the full who-spoke-when ribbon.
     @ViewBuilder
@@ -212,15 +231,14 @@ struct MeetingPage: View {
             return (MS.speaker(entry.key), share)
         }
         if !shares.isEmpty {
-            GeometryReader { geo in
-                HStack(spacing: 2) {
-                    ForEach(Array(shares.enumerated()), id: \.offset) { _, s in
-                        Capsule().fill(s.0.opacity(0.85))
-                            .frame(width: max((geo.size.width - CGFloat(shares.count - 1) * 2) * s.1, 3))
-                    }
+            let track = Self.talkShareWidth - Double(shares.count - 1) * 2
+            HStack(spacing: 2) {
+                ForEach(shares.enumerated(), id: \.offset) { _, s in
+                    Capsule().fill(s.0.opacity(0.85))
+                        .frame(width: max(track * s.1, 3))
                 }
             }
-            .frame(width: 180, height: 5)
+            .frame(width: Self.talkShareWidth, height: 5, alignment: .leading)
         }
     }
 
@@ -249,6 +267,7 @@ struct MeetingPage: View {
                         Image(systemName: "info.circle")
                             .font(.system(size: 10))
                             .foregroundStyle(MS.ink4)
+                            .msDecorative()
                         Text(warning)
                             .font(MSFont.meta)
                             .foregroundStyle(MS.ink3)
@@ -334,8 +353,6 @@ struct MeetingPage: View {
     @ViewBuilder
     private func blockView(_ block: DocumentBlock) -> some View {
         switch block {
-        case .heading(let text):
-            yourNote { Text(text).font(MSFont.sectionHeading).foregroundStyle(MS.ink) }
         case .userParagraph(let text):
             yourNote {
                 Text(text)
@@ -389,6 +406,116 @@ struct MeetingPage: View {
                 }
             }
         }
+    }
+
+    // MARK: - Talking points
+
+    /// What the user planned to raise, and what the engine could not find them
+    /// raising.
+    ///
+    /// This is the far end of a loop that started on the record sheet: the
+    /// points are typed before the meeting, frozen into it at start, and judged
+    /// by the summarizer against the transcript. The native document decoded
+    /// neither the list nor the verdict, so the whole feature ended in silence
+    /// here — you could prepare, and never be told.
+    ///
+    /// Colourless on purpose. The palette spends red on recording and mint on
+    /// the present moment, and a point that never came up is a note to self
+    /// rather than an alarm: the state is carried by a glyph, by the words
+    /// beside it and by what VoiceOver reads out, which is also the only
+    /// arrangement that survives a reader who sees neither.
+    @ViewBuilder
+    private var talkingPointsSection: some View {
+        let points = detail.talkingPoints
+        if !points.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("TALKING POINTS")
+                    .font(MSFont.kicker)
+                    .kerning(0.55)
+                    .foregroundStyle(MS.ink3)
+                Text(talkingPointsMeta(points))
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(points) { point in
+                        talkingPointRow(point)
+                    }
+                }
+                if points.contains(where: { $0.covered == false }) {
+                    Text("Judged from the transcript, so worth a second look before you close this out.")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.bottom, 28)
+        }
+    }
+
+    /// The one line under the heading, which has three quite different things
+    /// to say: nothing has looked at these yet, everything came up, or some of
+    /// it did not.
+    private func talkingPointsMeta(_ points: [TalkingPoint]) -> String {
+        if points.allSatisfy({ $0.covered == nil }) {
+            return "What you planned to raise. Nothing has checked them against the transcript yet."
+        }
+        if points.contains(where: { $0.covered == false }) {
+            return "What you planned to raise, and what never came up."
+        }
+        return "What you planned to raise. All of them came up."
+    }
+
+    /// One point, with its mark in the same left gutter the user's own notes
+    /// hang in: these are their words too, written before the meeting instead
+    /// of during it.
+    private func talkingPointRow(_ point: TalkingPoint) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Group {
+                // Each mark is nudged onto the first line's baseline by hand:
+                // a shape has none of its own, so an HStack lines its BOTTOM
+                // up with the text and the smaller the mark the lower it sits.
+                if point.covered == true {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(MS.ink4)
+                } else if point.covered == false {
+                    // The ring the to-dos wear for "not done": the same claim
+                    // in the same shape, and no louder than one.
+                    Circle()
+                        .strokeBorder(MS.ink4, lineWidth: 1.2)
+                        .frame(width: 9, height: 9)
+                        .offset(y: -1)
+                } else {
+                    // Unjudged: a plain bullet, because a tick and a ring are
+                    // both verdicts and nobody has reached one.
+                    Circle().fill(MS.ink4).frame(width: 3.5, height: 3.5)
+                        .offset(y: -3)
+                }
+            }
+            .frame(width: 20, alignment: .leading)
+            .msDecorative()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(point.text)
+                    .font(MSFont.body)
+                    .lineSpacing(9)
+                    .foregroundStyle(MS.ink2)
+                    .textSelection(.enabled)
+                if point.covered == false {
+                    Text("Never came up")
+                        .font(MSFont.meta)
+                        .foregroundStyle(MS.ink2)
+                }
+            }
+        }
+        .padding(.leading, -20)
+        // Read as one line with a state, so the answer to "did I raise this?"
+        // does not depend on seeing a glyph.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(point.text)
+        .accessibilityValue(point.covered == nil ? "Not checked"
+                            : point.covered == true ? "Came up" : "Never came up")
     }
 
     // MARK: - The numbers
@@ -722,7 +849,7 @@ struct MeetingPage: View {
 struct NoticeBand<Action: View>: View {
     let icon: String
     let text: String
-    @ViewBuilder var action: () -> Action
+    @ViewBuilder let action: Action
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -730,6 +857,7 @@ struct NoticeBand<Action: View>: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(MS.ink2)
                 .offset(y: 1)
+                .msDecorative()
             Text(text)
                 .font(MSFont.chrome)
                 .lineSpacing(4)
@@ -737,7 +865,7 @@ struct NoticeBand<Action: View>: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
-            action()
+            action
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -761,7 +889,8 @@ extension NoticeBand where Action == EmptyView {
 struct EvidenceDisclosure: View {
     let text: String
     let evidence: Turn?
-    @ObservedObject var player: Playback
+    /// Told to seek, never read from — see MeetingPage.
+    let player: Playback
     var onOpenTranscript: (Double?) -> Void
 
     @State private var hovering = false
@@ -776,9 +905,11 @@ struct EvidenceDisclosure: View {
                             .font(.system(size: 9))
                             .foregroundStyle(MS.playhead)
                             .transition(.scale(scale: 0.6).combined(with: .opacity))
+                            .msDecorative()
                     } else {
                         Circle().fill(MS.ink4).frame(width: 3.5, height: 3.5)
                             .transition(.scale(scale: 0.6).combined(with: .opacity))
+                            .msDecorative()
                     }
                 }
                 .frame(width: 20, alignment: .leading)
@@ -799,10 +930,20 @@ struct EvidenceDisclosure: View {
                 if NSEvent.modifierFlags.contains(.option), let t = evidence?.start {
                     onOpenTranscript(t)
                 } else {
-                    withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.22)) {
+                    msWithAnimation(Motion.enter) {
                         unfolded.toggle()
                     }
                 }
+            }
+            // A tap gesture rather than a Button, because a Button would take
+            // the line's text selection away — so the things a Button says for
+            // free are said here by hand, including the ⌥-click shortcut,
+            // which no keyboard-only reader could otherwise reach.
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(evidence == nil ? ""
+                               : "Shows the transcript line behind this point")
+            .accessibilityAction(named: "Open in transcript") {
+                if let t = evidence?.start { onOpenTranscript(t) }
             }
 
             if unfolded, let ev = evidence {
@@ -844,7 +985,8 @@ struct EvidenceDisclosure: View {
 struct ActionRow: View {
     let item: ActionItem
     let evidence: Turn?
-    @ObservedObject var player: Playback
+    /// Told to seek, never read from — see MeetingPage.
+    let player: Playback
     let meetingID: String
     @ObservedObject private var store = ActionItemStore.shared
     @State private var drawn: CGFloat = 0
@@ -861,7 +1003,7 @@ struct ActionRow: View {
             Button {
                 let next = !checked
                 store.set(next, meeting: meetingID, task: item.task)
-                withAnimation(.easeOut(duration: 0.4)) { drawn = next ? 1 : 0 }
+                msWithAnimation(Motion.enter) { drawn = next ? 1 : 0 }
             } label: {
                 ZStack {
                     Circle()
@@ -877,13 +1019,19 @@ struct ActionRow: View {
                 .animation(Motion.micro, value: checked)
             }
             .buttonStyle(PressStyle())
+            // A drawn circle with nothing written in it: the to-do beside it is
+            // the name, and the tick is the value, so the control is not read
+            // out as an unlabelled button that does something unsaid.
+            .accessibilityLabel(item.task)
+            .accessibilityValue(checked ? "Done" : "Not done")
+            .accessibilityAddTraits(checked ? [.isToggle, .isSelected] : .isToggle)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(item.task)
                     .font(MSFont.body)
                     .lineSpacing(8)
                     .foregroundStyle(checked ? MS.ink3 : MS.ink)
-                    .animation(.easeOut(duration: 0.4), value: checked)
+                    .msAnimation(Motion.enter, value: checked)
                 HStack(spacing: 6) {
                     if let owner = item.owner, !owner.isEmpty {
                         Text(owner).font(MSFont.meta).foregroundStyle(MS.ink2)
@@ -923,7 +1071,7 @@ struct FollowUpEmailCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button {
-                withAnimation(.timingCurve(0.32, 0.72, 0, 1, duration: 0.22)) { open.toggle() }
+                msWithAnimation(Motion.enter) { open.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Text("FOLLOW-UP EMAIL")
@@ -934,6 +1082,7 @@ struct FollowUpEmailCard: View {
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(MS.ink4)
                         .rotationEffect(.degrees(open ? 90 : 0))
+                        .msDecorative()
                     Spacer()
                 }
                 .contentShape(Rectangle())
@@ -963,15 +1112,14 @@ struct FollowUpEmailCard: View {
                             .compactMap { $0 }.joined(separator: "\n\n"), forType: .string)
                         withAnimation(Motion.micro) { copied = true }
                         Task {
-                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            try? await Task.sleep(for: .milliseconds(1600))
                             withAnimation(Motion.exit) { copied = false }
                         }
                     } label: {
                         Label(copied ? "Copied" : "Copy email",
                               systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(MSFont.meta)
-                            .foregroundStyle(copied ? AnyShapeStyle(MS.playhead)
-                                                    : AnyShapeStyle(MS.ink2))
+                            .foregroundStyle(copied ? MS.playhead : MS.ink2)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(MS.raised, in: .capsule)

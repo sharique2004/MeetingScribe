@@ -88,6 +88,116 @@ struct FollowUpEmail: Decodable, Hashable {
     }
 }
 
+/// One prepared talking point, in every shape the engine's own readers accept.
+///
+/// notes.py freezes the cues into meeting.json as plain STRINGS (`_clean_cues`)
+/// and summarize.py hands those same strings straight back in
+/// `summary["unaddressed_cues"]`, so a string is what this decodes in practice.
+/// It reads the wider object shape anyway, because the two readers that came
+/// before it do: summarize.py's `_entry()` and the web UI's `entryText()` both
+/// take an object keyed by any of eight text keys, with an optional flag saying
+/// the point was covered. Their comments say why the two must not disagree, and
+/// the reasoning reaches this file too — a reader that understands less than the
+/// judge does gets handed a verdict about a line it never managed to display.
+struct MeetingCue: Decodable, Hashable {
+    let text: String
+    /// The note store's own flag, where it carries one. `nil` means nobody has
+    /// said, which is a different fact from `false`.
+    let covered: Bool?
+
+    // summarize.py's _TEXT_KEYS, _COVERED_KEYS, _COVERED_WORDS and _OPEN_WORDS,
+    // verbatim and in order. The order matters: the first key that carries
+    // something is the answer, on both sides.
+    private static let textKeys = ["text", "note", "cue", "body", "content",
+                                   "value", "label", "title"]
+    private static let coveredKeys = ["covered", "answered", "asked", "used", "done",
+                                      "checked", "complete", "completed", "resolved",
+                                      "addressed", "raised"]
+    private static let coveredWords: Set<String> = ["covered", "answered", "asked",
+                                                    "done", "used", "complete",
+                                                    "completed", "resolved",
+                                                    "addressed", "raised"]
+    private static let openWords: Set<String> = ["open", "pending", "unasked",
+                                                 "unanswered", "todo", "new",
+                                                 "not_asked", "not-asked",
+                                                 "unaddressed", "skipped", "missed"]
+
+    private struct AnyKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+        init(_ name: String) { stringValue = name }
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    init(from decoder: Decoder) throws {
+        if let plain = try? decoder.singleValueContainer().decode(String.self) {
+            text = plain
+            covered = nil
+            return
+        }
+        guard let object = try? decoder.container(keyedBy: AnyKey.self) else {
+            // Neither a string nor an object — a shape nothing writes. It
+            // decodes to an empty cue rather than throwing, because a throw
+            // here does not cost a cue, it costs the MEETING: this list is
+            // decoded inside the document, and one unreadable entry would take
+            // the whole page down with it. Empty cues are dropped below.
+            text = ""
+            covered = nil
+            return
+        }
+        var found = ""
+        for key in Self.textKeys {
+            if let value = try? object.decode(String.self, forKey: AnyKey(key)),
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                found = value
+                break
+            }
+        }
+        text = found
+
+        var flag: Bool?
+        for key in Self.coveredKeys where object.contains(AnyKey(key)) {
+            if let yes = try? object.decode(Bool.self, forKey: AnyKey(key)) {
+                flag = yes
+            } else if let number = try? object.decode(Double.self, forKey: AnyKey(key)) {
+                flag = number != 0
+            }
+            break   // the first key that is PRESENT decides, even if unusable
+        }
+        if flag == nil {
+            for key in ["status", "state"] {
+                guard let word = try? object.decode(String.self, forKey: AnyKey(key))
+                else { continue }
+                let normal = word.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased().replacingOccurrences(of: " ", with: "_")
+                if Self.coveredWords.contains(normal) { flag = true; break }
+                if Self.openWords.contains(normal) { flag = false; break }
+            }
+        }
+        covered = flag
+    }
+
+    /// The form both sides of the match are compared in — summarize.py hands
+    /// the cue's own stored words back, and the web UI lowercases both ends.
+    var matchKey: String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    var isBlank: Bool { matchKey.isEmpty }
+}
+
+/// One prepared talking point paired with what, if anything, judged it.
+struct TalkingPoint: Identifiable, Hashable {
+    /// Its place in the list the user typed. Two lines can read the same, so
+    /// position is the identity here, never the words.
+    let id: Int
+    let text: String
+    /// `nil` is "nobody judged this meeting's points" — neither covered nor
+    /// missed, and it must not be drawn as either.
+    let covered: Bool?
+}
+
 struct MeetingSummary: Decodable {
     let headline: String?
     let tldr: String?
@@ -100,6 +210,11 @@ struct MeetingSummary: Decodable {
     /// Set by the engine when the prompt couldn't carry every note.
     let notes_omitted: Int?
     let engine: String?
+    /// The talking points the engine could not find anybody raising, in the
+    /// cues' own words. Its PRESENCE is the verdict: summarize.py leaves the
+    /// key off entirely unless an engine it trusts judged every cue, and writes
+    /// it — possibly empty — when one did. See `MeetingDetail.talkingPoints`.
+    let unaddressed_cues: [MeetingCue]?
 }
 
 /// What stats.py already computes for one speaker, all of it. Talk time,
@@ -199,6 +314,11 @@ struct MeetingDetail: Decodable {
     /// it trimmed. Written by the recorder at stop and by the pipeline, and
     /// never seen by anyone until it is on the page.
     let warnings: [String]?
+    /// The talking points this meeting was STARTED with, in the order they
+    /// were typed. notes.py freezes the staged list into meeting.json at
+    /// record start, so this is the list as it was that morning, whatever the
+    /// user has staged since.
+    let cues: [MeetingCue]?
 }
 
 extension MeetingDetail {
@@ -264,6 +384,38 @@ extension MeetingDetail {
             ?? Locale.current.localizedString(forLanguageCode: String(code.prefix(2)))
     }
 
+    /// The talking points this meeting was recorded with, each carrying the
+    /// verdict on it where one exists.
+    ///
+    /// `summary.unaddressed_cues` is a verdict, and its PRESENCE is the whole
+    /// of it. summarize.py withholds the key entirely unless an engine it
+    /// trusts judged every cue — the on-device model is deliberately not one
+    /// of them, because asked which points went unraised it over-names them —
+    /// and writes the key, possibly empty, when one did. So an empty list is
+    /// the positive claim "all of them came up", while a missing one means
+    /// nobody looked and every point here reads unjudged. Reading the list's
+    /// LENGTH instead of its presence is how a tick lands next to a question
+    /// that was never asked.
+    ///
+    /// The match is on text because that is what the engine hands back: the
+    /// cue's own stored words, translated out of the model's numbering so a
+    /// paraphrase can never quietly un-flag a point. Both sides are trimmed
+    /// and lowercased, exactly as the web UI does it.
+    var talkingPoints: [TalkingPoint] {
+        let stored = (cues ?? []).filter { !$0.isBlank }
+        guard !stored.isEmpty else { return [] }
+        let verdict = summary?.unaddressed_cues
+        let judged = verdict != nil
+        let missed = Set((verdict ?? []).map(\.matchKey))
+        return stored.enumerated().map { index, cue in
+            TalkingPoint(
+                id: index,
+                text: cue.text,
+                // A flag the note store wrote itself is data, not judgement,
+                // so it outranks the model either way.
+                covered: cue.covered ?? (judged ? !missed.contains(cue.matchKey) : nil))
+        }
+    }
 }
 
 /// Did this warning cost the user audio, or is it only about labels?
@@ -433,6 +585,33 @@ private struct AskStreamEvent: Decodable {
 }
 
 let askStreamMediaType = "application/x-ndjson"
+
+/// One settled exchange from the meeting's persisted conversation. The engine
+/// writes one of these to qa.json for every answer that lands, whoever asked
+/// and whether or not they stayed to read it.
+struct QAExchange: Decodable {
+    let id: String?
+    let question: String?
+    let answer: String?
+    let citations: [Citation]?
+}
+
+/// The ask job as GET /api/meetings/<id>/qa reports it. "processing" means an
+/// answer is being written right now — `partial` in the envelope is how far
+/// it has got.
+struct QAJob: Decodable {
+    let state: String?
+    let message: String?
+    let question: String?
+    let qa_id: String?
+    let needs_claude: Bool?
+}
+
+struct QAEnvelope: Decodable {
+    let exchanges: [QAExchange]
+    let job: QAJob?
+    let partial: String?
+}
 
 // MARK: - Client
 
@@ -713,6 +892,26 @@ enum API {
                              needsClaude: false)
         }
         return settled
+    }
+
+    /// The conversation the engine keeps on disk for this meeting (qa.json),
+    /// plus the live job and the answer-so-far while one is being written.
+    /// This is what makes a thread outlive the page, the window and the
+    /// process: the bar hydrates from it, and polls it to pick up an answer
+    /// that was still writing when the app was last quit.
+    static func qa(_ id: String) async throws -> QAEnvelope {
+        try await get("api/meetings/\(id)/qa", as: QAEnvelope.self)
+    }
+
+    /// Forget the conversation. -> false when the engine refused — an answer
+    /// is still being written — or didn't answer at all.
+    static func clearQA(_ id: String) async -> Bool {
+        var req = URLRequest(url: engineBase.appendingPathComponent("api/meetings/\(id)/qa"))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 10
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else { return false }
+        return (200..<300).contains(code)
     }
 
     /// Drain a body we are only going to read as one JSON object — the error

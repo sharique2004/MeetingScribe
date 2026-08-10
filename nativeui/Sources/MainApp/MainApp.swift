@@ -29,10 +29,15 @@ final class MainAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        // Before ContentView exists, because a click on "Transcript ready" can
+        // be what launched the app: the delegate has to be in place to catch
+        // the meeting id that arrives with it. Asking for permission is a
+        // separate, later moment — see MSNotifications.
+        MSNotifications.install()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let refusal = MainActor.assumeIsolated({ EngineManager.shared.prepareForQuit() })
+        guard let refusal = EngineManager.shared.prepareForQuit()
         else { return .terminateNow }
         let alert = NSAlert()
         alert.messageText = refusal.title
@@ -90,12 +95,19 @@ final class Library: ObservableObject {
     private var metaFetches = Set<String>()
     private var searchTask: Task<Void, Never>?
     private var watchTask: Task<Void, Never>?
+    /// Which registration in `watchTask` is the current one. A poller that
+    /// resumes after being cancelled and replaced must not clear its
+    /// successor's slot — see watchWorkInFlight.
+    private var watchGeneration = 0
     private var query = ""
 
-    func refresh(query: String = "") async {
-        self.query = query
+    /// nil means "whatever the user is already searching for". A plain
+    /// `refresh()` used to reset the query to "", so a refresh after an edit
+    /// silently dropped the user out of their own search results.
+    func refresh(query: String? = nil) async {
+        if let query { self.query = query }
         do {
-            meetings = try await API.meetings(query: query)
+            meetings = try await API.meetings(query: self.query)
             loadError = nil
         } catch {
             loadError = "The engine isn't answering. Nothing is lost, it just isn't listening yet."
@@ -151,9 +163,18 @@ final class Library: ObservableObject {
         guard working || force else { watchTask?.cancel(); watchTask = nil; return }
         guard watchTask == nil else { return }
         let known = Set(meetings.map(\.id))
+        let initialPending = Set(meetings.filter { meetingIsWorking($0.status) }.map(\.id))
+        // expectNewMeeting cancels this task and starts another one straight
+        // away. Cancellation is not immediate — the old task is asleep and
+        // resumes later — so an unconditional `watchTask = nil` on the way out
+        // erased the NEWER task's registration, and the next caller, seeing an
+        // empty slot, started a second poller alongside it. Only clear the slot
+        // if it is still ours.
+        watchGeneration += 1
+        let generation = watchGeneration
         watchTask = Task { [weak self] in
-            defer { self?.watchTask = nil }
-            var pending = Set(meetings.filter { meetingIsWorking($0.status) }.map(\.id))
+            defer { if self?.watchGeneration == generation { self?.watchTask = nil } }
+            var pending = initialPending
             // When we are waiting for a meeting that does not exist yet, give
             // the engine a bounded window to produce it rather than polling on
             // forever if a recording produced nothing at all.
@@ -171,7 +192,7 @@ final class Library: ObservableObject {
             // the gap instead.
             var ticksAwaitingSummary = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self else { return }
                 guard let fresh = try? await API.meetings(query: self.query) else { continue }
                 self.meetings = fresh
@@ -184,6 +205,7 @@ final class Library: ObservableObject {
                 // badges were fetched while the transcript, or the summary,
                 // did not exist yet.
                 let justTranscribed = pending.subtracting(stillWorking)
+                self.announce(justTranscribed, in: fresh, jobs: processing)
                 for id in justTranscribed.union(summarising.subtracting(stillSummarising)) {
                     self.metaFetches.remove(id)
                     self.meta[id] = nil
@@ -209,10 +231,40 @@ final class Library: ObservableObject {
         }
     }
 
+    /// Say out loud that these meetings are done, because nothing else does.
+    ///
+    /// This poll is the only place in the app that knows the exact tick a
+    /// transcription finished, and a 45-minute meeting spends about fifteen
+    /// minutes here: by the time it lands the user is in another app, in
+    /// another window, or away from the Mac entirely. That is also the whole
+    /// test — with MeetingScribe in front of them, the row losing its shimmer
+    /// and gaining its badges has already said everything a banner would, and
+    /// a banner on top of it would be the app narrating what they can see.
+    ///
+    /// A meeting that left the working state without appearing in the fresh
+    /// list was deleted mid-run, and has nothing to announce.
+    private func announce(_ finished: Set<String>, in fresh: [MeetingListItem],
+                          jobs: [String: EngineJob]) {
+        guard !finished.isEmpty, !NSApp.isActive else { return }
+        for id in finished {
+            guard let row = fresh.first(where: { $0.id == id }) else { continue }
+            let failed = row.status == "error"
+            MSNotifications.postTranscriptReady(
+                meetingID: id,
+                title: row.title,
+                ok: !failed,
+                // The engine writes the reason into the job it just failed, in
+                // the same words the meeting page will show. Absent — the
+                // engine restarted under us — postTranscriptReady has a plain
+                // sentence of its own.
+                message: failed ? jobs[id]?.message : nil)
+        }
+    }
+
     func search(_ query: String) {
         searchTask?.cancel()
         searchTask = Task {
-            try? await Task.sleep(nanoseconds: 220_000_000)
+            try? await Task.sleep(for: .milliseconds(220))
             guard !Task.isCancelled else { return }
             await refresh(query: query)
         }
@@ -238,8 +290,13 @@ final class Library: ObservableObject {
         }
         metaFetches.insert(id)
         Task {
+            // A failed read used to leave the id in metaFetches for the life of
+            // the app, and the guard at the top of this function then refused
+            // every later attempt: one dropped request meant a row that never
+            // got its brief again. Matches what invalidate(_:) already does.
+            defer { metaFetches.remove(id) }
             guard let m = try? await API.brief(id) else { return }
-            msWithAnimation(.easeOut(duration: 0.22)) {
+            msWithAnimation(Motion.seek) {
                 meta[id] = m
                 if let b = m.brief { briefs[id] = b }
             }
@@ -263,7 +320,7 @@ final class Library: ObservableObject {
         Task {
             defer { metaFetches.remove(id) }
             guard let m = try? await API.brief(id) else { return }
-            msWithAnimation(.easeOut(duration: 0.22)) {
+            msWithAnimation(Motion.seek) {
                 meta[id] = m
                 if let b = m.brief { briefs[id] = b }
             }
@@ -276,7 +333,9 @@ final class Library: ObservableObject {
 struct ContentView: View {
     @StateObject private var library = Library()
     @StateObject private var center = RecorderCenter()
-    @StateObject private var engine = EngineManager.shared
+    // Observed, not owned: the engine is a singleton that outlives this view,
+    // and @StateObject would claim the view creates and owns its lifetime.
+    @ObservedObject private var engine = EngineManager.shared
     @State private var hud = HUDController()
     @State private var route: DetailRoute? = .today
     @State private var mode: PageMode = .document
@@ -391,6 +450,13 @@ struct ContentView: View {
             reloadTokens[id, default: 0] += 1
             Task { await refreshAfterChange(id) }
         }
+        // A notification was clicked while the app was already running. It is
+        // not an MSCommand: every command in Commands.swift acts on whatever
+        // is already selected, and this one arrives carrying its own meeting.
+        .onReceive(NotificationCenter.default.publisher(for: .msOpenMeeting)) { note in
+            guard let id = note.object as? String else { return }
+            openMeeting(id)
+        }
         .task(id: currentMeetingID) {
             corrections = nil
             guard let id = currentMeetingID else { return }
@@ -399,6 +465,11 @@ struct ContentView: View {
         .task {
             hud.attach(center: center)
             center.onRecordingStopped = { [weak library] in
+                // The first recording to END is when asking makes sense: the
+                // app is about to spend a quarter of an hour transcribing, so
+                // "may I tell you when it's done" answers itself. Asked at
+                // launch it is a permission prompt for nothing yet.
+                MSNotifications.requestAuthorizationIfNeeded()
                 Task {
                     await library?.refresh()
                     // The meeting is not on disk yet, so that refresh cannot
@@ -416,6 +487,10 @@ struct ContentView: View {
             }
             await EngineManager.shared.ensureRunning()
             await library.refresh()
+            // A "Transcript ready" click that LAUNCHED the app rather than
+            // switching to it: the delegate ran before this view existed, so
+            // the meeting it asked for waited here for someone to collect it.
+            if let id = MSNotifications.takePendingMeeting() { openMeeting(id) }
             if let i = CommandLine.arguments.firstIndex(of: "--open"),
                CommandLine.arguments.indices.contains(i + 1) {
                 route = .meeting(CommandLine.arguments[i + 1])
@@ -441,6 +516,18 @@ struct ContentView: View {
                     mode = .document
                 }
             }
+        }
+    }
+
+    /// Show one meeting, from somewhere outside the window: a notification
+    /// click, or the id that was waiting when the window opened. The document
+    /// mode is reset with it, because arriving from a "Transcript ready" and
+    /// landing in whatever mode was left open a week ago is not arriving.
+    private func openMeeting(_ id: String) {
+        MSNotifications.clearPendingMeeting()
+        msWithAnimation(Motion.enter) {
+            route = .meeting(id)
+            mode = .document
         }
     }
 
@@ -701,6 +788,9 @@ struct SidebarView: View {
     var query: String = ""
     /// So the footer's engine label follows a change made in the pane it opens.
     @ObservedObject private var settings = Settings.shared
+    /// For the "answer ready" mark: a question asked three pages ago finished
+    /// while the user was elsewhere, and its row is where they find out.
+    @ObservedObject private var askCenter = AskCenter.shared
     @State private var pendingDelete: MeetingListItem?
     @State private var deleteError: String?
     @State private var reprocessError: String?
@@ -718,8 +808,8 @@ struct SidebarView: View {
 
             if let err = library.loadError {
                 Text(err)
-                    .font(.caption)
-                    .foregroundStyle(MS.ink3)
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink2)
             }
 
             ForEach(groups) { group in
@@ -728,6 +818,7 @@ struct SidebarView: View {
                         MeetingRow(meeting: m,
                                    meta: library.meta[m.id],
                                    progress: library.progress[m.id],
+                                   answerReady: askCenter.unread.contains(m.id),
                                    showBrief: group.isToday)
                             .tag(DetailRoute.meeting(m.id))
                             .task { library.fetchBrief(for: m.id) }
@@ -776,6 +867,16 @@ struct SidebarView: View {
                     .textCase(nil)
                 }
             }
+
+            // Nothing to list. WHICH of the reasons it is matters, and until
+            // now the rail said none of them: an empty library and a search
+            // that matched nobody both drew an empty column. An engine that
+            // isn't answering has already explained itself in the row above,
+            // so it keeps the floor.
+            if groups.isEmpty, library.loadError == nil {
+                emptyState
+                    .selectionDisabled()
+            }
         }
         .listStyle(.sidebar)
         // Pinned to the foot of the rail rather than sitting in the list:
@@ -820,6 +921,57 @@ struct SidebarView: View {
         } message: {
             Text(actionError ?? "")
         }
+    }
+
+    /// The rail with nothing in it.
+    ///
+    /// Two plain rows, in the register the rest of the rail speaks: no icon,
+    /// no centred headline, no ContentUnavailableView. That control draws a
+    /// page's empty state — a large glyph and a bold line — and a sidebar is
+    /// not a page. The first line says what happened, the second says the one
+    /// thing worth knowing next.
+    private var emptyState: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if !searchText.isEmpty {
+                // The query is quoted back because a sidebar search that
+                // matched nothing is most often a typo, and a typo is only
+                // visible when you can see what was typed.
+                Text("Nothing matches \u{201C}\(searchText)\u{201D}.")
+                    .font(MSFont.chrome)
+                    .foregroundStyle(MS.ink2)
+                Text("Titles and speaker names are searched.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            } else if center.phase == .recording {
+                // A first-ever recording, in flight. "No meetings yet" is
+                // true and useless here, and "press ⌘R" would be an
+                // instruction to stop the thing they just started.
+                Text("Your first meeting is recording now.")
+                    .font(MSFont.chrome)
+                    .foregroundStyle(MS.ink2)
+                Text("It arrives here when the engine has finished with it.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+            } else {
+                Text("No meetings yet.")
+                    .font(MSFont.chrome)
+                    .foregroundStyle(MS.ink2)
+                Text("Press ⌘R when your next call starts. Everything stays on this Mac.")
+                    .font(MSFont.meta)
+                    .foregroundStyle(MS.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 8)
+        // Two fragments read as two rows nobody can act on. One sentence.
+        .accessibilityElement(children: .combine)
+    }
+
+    /// What the user is actually searching for. The field is passed straight
+    /// down from ContentView, so it is live: it changes on the keystroke,
+    /// ahead of the debounced fetch that empties the list.
+    private var searchText: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func askToDeleteSelection() {
@@ -911,7 +1063,7 @@ struct SidebarView: View {
                         .msDecorative()
                     Text("Settings")
                         .font(MSFont.chromeMedium)
-                        .foregroundStyle(selected ? MS.ink : MS.ink)
+                        .foregroundStyle(selected ? MS.ink : MS.ink2)
                     Spacer(minLength: 6)
                     Text(engineLabel)
                         .font(MSFont.meta)
@@ -927,6 +1079,14 @@ struct SidebarView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // On the Button, not on the VStack around it. Collapsing the
+            // container hid the Button inside it, so VoiceOver read a label
+            // with nothing to activate; here the element IS the control, and
+            // isButton comes free with it.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Settings")
+            .accessibilityValue("Summaries by \(engineLabel)")
+            .accessibilityAddTraits(selected ? .isSelected : [])
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
         }
@@ -935,10 +1095,6 @@ struct SidebarView: View {
         // a surface the last meeting's title reads straight over the word
         // "Settings".
         .background(.bar)
-        .accessibilityElement(children: .ignore)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-        .accessibilityLabel("Settings")
-        .accessibilityValue("Summaries by \(engineLabel)")
     }
 
     /// Who writes the summaries, in the name the user picked it by.
@@ -985,6 +1141,8 @@ struct MeetingRow: View {
     var meta: RowMeta?
     /// The engine's live line for this meeting while it works on it.
     var progress: String?
+    /// An Ask answer finished while this meeting's page was off screen.
+    var answerReady = false
     var showBrief: Bool
 
     /// Work in flight. "error" is NOT work: the row used to shimmer on
@@ -1027,6 +1185,16 @@ struct MeetingRow: View {
                                 .accessibilityLabel("Needs a look")
                         }
                     }
+                }
+                if answerReady {
+                    // Mint, because it is an invitation to click: the answer
+                    // to a question asked here finished while the user was on
+                    // another page, and opening the row opens the thread.
+                    Image(systemName: "text.bubble.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(MS.interactive)
+                        .help("An answer to your question is ready")
+                        .accessibilityLabel("Answer ready")
                 }
                 Spacer(minLength: 0)
                 if failed {
@@ -1086,6 +1254,13 @@ struct MeetingRow: View {
         } else if let d = meeting.duration, d > 0 {
             parts.append("\(Int(d / 60)) min")
         }
+        // An explicit label replaces the children, badges included, so every
+        // glyph in the row has to be said again here or it is said to nobody.
+        if meta?.hasCaptureWarning == true { parts.append("needs a look") }
+        if answerReady { parts.append("answer ready") }
+        if meta?.hasTranscript == true { parts.append("transcribed") }
+        if meta?.hasSummary == true { parts.append("summarised") }
+        if meta?.hasNotes == true { parts.append("has your notes") }
         if let brief = meta?.brief, !brief.isEmpty { parts.append(brief) }
         return parts.joined(separator: ", ")
     }
@@ -1144,12 +1319,11 @@ struct RecordToolbarButton: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 3)
-            .msAnimation(.easeOut(duration: 0.16), value: recording)
+            .msAnimation(Motion.exit, value: recording)
         }
         .buttonStyle(.borderedProminent)
         .tint(MS.recordRed)
         .disabled(center.phase == .offline)
-        .opacity(center.phase == .offline ? 0.4 : 1)
         .help(recording ? "Stop recording (⌘R)" : "Start recording (⌘R)")
         .accessibilityLabel(recording ? "Stop recording" : "Start recording")
         .accessibilityValue(recording ? clock(center.elapsed) : "")

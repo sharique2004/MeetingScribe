@@ -310,11 +310,17 @@ final class RecorderCenter: ObservableObject {
         draftT = restored.live?.t
         noteDraft = restored.live?.text ?? ""
 
+        // `guard let self` rather than `self?.tick()`: optional-chaining a
+        // dead owner is a no-op the loop never notices, so the timer went on
+        // ticking — forever, at a poll a second — after the centre itself was
+        // gone.
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.tick()
-                let recording = self?.phase == .recording
-                try? await Task.sleep(nanoseconds: recording ? 350_000_000 : 1_200_000_000)
+                guard let self else { return }
+                await self.tick()
+                let recording = self.phase == .recording
+                try? await Task.sleep(for: recording ? .milliseconds(350)
+                                                     : .milliseconds(1200))
             }
         }
     }

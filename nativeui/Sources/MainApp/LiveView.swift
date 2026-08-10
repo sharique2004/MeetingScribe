@@ -12,6 +12,11 @@ struct LivePage: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    // Built once per pass. `captionTail` rebuilds the whole
+                    // list every time it is read, and the poll reads it four
+                    // times a second.
+                    let tail = captionTail
+
                     // Dateline: the only red in the window. The two meters
                     // ride with it, because "is this being recorded" is the
                     // one question the recording screen must always answer.
@@ -91,19 +96,19 @@ struct LivePage: View {
 
                     // The machine, one ink down, in serif: the last few
                     // caption lines dissolving in.
-                    if !captionTail.isEmpty {
+                    if !tail.isEmpty {
                         VStack(alignment: .leading, spacing: 9) {
-                            ForEach(Array(captionTail.enumerated()), id: \.offset) { i, line in
+                            ForEach(Array(tail.enumerated()), id: \.offset) { i, line in
                                 Text(line)
                                     .font(MSFont.evidence)
                                     .lineSpacing(7)
-                                    .foregroundStyle(MS.ink2.opacity(opacityFor(i)))
+                                    .foregroundStyle(MS.ink2.opacity(opacityFor(i, of: tail.count)))
                                     .transition(.offset(y: 6).combined(with: .opacity))
                             }
                         }
                         .padding(.leading, 58)
                         .padding(.top, 34)
-                        .animation(Motion.enter, value: captionTail)
+                        .msAnimation(Motion.enter, value: tail)
                     } else {
                         HStack(spacing: 6) {
                             Text("Listening")
@@ -166,7 +171,7 @@ struct LivePage: View {
             // Inside the branch, so a healthy meeting leaves no gap where a
             // warning would have been.
             .padding(.top, 22)
-            .animation(Motion.enter, value: alerts)
+            .msAnimation(Motion.enter, value: alerts)
         }
     }
 
@@ -183,15 +188,25 @@ struct LivePage: View {
         return Array(lines.suffix(4))
     }
 
-    private func opacityFor(_ index: Int) -> Double {
-        let n = captionTail.count
-        return 0.45 + 0.55 * Double(index + 1) / Double(max(n, 1))
+    /// Takes the line count rather than reading `captionTail` again: this is
+    /// called once per line, and rebuilding the list for each of them was the
+    /// same answer computed four times over.
+    private func opacityFor(_ index: Int, of n: Int) -> Double {
+        0.45 + 0.55 * Double(index + 1) / Double(max(n, 1))
     }
 }
 
+/// Three dots saying the engine is still listening.
+///
+/// Driven by a task rather than a `Timer.publish`: the publisher was a stored
+/// property built fresh on every pass of the parent's body, so the old one was
+/// dropped mid-cycle and the dots stuttered. And it drove `withAnimation` from
+/// a timer, which is exactly what the motion contract forbids — under Reduce
+/// Motion the dots now simply sit still at even weight, and the word
+/// "Listening" beside them says the same thing.
 struct ListeningEllipsis: View {
     @State private var step = 0
-    private let timer = Timer.publish(every: 0.45, on: .main, in: .common).autoconnect()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 2.5) {
@@ -199,11 +214,15 @@ struct ListeningEllipsis: View {
                 Circle()
                     .fill(MS.ink3)
                     .frame(width: 3, height: 3)
-                    .opacity(step == i ? 1 : 0.3)
+                    .opacity(reduceMotion ? 0.6 : (step == i ? 1 : 0.3))
             }
         }
-        .onReceive(timer) { _ in
-            withAnimation(Motion.micro) { step = (step + 1) % 3 }
+        .task {
+            guard !reduceMotion else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(450))
+                msWithAnimation(Motion.micro) { step = (step + 1) % 3 }
+            }
         }
     }
 }

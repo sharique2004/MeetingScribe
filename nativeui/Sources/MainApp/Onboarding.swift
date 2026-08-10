@@ -17,7 +17,9 @@ import AVFoundation
 struct OnboardingFlow: View {
     @Binding var presented: Bool
     @EnvironmentObject var center: RecorderCenter
-    @StateObject private var engine = EngineManager.shared
+    // Observed, not owned: the engine is a singleton that outlives this sheet,
+    // and @StateObject would claim the view creates and owns its lifetime.
+    @ObservedObject private var engine = EngineManager.shared
     @State private var step = 0
 
     private let stepCount = 7
@@ -45,13 +47,19 @@ struct OnboardingFlow: View {
             // "Set up later" is the honest name for it: the app works with
             // whatever was granted and asks again where it needs to.
             ZStack {
+                // Full-strength ink4, which IS the non-text contrast floor:
+                // fading it to half broke that floor again. VoiceOver walks
+                // past the dots entirely — the kicker heading each step
+                // ("STEP 3 OF 6") already says where in the flow this is, and
+                // says it in words.
                 HStack(spacing: 6) {
                     ForEach(0..<stepCount, id: \.self) { i in
                         Circle()
-                            .fill(i == step ? MS.interactive : MS.ink4.opacity(0.5))
+                            .fill(i == step ? MS.interactive : MS.ink4)
                             .frame(width: 6, height: 6)
                     }
                 }
+                .accessibilityHidden(true)
                 HStack {
                     Spacer()
                     if step < stepCount - 1 {
@@ -68,11 +76,11 @@ struct OnboardingFlow: View {
         }
         .frame(width: 600, height: 560)
         .background(MS.content)
-        .animation(Motion.enter, value: step)
+        .msAnimation(Motion.enter, value: step)
     }
 
     private func advance() {
-        withAnimation(Motion.enter) { step += 1 }
+        msWithAnimation(Motion.enter) { step += 1 }
     }
 
     /// Leave setup. The flag is written either way: an onboarding the user
@@ -124,32 +132,46 @@ private struct ContinueButton: View {
     let action: () -> Void
 
     var body: some View {
+        // The capsule belongs INSIDE the label. Outside the button style it
+        // was not part of what PressStyle scales, so the press shrank the
+        // words and left the pill standing still.
         Button(action: action) {
             Text(label)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.black.opacity(0.85))
                 .padding(.horizontal, 22)
                 .padding(.vertical, 8)
+                .background(enabled ? MS.playheadFill : MS.ink4, in: .capsule)
         }
         .buttonStyle(PressStyle())
-        .background(enabled ? MS.playheadFill : MS.ink4, in: .capsule)
         .disabled(!enabled)
+        // Return is what a keyboard expects to press on the one obvious button
+        // on the page, and every step has exactly one of these on screen.
+        .keyboardShortcut(.defaultAction)
     }
 }
 
+/// A tick and a line of text. The tick is the only thing saying whether the
+/// step is satisfied, and it says it in a shape and a colour — so VoiceOver is
+/// told in words instead, and reads the pair as one stop rather than an
+/// unnamed image followed by a sentence.
 private struct CheckRow: View {
     let done: Bool
     let text: String
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14))
-                .foregroundStyle(done ? AnyShapeStyle(MS.playheadFill) : AnyShapeStyle(MS.ink4))
+        Label {
             Text(text)
                 .font(MSFont.body)
                 .foregroundStyle(done ? MS.ink : MS.ink2)
+        } icon: {
+            Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 14))
+                .foregroundStyle(done ? MS.playheadFill : MS.ink4)
+                .msDecorative()
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(done ? "Done. \(text)" : "Not done. \(text)")
     }
 }
 
@@ -442,28 +464,27 @@ private struct ModelsStep: View {
             let fresh = await API.modelStatus()
             silentProbes = fresh == nil ? silentProbes + 1 : 0
             if let fresh {
-                withAnimation(Motion.seek) { status = fresh }
+                msWithAnimation(Motion.seek) { status = fresh }
             }
             let busy = fresh?.busy ?? (status == nil)
-            try? await Task.sleep(nanoseconds: busy ? 700_000_000 : 2_000_000_000)
+            try? await Task.sleep(for: busy ? .milliseconds(700) : .seconds(2))
         }
     }
 }
 
+/// The 2.4 GB, in one line. A real ProgressView rather than two capsules in a
+/// GeometryReader: the hand-drawn pair had no value to announce, so the one
+/// control on screen during a multi-gigabyte download was invisible to
+/// VoiceOver. The fraction moves continuously, so the motion goes through the
+/// contract.
 private struct DownloadBar: View {
     let fraction: Double
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(MS.ink4.opacity(0.25))
-                Capsule()
-                    .fill(MS.playheadFill)
-                    .frame(width: max(geo.size.width * min(1, max(0, fraction)), 3))
-            }
-        }
-        .frame(height: 6)
-        .animation(Motion.seek, value: fraction)
+        ProgressView(value: min(1, max(0, fraction)))
+            .progressViewStyle(.linear)
+            .tint(MS.playheadFill)
+            .msAnimation(Motion.seek, value: fraction)
     }
 }
 
@@ -481,17 +502,11 @@ private struct SkipLink: View {
 
 /// Decimal units, matching the engine's own arithmetic, so the app and the
 /// progress line it renders never quote two different numbers for one file.
-private let modelByteFormatter: ByteCountFormatter = {
-    let f = ByteCountFormatter()
-    f.countStyle = .file
-    f.allowedUnits = [.useMB, .useGB]
-    // Off, or a download that has not moved yet reads "Zero KB of 78.2 MB".
-    f.allowsNonnumericFormatting = false
-    return f
-}()
-
+/// `spellsOutZero` off, or a download that has not moved yet reads
+/// "Zero KB of 78.2 MB".
 private func modelSize(_ bytes: Int64?) -> String {
-    modelByteFormatter.string(fromByteCount: max(0, bytes ?? 0))
+    max(0, bytes ?? 0)
+        .formatted(.byteCount(style: .file, allowedUnits: [.mb, .gb], spellsOutZero: false))
 }
 
 private struct MicrophoneStep: View {
@@ -533,17 +548,21 @@ private struct MicrophoneStep: View {
                         .foregroundStyle(MS.ink3)
                 default:
                     HStack(spacing: 12) {
-                        ContinueButton(label: "Allow microphone") {
-                            AVCaptureDevice.requestAccess(for: .audio) { _ in
-                                DispatchQueue.main.async {
-                                    status = AVCaptureDevice.authorizationStatus(for: .audio)
-                                }
-                            }
-                        }
+                        ContinueButton(label: "Allow microphone") { requestMicrophone() }
                         SkipLink(label: "Not now", action: next)
                     }
                 }
             }
+        }
+    }
+
+    /// The answer is read back rather than taken from the callback, because
+    /// "restricted" is a real state the boolean cannot express. Awaited on the
+    /// main actor, so there is no hop to arrange by hand.
+    private func requestMicrophone() {
+        Task {
+            _ = await AVCaptureDevice.requestAccess(for: .audio)
+            status = AVCaptureDevice.authorizationStatus(for: .audio)
         }
     }
 }
@@ -673,7 +692,7 @@ private struct SystemAudioStep: View {
         var trackPresent: Bool?
         var trackError: String?
         for _ in 0..<14 {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(for: .milliseconds(250))
             guard let st = await API.recorderSnapshot(), st.recording else { continue }
             peak = max(peak, st.levels?["system"] ?? 0)
             if let tracks = st.tracks {
@@ -841,7 +860,7 @@ private struct CalendarStep: View {
             var answer = await API.calendarStatus()
             var waited = 0.0
             while answer.available != true, waited < 90 {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(for: .seconds(2))
                 waited += 2
                 answer = await API.calendarStatus()
                 // A definite refusal is an answer; stop waiting for a prompt

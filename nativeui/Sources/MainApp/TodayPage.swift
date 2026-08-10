@@ -8,6 +8,7 @@
 // how many people, what you meant to raise). Pressing record still takes one
 // click and no decisions.
 import SwiftUI
+import AppKit
 
 struct TodayPage: View {
     @EnvironmentObject var library: Library
@@ -159,17 +160,19 @@ struct TodayPage: View {
         let count = week.count
         let h = Int(seconds) / 3600, m = (Int(seconds) % 3600) / 60
         let amount = h > 0 ? "\(h) h \(m) m" : "\(m) m"
-        return (
-            Text("You've captured ")
-                .font(.system(size: 20))
-                .foregroundColor(MS.ink2)
-            + Text(amount)
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
-                .foregroundColor(MS.interactive)
-            + Text(" across \(count) meeting\(count == 1 ? "" : "s") this week.")
-                .font(.system(size: 20))
-                .foregroundColor(MS.ink2)
-        )
+        // Interpolated rather than concatenated: `Text + Text` is on its way
+        // out, and the interpolating form is the one that stays a single
+        // sentence for VoiceOver and for a translator.
+        let lead = Text("You've captured ")
+            .font(.system(size: 20))
+            .foregroundStyle(MS.ink2)
+        let figure = Text(amount)
+            .font(.system(size: 20, weight: .semibold, design: .rounded))
+            .foregroundStyle(MS.interactive)
+        let tail = Text(" across \(count) meeting\(count == 1 ? "" : "s") this week.")
+            .font(.system(size: 20))
+            .foregroundStyle(MS.ink2)
+        return Text("\(lead)\(figure)\(tail)")
     }
 
     private func kicker(_ s: String) -> some View {
@@ -217,7 +220,7 @@ struct StartRecordingRow: View {
                         .padding(.horizontal, 14)
                         .background(MS.raised.opacity(hovering ? 1 : 0.65),
                                     in: .rect(cornerRadius: 12))
-                        .contentShape(Rectangle())
+                        .contentShape(.rect)
                     }
                     .buttonStyle(PressStyle())
                     .disabled(center.starting)
@@ -251,6 +254,12 @@ struct StartRecordingRow: View {
                             .font(MSFont.meta)
                             .foregroundStyle(MS.ink3)
                             .fixedSize(horizontal: false, vertical: true)
+                        // The sentence has always ended by naming a pane in
+                        // System Settings. Naming it and leaving the user to
+                        // find it is most of a fix; this is the rest.
+                        if let pane = SystemSettingsPane.answering(problem) {
+                            OpenSystemSettingsButton(pane: pane)
+                        }
                     }
                 }
             }
@@ -259,11 +268,98 @@ struct StartRecordingRow: View {
     }
 }
 
+// MARK: - The pane that answers a warning
+
+/// Where in System Settings a capture problem is actually fixed.
+///
+/// Every one of these sentences already ends by naming a pane, and until now
+/// that was the whole of the help: the user was told to go to System Settings
+/// ▸ Privacy & Security ▸ Microphone and left to find it. Onboarding has
+/// opened these panes directly since it was written, so the mechanics existed
+/// two files away from the warnings that needed them.
+///
+/// `CaptureAlert` carries no kind, only an id and two sentences, and the
+/// detail for a routing problem is free text written by the engine
+/// (audio_recorder.py's `_routing_alert`). So the match is made on both: the
+/// id says which side of the capture is in trouble, and the sentence has to
+/// genuinely send the user to System Settings before a button appears. An
+/// alert that names no pane keeps its sentence and gains no button, which is
+/// better than a button that opens the wrong pane — the "sound output is set
+/// to the loopback device" warning is fixed in Sound, not in Privacy, and it
+/// says so itself without naming System Settings.
+enum SystemSettingsPane {
+    case microphone
+    case screenAndSystemAudio
+
+    /// The same URLs the onboarding flow opens, so there is one answer to
+    /// "which pane is that" in this app rather than two that can drift.
+    var url: URL {
+        switch self {
+        case .microphone:
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+        case .screenAndSystemAudio:
+            return URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+        }
+    }
+
+    /// The path as macOS itself writes it, for the tooltip.
+    var written: String {
+        switch self {
+        case .microphone:
+            return "Privacy & Security → Microphone"
+        case .screenAndSystemAudio:
+            return "Privacy & Security → Screen & System Audio Recording"
+        }
+    }
+
+    /// The same path spelled out, for VoiceOver, where "→" is not a word and
+    /// "&" is read unevenly.
+    var spoken: String {
+        switch self {
+        case .microphone:
+            return "Privacy and Security, Microphone"
+        case .screenAndSystemAudio:
+            return "Privacy and Security, Screen and System Audio Recording"
+        }
+    }
+
+    static func answering(_ alert: CaptureAlert) -> SystemSettingsPane? {
+        guard (alert.title + ". " + alert.detail).contains("System Settings") else { return nil }
+        switch alert.id {
+        case "mic": return .microphone
+        case "system": return .screenAndSystemAudio
+        default: return nil          // disk, and anything added later
+        }
+    }
+}
+
+/// The fix, one click away, and quiet about it: this sits beside a warning
+/// that is already the loudest thing on the page, so it borrows the mint the
+/// app spends on interaction and nothing else.
+private struct OpenSystemSettingsButton: View {
+    let pane: SystemSettingsPane
+
+    var body: some View {
+        Button("Open System Settings") {
+            NSWorkspace.shared.open(pane.url)
+        }
+        .buttonStyle(.plain)
+        .font(MSFont.meta)
+        .foregroundStyle(MS.interactive)
+        .fixedSize()
+        .help("Opens System Settings → \(pane.written)")
+        .accessibilityLabel("Open System Settings to \(pane.spoken)")
+    }
+}
+
 private struct EventRow: View {
     let event: DayEvent
     let onRecord: () -> Void
     let onOptions: () -> Void
     @State private var hovering = false
+    /// True while either of the row's controls holds keyboard focus, so
+    /// tabbing to one reveals both.
+    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -286,28 +382,33 @@ private struct EventRow: View {
                 .help("\(n) guest\(n == 1 ? "" : "s") on the invitation, not counting you")
             }
             Spacer()
-            if hovering {
-                HStack(spacing: 8) {
-                    Button("Record this one", action: onRecord)
-                        .buttonStyle(PressStyle())
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(MS.interactive)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(MS.raised, in: .capsule)
-                    Button(action: onOptions) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 11))
-                            .foregroundStyle(MS.ink3)
-                    }
+            // Faded out rather than removed. `if hovering` took both controls
+            // out of the view tree entirely, which means a keyboard could
+            // never tab to them and VoiceOver could never find them: the two
+            // ways of recording a specific meeting existed only for a mouse.
+            HStack(spacing: 8) {
+                Button("Record this one", action: onRecord)
                     .buttonStyle(PressStyle())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(MS.interactive)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(MS.raised, in: .capsule)
+                    .focused($focused)
+                Button("Set up this recording", systemImage: "slider.horizontal.3",
+                       action: onOptions)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(PressStyle())
+                    .font(.system(size: 11))
+                    .foregroundStyle(MS.ink3)
                     .help("Set up this recording first")
-                }
-                .transition(.opacity)
+                    .focused($focused)
             }
+            .opacity(hovering || focused ? 1 : 0)
+            .msAnimation(Motion.micro, value: focused)
         }
         .padding(.vertical, 6)
-        .contentShape(Rectangle())
+        .contentShape(.rect)
         .onHover { h in withAnimation(Motion.micro) { hovering = h } }
     }
 
@@ -567,7 +668,11 @@ struct NewRecordingSheet: View {
             }
             ForEach(center.preflight?.alerts ?? []) { problem in
                 NoticeBand(icon: "exclamationmark.triangle",
-                           text: problem.title + ". " + problem.detail)
+                           text: problem.title + ". " + problem.detail) {
+                    if let pane = SystemSettingsPane.answering(problem) {
+                        OpenSystemSettingsButton(pane: pane)
+                    }
+                }
             }
             if center.preflight == nil {
                 hint("Checking the audio devices…")
@@ -595,7 +700,7 @@ struct NewRecordingSheet: View {
     private func deviceRow(name: String, role: String, ok: Bool) -> some View {
         HStack(spacing: 9) {
             Circle()
-                .fill(ok ? AnyShapeStyle(MS.playheadFill) : AnyShapeStyle(MS.ink4))
+                .fill(ok ? MS.playheadFill : MS.ink4)
                 .frame(width: 6, height: 6)
             Text(name)
                 .font(MSFont.chrome)
@@ -738,7 +843,7 @@ private struct TodayMeetingRow: View {
                     RoundedRectangle(cornerRadius: 8).fill(MS.ink.opacity(0.05))
                 }
             }
-            .contentShape(Rectangle())
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
         .onHover { h in withAnimation(Motion.micro) { hovering = h } }
