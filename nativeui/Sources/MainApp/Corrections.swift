@@ -37,7 +37,7 @@ struct SpeakerCountSheet: View {
                 .accessibilityAddTraits(.isHeader)
 
             Text("How many voices are in this meeting?")
-                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
@@ -93,7 +93,7 @@ struct SpeakerCountSheet: View {
                     // "Auto" would claim a meeting is on auto-detection when
                     // a count a person chose is still being applied to it.
                     Text(value == 0 ? "0 (just you)" : "\(value)")
-                        .font(.system(size: 13.5, weight: .medium))
+                        .font(MSFont.chromeMedium)
                         .foregroundStyle(MS.ink2)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
@@ -117,7 +117,7 @@ struct SpeakerCountSheet: View {
             pick(value)
         } label: {
             Text(title)
-                .font(.system(size: 13.5, weight: .medium))
+                .font(MSFont.chromeMedium)
                 .foregroundStyle(selected ? MS.ink : MS.ink2)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
@@ -133,12 +133,15 @@ struct SpeakerCountSheet: View {
         .accessibilityHint(label)
     }
 
+    /// The chips keep their well; only the outline changes hands — the edge
+    /// rim where the chip is merely sitting there, the mint ring where it is
+    /// the count in force.
     private func chipBackground(selected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        MS.rr(MS.radius.md)
             .fill(selected ? MS.raised : MS.raised.opacity(0.5))
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(selected ? MS.interactive.opacity(0.55) : MS.hairline,
+                MS.rr(MS.radius.md)
+                    .strokeBorder(selected ? MS.interactive.opacity(0.55) : MS.edgeRim,
                                   lineWidth: 1))
     }
 
@@ -160,7 +163,7 @@ struct SpeakerCountSheet: View {
         } else if let flash {
             HStack(spacing: 7) {
                 Image(systemName: "checkmark.circle")
-                    .font(.system(size: 12))
+                    .font(MSFont.meta)
                     .foregroundStyle(MS.playhead)
                     .msDecorative()
                 Text(flash)

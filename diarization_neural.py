@@ -28,6 +28,24 @@ binary, missing models, no network on first run, timeout, count mismatch —
 falls back to the classic assignment that shipped yesterday, with a log
 line and nothing else. config "diarization_engine" picks: "auto" (the
 hybrid above, default), "classic" (never run the neural pass).
+
+HELPER CONTRACT (native/fluiddiarizer/Sources/fluid-diarizer/main.swift —
+keep in sync; that file's header is the authority):
+
+  * The turns JSON at --out carries engine/engine_revision/threshold/
+    num_speakers/audio_seconds/speaker_count/speakers/speaker_seconds/
+    segments/elapsed_seconds, plus "config_fingerprint" — 16 hex chars of
+    SHA-256 over the pinned revision and every config field that steers the
+    output. Two runs with the same fingerprint saw the same engine inputs;
+    it is the cache key to reach for when NEURAL_VERSION is too coarse.
+  * Every CLI flag is optional and defaults to the vendor's `.community`
+    preset, so the call this module makes with no extra keywords is exactly
+    the call that shipped. diarize_turns() appends a flag ONLY when its
+    keyword is non-default, which is what keeps that true.
+  * --embeddings FILE writes a SECOND JSON (per-chunk 256-d WeSpeaker
+    embeddings + 128-d PLDA vectors + per-speaker centroids) whose speaker
+    ids are the same first-appearance ints as the turns. It does not change
+    the turns: the engine builds that array after segments are final.
 """
 
 import json
@@ -119,13 +137,39 @@ def available():
 
 
 def diarize_turns(wav_path, num_speakers=None, threshold=THRESHOLD,
-                  offset=0.0, timeout=None):
+                  offset=0.0, timeout=None, min_speakers=None,
+                  max_speakers=None, want_embeddings=False,
+                  zero_vote_reembed=False, step_ratio=None,
+                  min_segment_duration=None):
     """Run the neural engine over one track WAV.
 
     Returns a list of (start, end, speaker_idx) turns on the MEETING
     timeline (`offset` — the track's start_offset — is added to the
     file-local times the engine reports), speaker_idx renumbered by first
     appearance. Raises on any failure; callers fall back to classic.
+
+    Every keyword past `timeout` is a pass-through to a fluid-diarizer flag,
+    and each one defaults to the value the helper already uses, so a call
+    that passes none of them runs the exact command line this module ran
+    before they existed — no flag is appended unless its keyword is
+    non-default. `min_speakers`/`max_speakers` bound the automatic count
+    (the engine ignores both when `num_speakers` forces it);
+    `zero_vote_reembed` re-embeds timeline spans that drew no cluster vote;
+    `step_ratio` is the segmentation hop as a fraction of the 10 s window;
+    `min_segment_duration` is the embedding stage's minimum span.
+
+    RETURN SHAPE. `want_embeddings=False` (the default) returns the turn
+    list, unchanged and unwrapped — the shape every existing caller reads.
+    `want_embeddings=True` returns a 2-tuple `(turns, embeddings)` instead;
+    the extra flag is the caller's opt-in to the extra element, so nothing
+    downstream has to learn a new shape it did not ask for. `embeddings` is
+      {"chunk_embeddings": [{"speaker": int, "start": s, "end": s,
+                             "embedding256": [256 floats],
+                             "rho128": [128 floats]}, ...],
+       "speaker_database": {speaker_int: [256 floats centroid]}}
+    with speaker ints matching the returned turns, chunk times moved onto
+    the MEETING timeline by the same `offset`, and speaker_database re-keyed
+    from the helper's JSON strings to ints.
     """
     exe = binary()
     if exe is None:
@@ -148,27 +192,64 @@ def diarize_turns(wav_path, num_speakers=None, threshold=THRESHOLD,
     with tempfile.NamedTemporaryFile(suffix=".json", prefix="ms-turns-",
                                      delete=False) as tmp:
         out_path = Path(tmp.name)
+    emb_path = None
+    if want_embeddings:
+        with tempfile.NamedTemporaryFile(suffix=".json", prefix="ms-emb-",
+                                         delete=False) as tmp:
+            emb_path = Path(tmp.name)
     try:
         cmd = [exe, str(wav_path), "--out", str(out_path),
                "--threshold", str(threshold),
                "--models-dir", str(MODELS_SUBDIR)]
         if num_speakers:
             cmd += ["--num-speakers", str(int(num_speakers))]
+        # Non-default keywords only: an omitted flag is the helper's own
+        # .community preset, and that equivalence is what keeps the default
+        # invocation byte-for-byte what it was.
+        if min_speakers is not None:
+            cmd += ["--min-speakers", str(int(min_speakers))]
+        if max_speakers is not None:
+            cmd += ["--max-speakers", str(int(max_speakers))]
+        if zero_vote_reembed:
+            cmd += ["--zero-vote-reembed"]
+        if step_ratio is not None:
+            cmd += ["--step-ratio", str(float(step_ratio))]
+        if min_segment_duration is not None:
+            cmd += ["--min-segment-duration", str(float(min_segment_duration))]
+        if emb_path is not None:
+            cmd += ["--embeddings", str(emb_path)]
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout)
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()
             raise RuntimeError(tail[-1] if tail else f"exit {proc.returncode}")
         data = json.loads(out_path.read_text(encoding="utf-8"))
+        emb = json.loads(emb_path.read_text(encoding="utf-8")) \
+            if emb_path is not None else None
     finally:
         out_path.unlink(missing_ok=True)
+        if emb_path is not None:
+            emb_path.unlink(missing_ok=True)
 
     turns = [(float(s["start"]) + float(offset),
               float(s["end"]) + float(offset),
               int(s["speaker_idx"]))
              for s in data.get("segments", [])]
     turns.sort(key=lambda t: t[0])
-    return turns
+    if emb is None:
+        return turns
+    embeddings = {
+        "chunk_embeddings": [
+            {"speaker": int(c["speaker"]),
+             "start": float(c["start"]) + float(offset),
+             "end": float(c["end"]) + float(offset),
+             "embedding256": c["embedding256"],
+             "rho128": c["rho128"]}
+            for c in emb.get("chunk_embeddings", [])],
+        "speaker_database": {int(k): v for k, v
+                             in (emb.get("speaker_database") or {}).items()},
+    }
+    return turns, embeddings
 
 
 # A neural cluster carrying less total speech than this is chunk-boundary

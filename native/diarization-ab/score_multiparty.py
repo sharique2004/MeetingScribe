@@ -50,73 +50,22 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "tools"))
 
 import diarization  # noqa: E402
 import diarization_neural  # noqa: E402
 import pipeline  # noqa: E402
 
-FRAME = 0.01  # seconds
+# The metric itself now lives in tools/attribution.py, unchanged, so this
+# scorer and tools/eval_diarization.py's attribution section compute the same
+# numbers from the same code instead of two copies that can drift. Re-exported
+# under the original names because they were this module's public surface.
+import attribution  # noqa: E402
 
-
-def load_rttm(path):
-    """[(start, end, speaker)] from an RTTM file."""
-    turns = []
-    for line in Path(path).read_text().splitlines():
-        f = line.split()
-        if len(f) >= 8 and f[0] == "SPEAKER":
-            start, dur = float(f[3]), float(f[4])
-            turns.append((start, start + dur, f[7]))
-    return sorted(turns)
-
-
-def frame_labels(turns, n_frames, names):
-    """(n_frames, n_speakers) activity matrix from [(s, e, name)]."""
-    idx = {n: i for i, n in enumerate(names)}
-    act = np.zeros((n_frames, len(names)), dtype=bool)
-    for s, e, name in turns:
-        act[int(round(s / FRAME)):int(round(e / FRAME)), idx[name]] = True
-    return act
-
-
-def score(ref_turns, hyp_turns, total_s, collar=0.0):
-    """(miss, fa, confusion) as fractions of reference speech time.
-
-    Frame-based; the collar excludes ±collar around every reference boundary
-    from scoring; speaker mapping is Hungarian on overlap seconds.
-    """
-    from scipy.optimize import linear_sum_assignment
-
-    n = int(np.ceil(total_s / FRAME)) + 1
-    ref_names = sorted({t[2] for t in ref_turns})
-    hyp_names = sorted({t[2] for t in hyp_turns})
-    ref = frame_labels(ref_turns, n, ref_names)
-    hyp = frame_labels(hyp_turns, n, hyp_names)
-
-    scored = np.ones(n, dtype=bool)
-    if collar > 0:
-        c = int(round(collar / FRAME))
-        for s, e, _ in ref_turns:
-            for b in (s, e):
-                i = int(round(b / FRAME))
-                scored[max(0, i - c):i + c] = False
-
-    overlap = np.zeros((len(ref_names), len(hyp_names)))
-    for i in range(len(ref_names)):
-        for j in range(len(hyp_names)):
-            overlap[i, j] = np.sum(ref[scored, i] & hyp[scored, j]) * FRAME
-    ri, hj = linear_sum_assignment(-overlap)
-    mapped = {j: i for i, j in zip(ri, hj)}
-
-    ref_n = ref[scored].sum(axis=1)   # speakers active per frame (truth)
-    hyp_n = hyp[scored].sum(axis=1)
-    correct = np.zeros(scored.sum())
-    for j, i in mapped.items():
-        correct += (ref[scored, i] & hyp[scored, j])
-    ref_time = ref_n.sum() * FRAME
-    miss = np.maximum(ref_n - hyp_n, 0).sum() * FRAME
-    fa = np.maximum(hyp_n - ref_n, 0).sum() * FRAME
-    conf = (np.minimum(ref_n, hyp_n) - correct).clip(min=0).sum() * FRAME
-    return miss / ref_time, fa / ref_time, conf / ref_time
+FRAME = attribution.FRAME
+load_rttm = attribution.load_rttm
+frame_labels = attribution.frame_labels
+score = attribution.score
 
 
 def hyp_from_segments(segs):
@@ -138,21 +87,18 @@ def run_neural_auto(wav):
 
 
 def run_hybrid(wav, segs, classic_labelled, n_classic, neural_turns, k_neural):
-    """The product's gate, replayed (pipeline._neural_refine's logic)."""
-    if n_classic < 2:
-        return classic_labelled, n_classic, "classic (count<2)"
-    if k_neural == n_classic:
-        out, k = diarization.assign_by_turns(segs, neural_turns)
-        if k == n_classic:
-            return out, k, "neural (agreed)"
-        return classic_labelled, n_classic, "classic (assign mismatch)"
-    if k_neural > n_classic:
-        forced = diarization_neural.diarize_turns(Path(wav), num_speakers=n_classic)
-        out, k = diarization.assign_by_turns(segs, forced)
-        if k == n_classic:
-            return out, k, "neural (forced down)"
-        return classic_labelled, n_classic, "classic (forced mismatch)"
-    return classic_labelled, n_classic, "classic (neural saw fewer)"
+    """The product's gate, replayed (pipeline._neural_refine's logic).
+
+    The arbitration itself is attribution.hybrid_arbitrate; this wrapper only
+    supplies the live engine for the forced-down branch. The eval harness
+    supplies frozen turns to the same function, so neither place holds a
+    second, drifting copy of the rule.
+    """
+    return attribution.hybrid_arbitrate(
+        segs, classic_labelled, n_classic, neural_turns, k_neural,
+        forced_turns_fn=lambda n: diarization_neural.diarize_turns(
+            Path(wav), num_speakers=n),
+        assign_by_turns=diarization.assign_by_turns)
 
 
 def main(argv=None):

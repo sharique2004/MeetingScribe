@@ -13,6 +13,7 @@ Steps:
 """
 
 import difflib
+import gc
 import json
 import logging
 import math
@@ -124,8 +125,77 @@ _PARAKEET = None
 _PARAKEET_REPO = None
 # Guards the Parakeet singleton AND its use: process_meeting runs on a thread
 # per meeting, and two meetings may transcribe at once (record-stop on one,
-# Reprocess on another). See _get_parakeet.
+# Reprocess on another). See _get_parakeet. _transcribe_mlx and the idle
+# reaper below take the same lock: everything that touches the Metal device
+# or the singletons serializes here.
 _PARAKEET_LOCK = threading.Lock()
+
+# ------------------------------------------------- releasing ASR memory ----
+#
+# The singletons above made the engine's resident size a high-water mark: it
+# starts at ~52 MB and sat at ~730 MB forever after the first meeting. The
+# model WEIGHTS are not the problem — Parakeet's 2.4 GB safetensors are
+# file-backed clean pages the OS reclaims for free. What never came back was
+# MLX's buffer cache (~470 MB of decode scratch, measured on a 120 s decode:
+# active 1270 MB / peak 2886 MB, all but ~180 MB of RSS returned by
+# clear_cache) and, separately, the torch embedder (see tools/embed_worker.py
+# — torch returns nothing on unload, so it gets a process that exits instead).
+#
+# Two mechanisms, both serialized on _PARAKEET_LOCK:
+#   * _release_mlx() after every decode — returns the buffer cache while the
+#     weights stay warm (a second meeting re-decodes 2.0 s slower, measured).
+#   * an idle timer that additionally drops the model singletons _ASR_IDLE_S
+#     after the last transcription, so a machine that recorded one meeting
+#     today is not still holding decode state tonight. _get_parakeet /
+#     _get_whisper already reload on None; the reaper costs the NEXT meeting
+#     only the model reload it already paid on its first.
+_ASR_IDLE_S = 600.0
+_ASR_REAPER = None
+_ASR_REAPER_LOCK = threading.Lock()
+
+
+def _release_mlx():
+    """Return MLX's buffer cache to the OS. Safe at any point: it only frees
+    buffers no live array references. No-op unless MLX is already loaded —
+    a CPU-only install must not initialize Metal just to clean up after it."""
+    mx = sys.modules.get("mlx.core")
+    if mx is None:
+        return
+    try:
+        log.info("MLX memory: active %d MB, cache %d MB, peak %d MB",
+                 mx.get_active_memory() >> 20, mx.get_cache_memory() >> 20,
+                 mx.get_peak_memory() >> 20)
+        mx.clear_cache()
+    except AttributeError:  # pre-0.21 mlx kept these under mx.metal
+        mx.metal.clear_cache()
+
+
+def _reap_asr():
+    global _PARAKEET, _PARAKEET_REPO, _WHISPER, _WHISPER_KEY
+    with _PARAKEET_LOCK:
+        if _PARAKEET is None and _WHISPER is None:
+            return
+        _PARAKEET = None
+        _PARAKEET_REPO = None
+        _WHISPER = None
+        _WHISPER_KEY = None
+        gc.collect()
+        _release_mlx()
+    log.info("ASR models released after %.0f s idle", _ASR_IDLE_S)
+
+
+def _arm_asr_reaper():
+    """(Re)start the idle countdown. Called at the end of every
+    transcribe_track, so the timer measures quiet time since the LAST track,
+    and back-to-back meetings never pay a reload."""
+    global _ASR_REAPER
+    with _ASR_REAPER_LOCK:
+        if _ASR_REAPER is not None:
+            _ASR_REAPER.cancel()
+        _ASR_REAPER = threading.Timer(_ASR_IDLE_S, _reap_asr)
+        _ASR_REAPER.daemon = True
+        _ASR_REAPER.start()
+
 
 TURN_MERGE_GAP_S = 3.0
 
@@ -638,6 +708,10 @@ def _transcribe_parakeet(path, label, cfg, progress_cb):
                     all_tokens = piece.tokens
                 progress_cb(f"Transcribing {label}… {min(99, int(end / total * 100))}%")
             result = sentences_to_result(tokens_to_sentences(all_tokens))
+        # result is plain Python (AlignedToken floats) by here; the cache
+        # holds only decode scratch. Still under the lock: a concurrent
+        # decode must not watch its buffer pool vanish mid-generate.
+        _release_mlx()
 
     out = []
     dropped = 0
@@ -666,19 +740,23 @@ def _transcribe_mlx(path, label, cfg, progress_cb):
     # ffmpeg, which most machines don't have). Whisper wants 16 kHz mono.
     audio = load_mono_16k(path)
     prompt = _vocab_prompt(cfg)
-    result = mlx_whisper.transcribe(
-        audio,
-        path_or_hf_repo=MLX_REPOS.get(model, model),
-        language=cfg.get("language") or None,
-        word_timestamps=True,
-        condition_on_previous_text=False,
-        hallucination_silence_threshold=2.0,
-        # Bias recognition toward attendee names and the user's vocabulary —
-        # proper names are the recognizer's biggest error class, and this is
-        # the only knob Whisper exposes for them.
-        initial_prompt=prompt,
-        verbose=None,
-    )
+    # Same lock as Parakeet: one GPU decode at a time (two would thrash one
+    # Metal device), and the idle reaper must not clear the cache mid-decode.
+    with _PARAKEET_LOCK:
+        result = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=MLX_REPOS.get(model, model),
+            language=cfg.get("language") or None,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            hallucination_silence_threshold=2.0,
+            # Bias recognition toward attendee names and the user's vocabulary —
+            # proper names are the recognizer's biggest error class, and this is
+            # the only knob Whisper exposes for them.
+            initial_prompt=prompt,
+            verbose=None,
+        )
+        _release_mlx()
     out = []
     dropped = 0
     for seg in result.get("segments", []):
@@ -796,6 +874,15 @@ def transcribe_track(path, label, cfg, progress_cb):
     """Transcribe one WAV. Returns (segments, language). Tries the configured
     backend, then degrades gracefully
     (parakeet -> apple -> mlx -> faster-whisper)."""
+    try:
+        return _transcribe_ladder(path, label, cfg, progress_cb)
+    finally:
+        # Success or not, the models this call warmed start their idle
+        # countdown now — see _arm_asr_reaper.
+        _arm_asr_reaper()
+
+
+def _transcribe_ladder(path, label, cfg, progress_cb):
     backend = pick_backend(cfg)
     if backend == "parakeet":
         try:
@@ -1603,6 +1690,62 @@ def _neural_refine(meeting_dir, meta, cfg, key, segs, classic_segs, n_found,
     return refined, k, True
 
 
+def _embed_windows_subprocess(track_file, windows, progress_cb):
+    """diarization.embed_windows in a child process that exits, or None to
+    say "embed in-process instead".
+
+    See tools/embed_worker.py for why (torch keeps the embedder's ~520 MB no
+    matter what is deleted; only process exit returns it) and for the argv
+    contract. Every failure here is an inconvenience, never an error: the
+    caller's in-process fallback computes the same numbers, it just keeps
+    the memory. The child's stdout lines are its progress reports, forwarded
+    to progress_cb as-is; stderr goes to a temp file read only on failure so
+    a chatty model download can't deadlock the pipe.
+    """
+    worker = BASE_DIR / "tools" / "embed_worker.py"
+    if not worker.exists():
+        return None
+    timeout = max(600.0, _track_duration(track_file) / 2.0)
+    win_f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    err_f = tempfile.NamedTemporaryFile("w", suffix=".log", delete=False)
+    out_path = Path(win_f.name).with_suffix(".npy")
+    try:
+        json.dump([[t0, t1] for t0, t1 in windows], win_f)
+        win_f.close()
+        proc = subprocess.Popen(
+            [sys.executable, str(worker), str(track_file), win_f.name,
+             "--out", str(out_path)],
+            stdout=subprocess.PIPE, stderr=err_f, text=True)
+        killer = threading.Timer(timeout, proc.kill)
+        killer.start()
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if line:
+                    progress_cb(line)
+            proc.wait()
+        finally:
+            killer.cancel()
+        if proc.returncode != 0:
+            tail = Path(err_f.name).read_text(errors="replace").strip()
+            log.warning("embed worker exited %s: %s", proc.returncode,
+                        " | ".join(tail.splitlines()[-3:]) or "(no stderr)")
+            return None
+        emb = np.load(out_path, allow_pickle=False)
+        if emb.shape[0] != len(windows):
+            log.warning("embed worker returned %d rows for %d windows",
+                        emb.shape[0], len(windows))
+            return None
+        return emb
+    except Exception as exc:
+        log.warning("embed worker failed (%s); embedding in-process", exc)
+        return None
+    finally:
+        Path(win_f.name).unlink(missing_ok=True)
+        Path(err_f.name).unlink(missing_ok=True)
+        out_path.unlink(missing_ok=True)
+
+
 def _embed_track(track_file, segs, progress_cb):
     """(windows, embeddings) for one track, or None when there is nothing to
     cluster — the `precomputed` argument diarization.diarize_track wants.
@@ -1611,19 +1754,25 @@ def _embed_track(track_file, segs, progress_cb):
     reads the WAV through diarization.load_mono_16k, which holds the track
     three times over (stereo float32 + mono copy + resampled copy: 6.99 GB
     measured on a 3-hour recording). Handing it windows and embeddings computed
-    here means the only read of that file in this phase goes through
-    load_mono_16k above, at 0.87 GB, and the waveform is released the moment
-    the embedder is done with it rather than living to the end of the call.
+    here means the embedding read of that file happens in the worker through
+    the blocked loader at 0.87 GB — and, since the worker is its own process,
+    neither the waveform nor torch's model memory survives in the engine at
+    all. The in-process fallback below keeps the same 0.87 GB profile the
+    blocked loader always had.
 
-    The two paths are otherwise the same code: diarize_track's own branch is
-    build_windows() then embed_windows(), which is exactly what happens here.
-    Fewer than two windows is left to diarize_track (returning None) so its
-    one-speaker early return still fires BEFORE `state` is written — a track
-    with nothing to cluster must not seed analysis.npz with an empty cache.
+    The paths are otherwise the same code: diarize_track's own branch is
+    build_windows() then embed_windows(), which is exactly what happens here
+    and in the worker. Fewer than two windows is left to diarize_track
+    (returning None) so its one-speaker early return still fires BEFORE
+    `state` is written — a track with nothing to cluster must not seed
+    analysis.npz with an empty cache.
     """
     windows = diarization.build_windows(segs)
     if len(windows) < 2:
         return None
+    emb = _embed_windows_subprocess(track_file, windows, progress_cb)
+    if emb is not None:
+        return windows, emb
     audio = load_mono_16k(track_file)
     try:
         return windows, diarization.embed_windows(audio, windows, progress_cb)

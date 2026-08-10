@@ -56,13 +56,22 @@ struct RecordOptions: Equatable {
 /// recording) and an engine that never answered all looked like a click that
 /// did nothing at all.
 struct RecorderAlert: Identifiable, Equatable {
-    enum Kind { case start, stop }
+    /// `.lost` is not a refused button: it is a meeting that stopped being
+    /// recorded because the engine underneath it died. The engine watchdog
+    /// puts the engine back on its feet by itself now, so no failure banner
+    /// stays on screen to say what happened — and a recording that ends
+    /// without a word is the exact silence this app exists to break.
+    enum Kind { case start, stop, lost }
     let id = UUID()
     let kind: Kind
     let message: String
 
     var headline: String {
-        kind == .start ? "The recording didn't start" : "The recording didn't stop"
+        switch kind {
+        case .start: "The recording didn't start"
+        case .stop: "The recording didn't stop"
+        case .lost: "The recording stopped"
+        }
     }
 }
 
@@ -217,6 +226,17 @@ struct CalendarStatus: Decodable {
 
 @MainActor
 final class RecorderCenter: ObservableObject {
+    /// One recorder for the life of the app, like EngineManager beside it.
+    ///
+    /// It used to be a `@StateObject` on ContentView, which made the whole of
+    /// recording a possession of the main window: closing the window (⌘W —
+    /// an ordinary thing to do to a Mac app you are not currently reading)
+    /// destroyed the centre, and with it the poll that notices a meeting
+    /// starting, the poll that notices a recording running, and the pill that
+    /// is the app's only surface once the window is gone. The nudge could not
+    /// arrive because nothing was left to ask for it.
+    static let shared = RecorderCenter()
+
     enum Phase: Equatable { case offline, idle, recording }
 
     @Published private(set) var phase: Phase = .offline
@@ -274,6 +294,11 @@ final class RecorderCenter: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var nudgeSeenAt: Date?
     private var expiredNudgeIds = Set<String>()
+    /// Nudges this run has already put on screen as a system notification.
+    /// Posting is idempotent (same identifier, same banner), but posting again
+    /// re-alerts — and the engine goes on offering the same nudge for as long
+    /// as its own TTL says to, once every 1.2 s.
+    private var announcedNudges = Set<String>()
     private var recordingStartedAt: Date?
     private var preflightAskedAt = Date.distantPast
     private var discardSweptAt = Date.distantPast
@@ -297,7 +322,7 @@ final class RecorderCenter: ObservableObject {
     private var flushTask: Task<Void, Never>?
     private var retryAfter = Date.distantPast
 
-    init() {
+    private init() {
         // Adopt whatever the last run left behind BEFORE the first poll: a
         // draft's meeting is decided by the tick that learns what is
         // recording, and it can only decide correctly if the draft is here.
@@ -345,6 +370,10 @@ final class RecorderCenter: ObservableObject {
                 livePartials = [:]
                 sentNotes = []
                 nudge = nil
+                // A meeting is being recorded now, which answers every
+                // "shall I record this?" still sitting in Notification
+                // Center — including one the pill gave up on at 90 s.
+                withdrawNudgeNotifications()
                 micTrack = RecorderTrack()
                 systemTrack = RecorderTrack()
                 recordingStartedAt = Date()
@@ -394,9 +423,26 @@ final class RecorderCenter: ObservableObject {
                 } else if nudge?.id != fresh.id {
                     nudge = fresh
                     nudgeSeenAt = Date()
+                    // The pill is only half of this. It lives in a floating
+                    // panel that the user is not looking at while they join a
+                    // call — behind the meeting window, on another Space, or
+                    // not on screen at all until this very moment. The banner
+                    // is how the question reaches somebody. Once per nudge:
+                    // re-posting replaces the banner but re-alerts with it.
+                    if !announcedNudges.contains(fresh.id) {
+                        announcedNudges.insert(fresh.id)
+                        MSNotifications.postNudge(id: fresh.id, title: fresh.title,
+                                                  body: fresh.body ?? "Start recording?")
+                    }
                 } else if let seen = nudgeSeenAt, Date().timeIntervalSince(seen) > 90 {
                     expiredNudgeIds.insert(fresh.id)
                     nudge = nil
+                    // The BANNER is deliberately left standing. 90 s is how
+                    // long the pill is willing to sit in front of someone's
+                    // work, not how long the meeting is worth recording: the
+                    // user who comes back from the kitchen four minutes in
+                    // still wants that button, and the engine's own TTL is
+                    // what decides when the offer really has expired.
                 }
             } else {
                 nudge = nil
@@ -599,20 +645,36 @@ final class RecorderCenter: ObservableObject {
     /// "Record" on a meeting reminder. It is a start like any other, so a
     /// refusal (no disk, the reminder already answered) is shown like any
     /// other rather than dismissing the nudge and doing nothing.
-    func accept(_ n: Nudge) {
+    func accept(_ n: Nudge) { acceptNudge(id: n.id) }
+
+    func dismiss(_ n: Nudge) { dismissNudge(id: n.id) }
+
+    /// The same two answers, reachable with nothing but the id — which is all
+    /// the notification's buttons carry (see MSNotifications.handleNudge).
+    /// One path, so a banner press and a pill press cannot drift apart.
+    func acceptNudge(id: String) {
+        MSNotifications.removeNudge(id: id)
         Task {
-            let (ok, why) = await API.acceptNudge(n.id)
+            let (ok, why) = await API.acceptNudge(id)
             if !ok { alert = RecorderAlert(kind: .start, message: why ?? "The engine didn't answer.") }
-            nudge = nil
+            if nudge?.id == id { nudge = nil }
             await tick()
         }
     }
 
-    func dismiss(_ n: Nudge) {
+    func dismissNudge(id: String) {
+        MSNotifications.removeNudge(id: id)
         Task {
-            await API.post("api/nudges/\(n.id)/ack")
-            nudge = nil
+            await API.ackNudge(id)
+            if nudge?.id == id { nudge = nil }
         }
+    }
+
+    /// Take down every meeting nudge this run has posted. Called when a
+    /// recording starts: the question they all ask has been answered by the
+    /// fact of the recording, whoever answered it.
+    private func withdrawNudgeNotifications() {
+        for id in announcedNudges { MSNotifications.removeNudge(id: id) }
     }
 
     func sendNote() {
@@ -758,6 +820,14 @@ extension API {
         guard let code else { return (false, "The engine didn't answer.") }
         if (200..<300).contains(code) { return (true, nil) }
         return (false, errorText(data) ?? "The engine wouldn't start that recording (\(code)).")
+    }
+
+    /// "Not this meeting". Nothing is owed to the caller beyond the fact that
+    /// it was said: the engine drops the nudge, and an ack that never arrives
+    /// costs the user one repeat at worst.
+    @discardableResult
+    static func ackNudge(_ id: String) async -> Bool {
+        await post("api/nudges/\(id)/ack")
     }
 
     static func recorderSnapshot() async -> RecorderSnapshot? {

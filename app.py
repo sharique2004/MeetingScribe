@@ -2196,6 +2196,16 @@ def nudges():
         return jsonify({"nudge": None})
 
 
+@app.post("/api/nudges/test")
+def nudge_test():
+    """Fire a synthetic nudge (see NudgeEngine.test_fire) — the way to prove
+    the notification chain end-to-end without scheduling a real meeting."""
+    if NUDGES is None:
+        return jsonify({"error": "nudges unavailable on this platform"}), 503
+    title = (request.get_json(force=True, silent=True) or {}).get("title") or "Test meeting"
+    return jsonify({"nudge": NUDGES.test_fire(title)})
+
+
 @app.post("/api/nudges/<nudge_id>/accept")
 def nudge_accept(nudge_id):
     """'Record now' on a nudge notification: start recording that meeting.

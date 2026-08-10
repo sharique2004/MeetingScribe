@@ -49,6 +49,13 @@ struct WaveformScrubber: View {
                     ctx.fill(needle, with: .color(accent.opacity(0.9)))
                 }
             }
+            // The bars melt into the shelf instead of ending in a box: a
+            // scrim in the surface the transport's glass sits over, plus the
+            // end-fade that keeps the first and last bar from reading as a
+            // hard edge. Applied to the drawing alone — `.contentShape`
+            // below re-declares the full rectangle, so the scrub still
+            // answers to a click on the faded ends.
+            .msVignette(in: MS.elevated)
             .contentShape(.rect)
             .gesture(
                 DragGesture(minimumDistance: 0)

@@ -370,7 +370,12 @@ def _get_embedder(progress_cb=None):
         except Exception as exc:
             if device == "cpu":
                 raise
-            log.warning("GPU (%s) embedder failed (%s); using CPU", device, exc)
+            # Loud on purpose: this fallback is 78x slower (595 windows:
+            # 4.5 s on MPS, 351 s on CPU) and peaks at 3.1 GB where MPS
+            # stays under 0.7 — a meeting still completes, but if this line
+            # appears in a log, THAT is why diarization crawled.
+            log.error("GPU (%s) embedder failed (%s); falling back to CPU — "
+                      "expect ~78x slower embedding and ~3 GB peak", device, exc)
             _EMBEDDER = _load_embedder("cpu", progress_cb)
     return _EMBEDDER
 

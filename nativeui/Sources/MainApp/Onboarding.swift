@@ -109,7 +109,7 @@ private struct StepPage<Content: View>: View {
                 .foregroundStyle(MS.ink3)
                 .padding(.top, 52)
             Text(title)
-                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 10)
             Text(subtitle)
@@ -137,8 +137,8 @@ private struct ContinueButton: View {
         // words and left the pill standing still.
         Button(action: action) {
             Text(label)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.black.opacity(0.85))
+                .font(MSFont.chrome.weight(.semibold))
+                .foregroundStyle(MS.inkOnAccent)
                 .padding(.horizontal, 22)
                 .padding(.vertical, 8)
                 .background(enabled ? MS.playheadFill : MS.ink4, in: .capsule)
@@ -166,7 +166,7 @@ private struct CheckRow: View {
                 .foregroundStyle(done ? MS.ink : MS.ink2)
         } icon: {
             Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 14))
+                .font(MSFont.chrome)
                 .foregroundStyle(done ? MS.playheadFill : MS.ink4)
                 .msDecorative()
         }
@@ -264,7 +264,7 @@ private struct EngineStep: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 ForEach(Array(log.suffix(200).enumerated()), id: \.offset) { i, line in
                                     Text(line)
-                                        .font(.system(size: 10.5, design: .monospaced))
+                                        .font(MSFont.kicker.weight(.regular).monospaced())
                                         .foregroundStyle(MS.ink3)
                                         .id(i)
                                 }
@@ -273,7 +273,7 @@ private struct EngineStep: View {
                             .padding(8)
                         }
                         .frame(height: 160)
-                        .background(MS.sunken, in: .rect(cornerRadius: 8))
+                        .background(MS.sunken, in: .rect(cornerRadius: MS.radius.sm))
                         .onChange(of: log.count) {
                             proxy.scrollTo(log.suffix(200).count - 1, anchor: .bottom)
                         }

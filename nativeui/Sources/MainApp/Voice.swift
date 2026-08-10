@@ -17,6 +17,11 @@ enum Motion {
     static let exit = Animation.easeOut(duration: 0.15)
     static let micro = Animation.easeOut(duration: 0.12)
     static let seek = Animation.easeOut(duration: 0.18)
+    /// The press curve: the web system's one easing token
+    /// (cubic-bezier(0.22, 1, 0.32, 1)) at the researched 160ms. Used by
+    /// PressStyle and nothing else — presses are the one interaction fast
+    /// enough to deserve a sharper start than the springs give.
+    static let press = Animation.timingCurve(0.22, 1, 0.32, 1, duration: 0.16)
 }
 
 /// Every button presses down 3%: physical, instant, uniform.
@@ -24,7 +29,7 @@ struct PressStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(Motion.micro, value: configuration.isPressed)
+            .animation(Motion.press, value: configuration.isPressed)
     }
 }
 

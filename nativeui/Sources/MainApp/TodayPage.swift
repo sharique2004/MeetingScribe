@@ -24,7 +24,8 @@ struct TodayPage: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 Text(greeting)
-                    .font(MSFont.greeting)
+                    .font(MSFont.display)
+                    .tracking(-0.8)
                     .foregroundStyle(MS.ink)
                     .padding(.top, 48)
 
@@ -34,7 +35,9 @@ struct TodayPage: View {
                 if !upcoming.isEmpty {
                     kicker("COMING UP")
                         .padding(.top, 40)
-                    VStack(alignment: .leading, spacing: 4) {
+                    // Six, not four: the rows are cards now, and cards with a
+                    // lit edge need to be told apart from one another.
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(shownEvents) { event in
                             EventRow(event: event) {
                                 center.start(options(for: event))
@@ -49,7 +52,9 @@ struct TodayPage: View {
                             .buttonStyle(.plain)
                             .font(MSFont.meta)
                             .foregroundStyle(MS.ink3)
-                            .padding(.leading, 66)
+                            // The card's own gutter plus the time column, so
+                            // this still starts under the meeting names.
+                            .padding(.leading, 78)
                         }
                     }
                     .padding(.top, 10)
@@ -79,7 +84,7 @@ struct TodayPage: View {
                     }
                     .padding(.top, 10)
                 } else {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(todays) { m in
                             TodayMeetingRow(meeting: m, brief: library.briefs[m.id]) {
                                 onOpen(m.id)
@@ -94,12 +99,21 @@ struct TodayPage: View {
             .padding(.bottom, 112)
         }
         .background(alignment: .top) {
-            // Aurora's one appearance on a reading surface: the top 200pt
-            // of the greeting block, at whisper strength.
-            LinearGradient(
-                colors: [MS.auroraBlue.opacity(0.10), MS.auroraViolet.opacity(0.05), .clear],
-                startPoint: .top, endPoint: .bottom)
-                .frame(height: 200)
+            // The greeting stands under the real sky, not under a picture of
+            // one: the same field the sidebar runs, drifting in phase with it
+            // across the split, dimmed to 0.8 and masked to nothing by y=320.
+            // Everything below that line is calm content, because the page is
+            // also a reading surface and the weather is not invited onto it.
+            // Grain goes on BEFORE the mask — applied after, the tooth would
+            // outlast the light it belongs to and end in a visible band edge.
+            MSAuroraField(strength: 0.8)
+                .frame(height: 320)
+                .msGrain()
+                .mask(LinearGradient(stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.55),
+                    .init(color: .clear, location: 1),
+                ], startPoint: .top, endPoint: .bottom))
                 .ignoresSafeArea(edges: .top)
         }
         .background(MS.content)
@@ -164,13 +178,13 @@ struct TodayPage: View {
         // out, and the interpolating form is the one that stays a single
         // sentence for VoiceOver and for a translator.
         let lead = Text("You've captured ")
-            .font(.system(size: 20))
+            .font(MSFont.displayLead)
             .foregroundStyle(MS.ink2)
         let figure = Text(amount)
-            .font(.system(size: 20, weight: .semibold, design: .rounded))
+            .font(MSFont.numeral)
             .foregroundStyle(MS.interactive)
         let tail = Text(" across \(count) meeting\(count == 1 ? "" : "s") this week.")
-            .font(.system(size: 20))
+            .font(MSFont.displayLead)
             .foregroundStyle(MS.ink2)
         return Text("\(lead)\(figure)\(tail)")
     }
@@ -212,14 +226,17 @@ struct StartRecordingRow: View {
                                 .font(MSFont.body)
                                 .foregroundStyle(MS.ink2)
                             Text(center.starting ? "Starting…" : "Start recording")
-                                .font(.system(size: 15, weight: .semibold))
+                                .font(MSFont.sectionHeading)
                                 .foregroundStyle(MS.ink)
                                 .underline(hovering, color: MS.ink3)
                         }
                         .padding(.vertical, 10)
                         .padding(.horizontal, 14)
-                        .background(MS.raised.opacity(hovering ? 1 : 0.65),
-                                    in: .rect(cornerRadius: 12))
+                        // Lit rather than outlined, and it brightens under the
+                        // pointer instead of gaining a border: elevation in
+                        // Aurora is lightness, never a heavier line.
+                        .msSurface(MS.raised.opacity(hovering ? 1 : 0.65),
+                                   radius: MS.radius.md, elevation: .raised)
                         .contentShape(.rect)
                     }
                     .buttonStyle(PressStyle())
@@ -248,7 +265,7 @@ struct StartRecordingRow: View {
                 ForEach(center.preflight?.alerts ?? []) { problem in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 10))
+                            .font(MSFont.kicker)
                             .foregroundStyle(MS.ink3)
                         Text(problem.title + ". " + problem.detail)
                             .font(MSFont.meta)
@@ -368,13 +385,13 @@ private struct EventRow: View {
                 .foregroundStyle(event.isNow ? MS.ink : MS.ink2)
                 .frame(width: 56, alignment: .trailing)
             Text(event.name)
-                .font(.system(size: 15, weight: .medium))
+                .font(MSFont.sectionHeading)
                 .foregroundStyle(MS.ink)
                 .lineLimit(1)
             if let n = event.attendees, n > 0 {
                 HStack(spacing: 3) {
                     Image(systemName: "person.2")
-                        .font(.system(size: 9))
+                        .font(MSFont.kicker)
                     Text("\(n)")
                         .font(MSFont.meta)
                 }
@@ -389,17 +406,17 @@ private struct EventRow: View {
             HStack(spacing: 8) {
                 Button("Record this one", action: onRecord)
                     .buttonStyle(PressStyle())
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(MSFont.kicker)
                     .foregroundStyle(MS.interactive)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
-                    .background(MS.raised, in: .capsule)
+                    .background(MS.elevated, in: .capsule)
                     .focused($focused)
                 Button("Set up this recording", systemImage: "slider.horizontal.3",
                        action: onOptions)
                     .labelStyle(.iconOnly)
                     .buttonStyle(PressStyle())
-                    .font(.system(size: 11))
+                    .font(MSFont.kicker)
                     .foregroundStyle(MS.ink3)
                     .help("Set up this recording first")
                     .focused($focused)
@@ -407,7 +424,11 @@ private struct EventRow: View {
             .opacity(hovering || focused ? 1 : 0)
             .msAnimation(Motion.micro, value: focused)
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        // What is coming up is a card lifted off the page, lit at the top
+        // edge — the border it used to not have, drawn as light instead.
+        .msSurface(MS.raised, radius: MS.radius.md, elevation: .raised)
         .contentShape(.rect)
         .onHover { h in withAnimation(Motion.micro) { hovering = h } }
     }
@@ -480,8 +501,8 @@ struct NewRecordingSheet: View {
                     }
                 } label: {
                     Text(saving ? "Starting…" : "Start recording")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
+                        .font(MSFont.chromeMedium)
+                        .foregroundStyle(MS.inkOnAccent)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 8)
                 }
@@ -513,7 +534,7 @@ struct NewRecordingSheet: View {
                 .kerning(0.55)
                 .foregroundStyle(MS.ink3)
             Text("Set up this meeting.")
-                .font(.system(size: 24, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
         }
     }
@@ -526,9 +547,9 @@ struct NewRecordingSheet: View {
                 .foregroundStyle(MS.ink)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
-                .background(MS.raised, in: .rect(cornerRadius: 9))
+                .background(MS.raised, in: MS.rr(MS.radius.sm))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 9).stroke(MS.hairlineStrong, lineWidth: 1)
+                    MS.rr(MS.radius.sm).stroke(MS.hairlineStrong, lineWidth: 1)
                 }
             if !events.isEmpty {
                 FlowRow(spacing: 6) {
@@ -539,7 +560,7 @@ struct NewRecordingSheet: View {
                         } label: {
                             HStack(spacing: 5) {
                                 Image(systemName: "calendar")
-                                    .font(.system(size: 9))
+                                    .font(MSFont.kicker)
                                 Text(event.name)
                                     .font(MSFont.meta)
                                     .lineLimit(1)
@@ -630,9 +651,9 @@ struct NewRecordingSheet: View {
                 .frame(height: 78)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
-                .background(MS.raised, in: .rect(cornerRadius: 9))
+                .background(MS.raised, in: MS.rr(MS.radius.sm))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 9).stroke(MS.hairlineStrong, lineWidth: 1)
+                    MS.rr(MS.radius.sm).stroke(MS.hairlineStrong, lineWidth: 1)
                 }
                 .overlay(alignment: .topLeading) {
                     if cues.isEmpty {
@@ -662,9 +683,9 @@ struct NewRecordingSheet: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(MS.raised, in: .rect(cornerRadius: 10))
+            .background(MS.raised, in: MS.rr(MS.radius.md))
             .overlay {
-                RoundedRectangle(cornerRadius: 10).stroke(MS.hairline, lineWidth: 1)
+                MS.rr(MS.radius.md).stroke(MS.hairline, lineWidth: 1)
             }
             ForEach(center.preflight?.alerts ?? []) { problem in
                 NoticeBand(icon: "exclamationmark.triangle",
@@ -726,7 +747,7 @@ struct NewRecordingSheet: View {
                          action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 11))
+                Image(systemName: icon).font(MSFont.kicker)
                 Text(label).font(MSFont.chromeMedium)
             }
             .foregroundStyle(on ? MS.ink : MS.ink2)
@@ -818,7 +839,7 @@ private struct TodayMeetingRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(meeting.title)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(MSFont.sectionHeading)
                         .foregroundStyle(MS.ink)
                         .lineLimit(1)
                     Spacer()
@@ -837,12 +858,11 @@ private struct TodayMeetingRow: View {
                 }
             }
             .padding(.vertical, 8)
-            .padding(.horizontal, 10)
-            .background {
-                if hovering {
-                    RoundedRectangle(cornerRadius: 8).fill(MS.ink.opacity(0.05))
-                }
-            }
+            .padding(.horizontal, 12)
+            // A card, and hovering lifts it one rung up the surface ladder
+            // rather than washing it in ink: elevation here is lightness.
+            .msSurface(hovering ? MS.elevated : MS.raised,
+                       radius: MS.radius.md, elevation: .raised)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)

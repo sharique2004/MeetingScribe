@@ -12,21 +12,27 @@ import subprocess
 import sys
 import threading
 import time
-import wave
 from pathlib import Path
+
+import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import live_captions  # noqa: E402
 import swift_helpers  # noqa: E402
 
-WAV = Path(__file__).resolve().parent.parent / \
-    "recordings" / "Demo meeting (synthesized voices) — 20260610-000001" / "mic.wav"
+# The demo track is .wav until the user opts into archival, .flac after
+# (audio_archive.py); soundfile decodes both to the same int16 stream, which
+# is all the helpers ever see.
+_DEMO_DIR = Path(__file__).resolve().parent.parent / \
+    "recordings" / "Demo meeting (synthesized voices) — 20260610-000001"
+WAV = next((p for p in (_DEMO_DIR / "mic.wav", _DEMO_DIR / "mic.flac")
+            if p.exists()), _DEMO_DIR / "mic.wav")
 
 
 def _stream_wav_through(binary):
-    w = wave.open(str(WAV), "rb")
-    rate, ch = w.getframerate(), w.getnchannels()
+    w = sf.SoundFile(str(WAV))
+    rate, ch = w.samplerate, w.channels
     proc = subprocess.Popen(
         [binary, "en-US", str(rate), str(ch)],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -36,7 +42,7 @@ def _stream_wav_through(binary):
     t.start()
     chunk = rate // 10  # 100 ms — recorder-sized chunks
     while True:
-        data = w.readframes(chunk)
+        data = w.read(chunk, dtype="int16").tobytes()
         if not data:
             break
         proc.stdin.write(data)
@@ -70,11 +76,11 @@ def test_live_session():
     assert session.enabled, "LiveSession should be enabled on this machine"
     tap = session.tap("mic")
     assert tap is not None
-    w = wave.open(str(WAV), "rb")
-    rate, ch = w.getframerate(), w.getnchannels()
+    w = sf.SoundFile(str(WAV))
+    rate, ch = w.samplerate, w.channels
     chunk = 1024  # recorder chunk size
     while True:
-        data = w.readframes(chunk)
+        data = w.read(chunk, dtype="int16").tobytes()
         if not data:
             break
         tap(data, ch, rate)

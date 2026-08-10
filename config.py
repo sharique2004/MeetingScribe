@@ -112,6 +112,12 @@ DEFAULTS = {
     "auto_summarize": True,
     # Live captions while recording (macOS 26+, on-device SpeechAnalyzer).
     "live_captions": True,
+    # Losslessly re-container finished recordings as FLAC (measured 4.4x
+    # smaller on this corpus). Off by default: it rewrites the only copy of
+    # the user's audio, so it is theirs to switch on — and even then nothing
+    # is removed until the encoded copy decodes back bit-identical to the
+    # original (see audio_archive.py). Recording itself always writes WAV.
+    "compress_recordings": False,
     # Voice profiles: renaming a speaker saves their voice locally, so later
     # meetings label that person by name automatically. Fully on-device
     # (voice_profiles.json under DATA_DIR); recognition never overwrites a

@@ -78,10 +78,13 @@ def resolve_wav(fx):
         return None, "no recording with this timestamp (deleted?)"
     if len(matches) > 1:
         return None, f"{len(matches)} recordings share timestamp {ts}"
-    wav = matches[0] / f"{fx['track']}.wav"
-    if not wav.exists():
-        return None, f"{fx['track']}.wav missing from recording"
-    return wav, ""
+    # Archived meetings hold <track>.flac instead of .wav (audio_archive.py);
+    # the engines read either through the same decoders.
+    for ext in (".wav", ".flac"):
+        wav = matches[0] / f"{fx['track']}{ext}"
+        if wav.exists():
+            return wav, ""
+    return None, f"{fx['track']}.wav/.flac missing from recording"
 
 
 def run_candidate(binary, wav, out_json, timeout, extra_args=()):

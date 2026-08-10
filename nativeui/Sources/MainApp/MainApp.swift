@@ -29,11 +29,35 @@ final class MainAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
-        // Before ContentView exists, because a click on "Transcript ready" can
-        // be what launched the app: the delegate has to be in place to catch
-        // the meeting id that arrives with it. Asking for permission is a
-        // separate, later moment — see MSNotifications.
+        // Before ContentView exists, because a click on "Transcript ready" or
+        // on a meeting nudge can be what launched the app: the delegate has to
+        // be in place to catch what arrives with it.
         MSNotifications.install()
+        // And ask at launch, because the first thing this app has to say is
+        // "your 10 o'clock is starting" — a question that cannot wait for the
+        // first recording to end, because it is what causes one.
+        MSNotifications.requestAuthorizationIfNeeded()
+
+        // Everything that has to outlive the main window is wired here, and
+        // nowhere else. ContentView is a view of these; it does not own them.
+        // ⌘W used to take the recorder poll, the nudge poll and the floating
+        // pill down with the window, which is how a meeting could start with
+        // the app running and nothing said about it.
+        let center = RecorderCenter.shared
+        HUDController.shared.attach(center: center)
+        EngineManager.shared.isRecording = { center.phase == .recording }
+        // The window the watchdog needs: three misses at four seconds, plus
+        // the poll that noticed. A minute covers it with room.
+        EngineManager.shared.wasRecordingRecently = { center.wasRecording(within: 60) }
+        // The engine died under a live meeting and the watchdog quietly put it
+        // back, so no failure banner will be left on screen to say so. The
+        // pill is the one surface that is always there to say it instead.
+        EngineManager.shared.onLostRecording = {
+            center.alert = RecorderAlert(
+                kind: .lost,
+                message: "The engine stopped while a meeting was recording. The audio up to "
+                    + "that moment is saved — open that meeting and press Reprocess.")
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -332,11 +356,13 @@ final class Library: ObservableObject {
 
 struct ContentView: View {
     @StateObject private var library = Library()
-    @StateObject private var center = RecorderCenter()
-    // Observed, not owned: the engine is a singleton that outlives this view,
-    // and @StateObject would claim the view creates and owns its lifetime.
+    // Observed, not owned: the engine and the recorder are singletons that
+    // outlive this view, and @StateObject would claim the view creates and
+    // owns their lifetime — which is exactly what it used to claim about the
+    // recorder, and exactly why closing the window stopped recording working.
+    // Both are created and wired in MainAppDelegate; the pill with them.
+    @ObservedObject private var center = RecorderCenter.shared
     @ObservedObject private var engine = EngineManager.shared
-    @State private var hud = HUDController()
     @State private var route: DetailRoute? = .today
     @State private var mode: PageMode = .document
     @State private var query = ""
@@ -383,11 +409,11 @@ struct ContentView: View {
             ToolbarItem(placement: .navigation) {
                 HStack(spacing: 7) {
                     Image(systemName: "waveform")
-                        .font(.system(size: 13, weight: .bold))
+                        .font(MSFont.chromeMedium)
                         .foregroundStyle(MS.playhead)
                         .msDecorative()
                     Text("MeetingScribe")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(MSFont.sectionHeading)
                         .foregroundStyle(MS.ink)
                 }
                 .fixedSize()
@@ -463,27 +489,16 @@ struct ContentView: View {
             corrections = await API.corrections(id)
         }
         .task {
-            hud.attach(center: center)
+            // The window's own business: the sidebar list is the one thing
+            // here that belongs to the window. Everything the recorder needs
+            // from the app is wired in MainAppDelegate, where it survives ⌘W.
             center.onRecordingStopped = { [weak library] in
-                // The first recording to END is when asking makes sense: the
-                // app is about to spend a quarter of an hour transcribing, so
-                // "may I tell you when it's done" answers itself. Asked at
-                // launch it is a permission prompt for nothing yet.
-                MSNotifications.requestAuthorizationIfNeeded()
                 Task {
                     await library?.refresh()
                     // The meeting is not on disk yet, so that refresh cannot
                     // have seen it. Keep looking until it turns up and lands.
                     library?.expectNewMeeting()
                 }
-            }
-            EngineManager.shared.isRecording = { [weak center] in
-                center?.phase == .recording
-            }
-            // The window the watchdog needs: three misses at four seconds,
-            // plus the poll that noticed. A minute covers it with room.
-            EngineManager.shared.wasRecordingRecently = { [weak center] in
-                center?.wasRecording(within: 60) ?? false
             }
             await EngineManager.shared.ensureRunning()
             await library.refresh()
@@ -715,7 +730,7 @@ struct EngineBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: "bolt.slash")
-                .font(.system(size: 13, weight: .semibold))
+                .font(MSFont.chromeMedium)
                 .foregroundStyle(MS.ink2)
                 .offset(y: 1)
                 .msDecorative()
@@ -751,8 +766,8 @@ struct EngineBanner: View {
                         Text("Restart the engine")
                     }
                 }
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.black.opacity(0.85))
+                .font(MSFont.chromeMedium)
+                .foregroundStyle(MS.inkOnAccent)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
                 .background(MS.playheadFill, in: .capsule)
@@ -862,7 +877,7 @@ struct SidebarView: View {
                                 .foregroundStyle(MS.ink3)
                         }
                     }
-                    .font(.system(size: 11))
+                    .font(MSFont.kicker)
                     .foregroundStyle(MS.ink2)
                     .textCase(nil)
                 }
@@ -879,6 +894,19 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // The rail IS the sky. The list's own material is hidden so nothing
+        // sits between the rows and the weather: sunken is the floor, the
+        // aurora drifts above it at full strength, and the grain gives the
+        // whole column its tooth. The rows keep clear backgrounds — a second
+        // material over the field would fog it, and every ink in a row is
+        // measured against sunken, which is exactly what is underneath.
+        .scrollContentBackground(.hidden)
+        .background {
+            ZStack {
+                MS.sunken
+                MSAuroraField().msGrain()
+            }
+        }
         // Pinned to the foot of the rail rather than sitting in the list:
         // preferences are not one of the meetings, and a row that scrolls away
         // under 51 of them is a row nobody finds. Same place a Mac user already
@@ -1058,7 +1086,7 @@ struct SidebarView: View {
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 13))
+                        .font(MSFont.chrome)
                         .foregroundStyle(selected ? MS.ink : MS.ink2)
                         .msDecorative()
                     Text("Settings")
@@ -1072,9 +1100,16 @@ struct SidebarView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
+                // Selected, this row is a lit chip rather than a tinted
+                // rectangle: less mint (0.16 against the sky reads as loud as
+                // 0.20 did against a material) and a 1px edge light, which is
+                // how every other raised thing in Aurora says it is raised.
                 .background {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(selected ? MS.interactive.opacity(0.20) : .clear)
+                    if selected {
+                        MS.rr(MS.radius.sm)
+                            .fill(MS.interactive.opacity(0.16))
+                            .msEdgeLit(radius: MS.radius.sm)
+                    }
                 }
                 .contentShape(Rectangle())
             }
@@ -1179,7 +1214,7 @@ struct MeetingRow: View {
                         }
                         if meta.hasCaptureWarning {
                             Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 10))
+                                .font(MSFont.kicker)
                                 .foregroundStyle(MS.ink2)
                                 .help("Something about this recording needs a look. Open it to read what.")
                                 .accessibilityLabel("Needs a look")
@@ -1191,7 +1226,7 @@ struct MeetingRow: View {
                     // to a question asked here finished while the user was on
                     // another page, and opening the row opens the thread.
                     Image(systemName: "text.bubble.fill")
-                        .font(.system(size: 9))
+                        .font(MSFont.kicker)
                         .foregroundStyle(MS.interactive)
                         .help("An answer to your question is ready")
                         .accessibilityLabel("Answer ready")
@@ -1199,12 +1234,12 @@ struct MeetingRow: View {
                 Spacer(minLength: 0)
                 if failed {
                     Label("Not transcribed", systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 11))
+                        .font(MSFont.meta)
                         .foregroundStyle(MS.ink2)
                         .labelStyle(.titleAndIcon)
                 } else if processing {
                     Text(meeting.status?.capitalized ?? "Working")
-                        .font(.system(size: 11))
+                        .font(MSFont.meta)
                         .foregroundStyle(MS.ink2)
                 } else if let d = meeting.duration, d > 0 {
                     Text(clock(d))
@@ -1279,7 +1314,7 @@ struct MeetingRow: View {
 
 private extension Image {
     func glyph() -> some View {
-        self.font(.system(size: 10))
+        self.font(MSFont.kicker)
             .foregroundStyle(MS.ink3)
     }
 }
@@ -1298,6 +1333,10 @@ struct RecordToolbarButton: View {
     @ObservedObject var center: RecorderCenter
 
     private var recording: Bool { center.phase == .recording }
+    /// Armed: the engine is up and nothing is recording, so pressing this
+    /// starts a meeting. Offline the button is disabled and idle is the only
+    /// other phase there is — the state the beam needs is already read here.
+    private var armed: Bool { center.phase == .idle }
 
     var body: some View {
         Button {
@@ -1305,24 +1344,41 @@ struct RecordToolbarButton: View {
         } label: {
             HStack(spacing: 5.5) {
                 if recording {
+                    // Glyph geometry, not a container: the stop square keeps
+                    // its own 2pt radius.
                     RoundedRectangle(cornerRadius: 2, style: .continuous)
-                        .fill(.white)
+                        .fill(MS.inkOnRecord)
                         .frame(width: 8, height: 8)
                     Text(clock(center.elapsed))
                         .clockFont(12, weight: .bold)
                 } else {
                     Image(systemName: "record.circle")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(MSFont.chromeMedium)
                     Text("Record")
-                        .font(.system(size: 12.5, weight: .bold))
+                        .font(MSFont.chromeMedium)
                 }
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(MS.inkOnRecord)
             .padding(.horizontal, 3)
             .msAnimation(Motion.exit, value: recording)
         }
         .buttonStyle(.borderedProminent)
         .tint(MS.recordRed)
+        // One of the beam's two homes: the button that is ready to record.
+        // The prominent style draws a capsule, so half the button's own height
+        // IS its corner radius — the arc traces the border the button actually
+        // has rather than a guess at it, and the clip keeps the blurred twin
+        // off the toolbar's other items. While recording there is nothing to
+        // arm and the overlay does not exist at all.
+        .overlay {
+            if armed {
+                GeometryReader { geo in
+                    MSBeam(radius: geo.size.height / 2, period: 7)
+                }
+                .clipShape(.capsule)
+                .allowsHitTesting(false)
+            }
+        }
         .disabled(center.phase == .offline)
         .help(recording ? "Stop recording (⌘R)" : "Start recording (⌘R)")
         .accessibilityLabel(recording ? "Stop recording" : "Start recording")

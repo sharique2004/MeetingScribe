@@ -43,6 +43,8 @@ lands in the already-gitignored test/fixtures/index.json.
     python tools/eval_diarization.py --echo-only     # the transcript path, on its own
     python tools/eval_diarization.py --echo-only --echo-audio   # plus the waveform check
     python tools/eval_diarization.py --echo-only --echo-set ECHO_CHAR_MIN_COVER=0.4
+    python tools/eval_diarization.py --attribution-only  # who spoke which word
+    python tools/eval_diarization.py --attribution-only --attribution-set ATTR_HYP_PERTURB=0.1
 
 EVERY ACCURACY FIGURE IS PRINTED AS A DELTA OVER DOING NOTHING. Most of this
 corpus carries the same answer — 17 of the 21 truth-backed real fixtures have
@@ -79,6 +81,18 @@ TWO MORE THINGS THE COUNT METRIC CANNOT SEE, both reported by default:
                      wrong. Without it, "prove parity with the eval harness"
                      was a bar for clustering and an empty one for every word
                      the product ships.
+  ATTRIBUTION        The count metric cannot see a word move onto the wrong
+                     speaker, and the product ships a speaker-LABELLED
+                     transcript. This section scores, per fixture carrying
+                     hand-labelled word truth (test/fixtures/<slug>/
+                     truth_words.json, made by tools/label_turns.py), the
+                     classic / neural-auto / hybrid arms against three
+                     degenerate floors, and gates them against their own frozen
+                     ATTRIBUTION_BASELINE. --check is a CO-GATE: count and
+                     attribution both have to hold and are not tradeable. It
+                     never invokes the neural binary — frozen turns or NOT
+                     MEASURED. With no truth files on disk it prints one line
+                     saying so, which is the state of every clone today.
   STABILITY + CHURN  A seeded perturbation suite over the frozen caches (no
                      re-embedding, no new labels) reports the count-flip rate
                      per fixture AND the duration-weighted share of speech that
@@ -176,6 +190,9 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
+# tools/ itself, so the ATTRIBUTION section's `import attribution` resolves
+# whether this file is run as a script or imported as a module.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import diarization  # noqa: E402
 
@@ -430,6 +447,40 @@ TRUTH = {
 }
 
 TIER_ORDER = ("known", "inferred", "unknown")
+
+# ---------------------------------------------------------------------------
+# ATTRIBUTION TIER — a SECOND, INDEPENDENT kind of truth, recorded beside the
+# count truth above and never mixed with it.
+#
+# TRUTH says HOW MANY voices a fixture holds. It says nothing about WHICH words
+# belong to which of them, and a correct count is compatible with every word
+# being attributed to the wrong person (CORRECTION.md §c). Word-level truth for
+# a fixture lives in test/fixtures/<slug>/truth_words.json, is produced by
+# tools/label_turns.py, and is read at runtime — this table only records
+# INTENT, so the report can say "N of M fixtures carry attribution truth"
+# instead of quietly reporting on whichever subset happens to exist.
+#
+#   planned  a fixture worth labelling. The four below are the only fixtures in
+#            the corpus that discriminate a diarizer from a constant predictor
+#            (the truth-2 fixtures), so they are where attribution truth buys
+#            the most per hour of founder time.
+#   control  planned AND intended to be labelled a second time with
+#            --from-scratch, so the dispute-first bias has a measured size.
+#   (absent) not planned. Not "unimportant": 17 of these are 1:1 calls where
+#            the count metric is already degenerate and the attribution metric
+#            would be nearly so.
+#
+# Nothing here is a claim that the labels exist. Presence on disk is checked
+# every run and the report prints both numbers.
+# ---------------------------------------------------------------------------
+ATTRIBUTION_TIER = {
+    "Demo": ("planned", "two synthesized voices, 49 s — the cheapest real check"),
+    "Room P": ("planned", "1:1 on speaker: you + the caller, both on the mic"),
+    "Room Q": ("planned", "1:1 on speaker, 27 min — the long in-person case"),
+    "Room T": ("control", "two people in one room, 104 s — short enough to "
+                          "label exhaustively AND from scratch, so it can carry "
+                          "both an RTTM and the dispute-first bias control"),
+}
 
 # ---------------------------------------------------------------------------
 # PSEUDONYMS, and the one rule that makes this file publishable.
@@ -2632,8 +2683,18 @@ def echo_envelope_correlation(mic_path, sys_path, start, end):
 def echo_audio_arm(rows):
     """Score every deletion whose WAVs survive. Returns (scored, unscorable)."""
     scored, missing = [], 0
+
+    def _track_audio(d, key):
+        # Archived meetings hold <key>.flac (audio_archive.py); soundfile
+        # decodes both to the identical sample stream.
+        for ext in (".wav", ".flac"):
+            p = d / f"{key}{ext}"
+            if p.exists():
+                return p
+        return d / f"{key}.wav"  # canonical missing-file name for the report
+
     for row in rows:
-        mic_wav, sys_wav = row["dir"] / "mic.wav", row["dir"] / "system.wav"
+        mic_wav, sys_wav = _track_audio(row["dir"], "mic"), _track_audio(row["dir"], "system")
         have = mic_wav.exists() and sys_wav.exists()
         for d in row["drops"]:
             r = (echo_envelope_correlation(mic_wav, sys_wav, d["start"], d["end"])
@@ -3040,6 +3101,502 @@ def print_echo_not_measured(why):
     print()
 
 
+# ---------------------------------------------------------------------------
+# ATTRIBUTION: the only path in this file that scores WHO SPOKE WHICH WORD.
+#
+# WHY IT EXISTS. Everything above scores a COUNT, and the count metric on this
+# corpus is degenerate: 17 of the 21 truth-backed real fixtures hold ONE voice,
+# so a constant predictor that always answers 1 scores 81% having looked at
+# nothing (native/diarization-ab/CORRECTION.md §c). Worse, a correct count is
+# compatible with every single word being attributed to the wrong person. The
+# product ships a SPEAKER-LABELLED TRANSCRIPT, and until this section existed
+# nothing in the repository measured that at all
+# (docs/ATTRIBUTION_AND_ROADMAP_PRD.md §2, "Phase 2 attribution truth").
+#
+# WHAT IT SCORES. For every real fixture carrying test/fixtures/<slug>/
+# truth_words.json — word-level speaker labels, produced by
+# tools/label_turns.py — three arms plus three floors:
+#
+#   classic      diarization.diarize_track replayed over the FROZEN cache
+#                (precomputed windows + embeddings; no audio, no model)
+#   neural-auto  the frozen turns in test/fixtures/<slug>/neural_turns.json
+#   hybrid       attribution.hybrid_arbitrate — the SAME arbitration
+#                score_multiparty.py replays, imported rather than re-written
+#   floors       all-to-dominant, seeded random, count-oracle. Mandatory, on
+#                every table, for the same reason the constant-1 baseline is
+#                on every accuracy line above.
+#
+# THE METRIC IS NOT DER AND IS NEVER CALLED DER. Word-referenced truth claims
+# time only where the recognizer put words, so it cannot see missed speech or
+# false alarms; what it reports is speaker-attributed word-time confusion plus
+# unweighted word accuracy. See tools/attribution.py's module docstring.
+#
+# THE NEURAL BINARY IS NEVER INVOKED FROM HERE. --check must be a gate, not a
+# build step: it reads frozen turns off disk or it reports NOT MEASURED for the
+# arms that need them, exactly the way --echo-audio degrades when the WAVs are
+# gone. Frozen turns are keyed by a "config_fingerprint" string in that file so
+# a turn set from a different engine configuration cannot silently be scored as
+# if it came from this one; a file with no fingerprint is scored as "legacy"
+# with the warning printed rather than dropped.
+#
+# THE UNCERTAINTY BAND TRAVELS WITH THE SCORE. Dispute-first labelling only
+# asks the human about words the machines argue over; the audit block in each
+# truth file records how often a seeded re-check of the auto-accepted words
+# disagreed, and that rate is printed beside every number derived from it.
+#
+# ONE RULE HERE DIFFERS FROM THE DIARIZATION GATE, deliberately, and it matches
+# the ECHO section rather than the count gate: a truthed fixture with no
+# baseline entry is reported as UNCOVERED, counted, and excluded from the
+# verdict — it does not fail --check. ATTRIBUTION_BASELINE starts EMPTY and
+# fills in as the founder labels fixtures one at a time; a gate that went red
+# the moment the first truth file appeared would be a gate that taxes
+# labelling, and labelling is the scarce resource here.
+#
+# WHAT IT DOES NOT PROVE. That the labels are right. They are one person's
+# reading of their own audio, taken with a machine hypothesis in view for every
+# word outside the audit sample. The `source` field and the audit rate are in
+# the file so that limit is quotable; --from-scratch on Room T is the only
+# control on it that exists.
+# ---------------------------------------------------------------------------
+
+ATTRIBUTION_TRUTH_FILE = "truth_words.json"
+ATTRIBUTION_TURNS_FILE = "neural_turns.json"
+ATTRIBUTION_ARMS = ("classic", "neural-auto", "hybrid")
+
+# ---------------------------------------------------------------------------
+# ATTRIBUTION_BASELINE: a CHANGE-DETECTOR for the attribution path, and nothing
+# more. Same contract as BEHAVIOUR_BASELINE and ECHO_BASELINE above, same
+# disclaimer, same refusal to let a re-record mean "correct". It pins, per
+# fixture and per arm, the four numbers the gate reads:
+#
+#     (word_time_confusion, word_accuracy, over_count, under_count)
+#
+# OVER-COUNT AND UNDER-COUNT ARE PINNED SEPARATELY AND ARE NEVER SUMMED. They
+# are not equally repairable: merge-only post-processing can delete a surplus
+# speaker and can never invent a missing one (CORRECTION.md §b), so a change
+# that trades one for the other is a change, not a wash, and the gate fails on
+# a rise in EITHER of them.
+#
+# COUNT AND ATTRIBUTION ARE NOT TRADEABLE. --check gates both, independently. A
+# clustering change that improves the count on one fixture and moves words onto
+# the wrong speaker on another fails, and it fails on the attribution side with
+# the count side still green. That is the entire point of the co-gate: the
+# count metric could not see attribution move, and this file's headline number
+# was quoted for a year as though it could.
+#
+# HOW TO RE-BASELINE: run the section, read what moved and why, then add a NEW
+# dated generation below. Do not edit an existing one in place.
+# ---------------------------------------------------------------------------
+ATTRIBUTION_BASELINE_DATE = "2026-08-09"
+ATTRIBUTION_BASELINE_RULE = (
+    "classic = diarization.diarize_track over the frozen cache; neural-auto = "
+    "the frozen turns; hybrid = attribution.hybrid_arbitrate (the 2026-08-03 "
+    "gate score_multiparty.py replays)"
+)
+
+# The attribution constants as they stood when GEN 1 was recorded. Same job as
+# BASELINE_CONSTANTS and ECHO_BASELINE_CONSTANTS: an early-warning label, not a
+# second gate. The random floor in particular is only reproducible while its
+# seed is, and a floor that moved is a table that means something different.
+ATTRIBUTION_BASELINE_CONSTANTS = {
+    "ATTR_RANDOM_SEED": 20260809,
+    "ATTR_COLLAR_S": 0.25,
+    "ATTR_EXCLUDE_OVERLAP": 0,
+    "ATTR_HYP_PERTURB": 0.0,
+}
+
+# Field order of every tuple in the generations below and of every gated
+# comparison: confusion (lower better), word accuracy (higher better),
+# over-count, under-count (both lower better, both exact).
+ATTRIBUTION_FIELDS = ("conf", "word_acc", "over", "under")
+
+# ATTRIBUTION GEN 1 — EXPLICITLY EMPTY, and this is a recorded state rather
+# than an oversight.
+#
+# No truth_words.json exists anywhere in the corpus on the day this section
+# landed: word-level attribution truth is founder work on the founder's own
+# confidential meetings and cannot be delegated
+# (docs/ATTRIBUTION_AND_ROADMAP_PRD.md §0.5, "BLOCKED on founder"). An empty
+# generation means the gate has nothing to compare and says so on every run —
+# "attribution: 0 fixtures truthed" — instead of printing a pass it did not
+# earn. THE FIRST REAL GENERATION IS RECORDED AFTER THE FOUNDER LABELS THE
+# FIXTURES IN ATTRIBUTION_TIER, by running:
+#
+#     python tools/label_turns.py "<meeting>"        # per fixture
+#     python tools/eval_diarization.py --attribution-only
+#
+# and pasting the printed rows into a NEW dated generation below.
+ATTRIBUTION_GEN1 = {
+    # "Demo": {"classic": (0.0, 0.0, 0, 0), "neural-auto": …, "hybrid": …},
+}
+
+ATTRIBUTION_BASELINE = {k: dict(v) for k, v in ATTRIBUTION_GEN1.items()}
+
+# Attribution constants --attribution-set may override on the attribution
+# module, whitelisted so a typo cannot silently do nothing. Deliberately
+# SEPARATE from TUNABLES and ECHO_TUNABLES, for the same reason those two are
+# separate from each other: a perturbation of the attribution scorer has
+# nothing to say about clustering counts or about drop_echo. ATTR_HYP_PERTURB
+# in particular exists so that "this gate would catch a regression" can be
+# demonstrated by running the harness rather than asserted in a comment.
+ATTRIBUTION_TUNABLES = {
+    "ATTR_RANDOM_SEED": int,
+    "ATTR_COLLAR_S": float,
+    "ATTR_EXCLUDE_OVERLAP": int,
+    "ATTR_HYP_PERTURB": float,
+}
+
+
+def parse_attribution_set(items, attribution):
+    out = {}
+    for item in items or []:
+        if "=" not in item:
+            raise SystemExit("--attribution-set expects KEY=VALUE, got %r" % item)
+        k, v = item.split("=", 1)
+        k = k.strip()
+        if k not in ATTRIBUTION_TUNABLES:
+            raise SystemExit("--attribution-set: unknown key %r; allowed: %s"
+                             % (k, sorted(ATTRIBUTION_TUNABLES)))
+        if not hasattr(attribution, k):
+            raise SystemExit("--attribution-set: attribution.py has no %s" % k)
+        out[k] = ATTRIBUTION_TUNABLES[k](v)
+    return out
+
+
+def attribution_constant_drift(attribution):
+    """Attribution constants whose live value differs from the baseline's."""
+    out = []
+    for name, recorded in sorted(ATTRIBUTION_BASELINE_CONSTANTS.items()):
+        live = getattr(attribution, name, "MISSING")
+        if live != recorded:
+            out.append((name, recorded, live))
+    return out
+
+
+def attribution_planned():
+    return sorted(k for k, (tier, _n) in ATTRIBUTION_TIER.items()
+                  if tier in ("planned", "control"))
+
+
+def truthed_fixtures(fixtures):
+    """Real fixtures carrying a truth file on disk. [(fx, path)]"""
+    out = []
+    for fx in of_corpus(fixtures, "real"):
+        p = fx["dir"] / ATTRIBUTION_TRUTH_FILE
+        if p.exists():
+            out.append((fx, p))
+    return out
+
+
+def load_frozen_turns(fx):
+    """(frozen, why) for one fixture. frozen is None when there is nothing to read.
+
+    frozen = {"turns": [(s, e, idx)], "forced": {n: [(s, e, idx)]},
+              "fingerprint": str, "legacy": bool}
+
+    The file's shape is read liberally on purpose: another agent is adding the
+    fingerprint to the engine's output, and a harness that refuses to score
+    until a field it does not own appears is a harness that reports NOT
+    MEASURED for reasons that have nothing to do with the evidence.
+    """
+    path = fx["dir"] / ATTRIBUTION_TURNS_FILE
+    if not path.exists():
+        return None, "no %s" % ATTRIBUTION_TURNS_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, "%s is unreadable (%s)" % (path.name, exc)
+
+    def turns_of(raw):
+        out = []
+        for t in raw or []:
+            if isinstance(t, dict):
+                out.append((float(t.get("start", t.get("s"))),
+                            float(t.get("end", t.get("e"))),
+                            int(t.get("speaker_idx", t.get("spk", 0)))))
+            else:
+                out.append((float(t[0]), float(t[1]), int(t[2])))
+        return sorted(out)
+
+    try:
+        turns = turns_of(data.get("turns"))
+        forced = {int(k): turns_of(v) for k, v in (data.get("forced") or {}).items()}
+    except (TypeError, ValueError, IndexError) as exc:
+        return None, "%s holds turns this harness cannot read (%s)" % (path.name, exc)
+    if not turns:
+        return None, "%s holds no turns" % path.name
+    fp = data.get("config_fingerprint")
+    return ({"turns": turns, "forced": forced,
+             "fingerprint": str(fp) if fp else "legacy",
+             "legacy": not fp,
+             "track": data.get("track")}, None)
+
+
+def _fixture_segments(fx, track):
+    """The saved transcript segments for one track of a frozen fixture."""
+    path = fx["dir"] / "analysis.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return (data.get("transcripts") or {}).get(track) or []
+
+
+def attribution_arms(fx, truth, frozen, threshold, attribution):
+    """([(arm, result)], [note]) for one truthed fixture.
+
+    Every arm that cannot be computed produces a NOTE, never a silent absence:
+    the failure mode this whole file is built against is a section reporting on
+    whatever subset happened to work and calling it coverage.
+    """
+    rows, notes = [], []
+    track = truth.get("track") or fx["track"]
+    segs = _fixture_segments(fx, track)
+    if not segs:
+        return rows, ["no saved transcript for the %s track" % track]
+
+    labelled = n_classic = None
+    if track != fx["track"]:
+        notes.append("truth labels the %s track but the cache holds %s, so the "
+                     "classic and hybrid arms cannot be replayed"
+                     % (track, fx["track"]))
+    else:
+        labelled, n_classic = diarization.diarize_track(
+            None, segs, n_speakers=None, threshold=threshold,
+            precomputed=(fx["windows"], fx["embeddings"]))
+        rows.append(("classic", attribution.score_word_reference(
+            truth, attribution.spans_from_segments(labelled))))
+
+    if frozen is None:
+        notes.append("attribution: NOT MEASURED (no frozen turns) — the "
+                     "neural-auto and hybrid arms need "
+                     "test/fixtures/<slug>/%s" % ATTRIBUTION_TURNS_FILE)
+        return rows, notes
+    if frozen.get("track") and frozen["track"] != track:
+        notes.append("frozen turns are for the %s track, truth is for %s — "
+                     "neural arms skipped" % (frozen["track"], track))
+        return rows, notes
+
+    turns = frozen["turns"]
+    k_neural = len({int(t[2]) for t in turns})
+    rows.append(("neural-auto", attribution.score_word_reference(
+        truth, attribution.spans_from_turns(turns))))
+    if labelled is None:
+        return rows, notes
+    hyb, _k, route = attribution.hybrid_arbitrate(
+        segs, labelled, n_classic, turns, k_neural,
+        forced_turns_fn=lambda n: frozen["forced"].get(int(n)),
+        assign_by_turns=diarization.assign_by_turns)
+    res = attribution.score_word_reference(
+        truth, attribution.spans_from_segments(hyb))
+    res["route"] = route
+    rows.append(("hybrid", res))
+    return rows, notes
+
+
+def flat_attribution_baseline():
+    return {(key, arm): tuple(vals)
+            for key, arms in ATTRIBUTION_BASELINE.items()
+            for arm, vals in arms.items()}
+
+
+def print_attribution_report(scored, skipped, fixtures, attribution,
+                             overrides, show_titles=False, elapsed=None):
+    """Print the section. Returns (fails, moved, uncovered)."""
+    real = of_corpus(fixtures, "real")
+    planned = attribution_planned()
+    print("=" * 100)
+    print("ATTRIBUTION: who spoke which word, against hand-labelled truth")
+    print("=" * 100)
+    print("  %d of %d real fixtures carry attribution truth (%d planned: %s)"
+          % (len(scored) + len(skipped), len(real), len(planned),
+             ", ".join(planned)))
+    print("  Scored over reference speech time only. The headline is "
+          "speaker-attributed word-time")
+    print("  confusion; it is NOT DER, because word-referenced truth has no "
+          "miss and no false-alarm")
+    print("  term. Floors are printed on every table: a result that does not "
+          "clear all three is")
+    print("  not diarizing, it is guessing well.")
+    if overrides:
+        print("  !! --attribution-set active: %s"
+              % ", ".join("%s=%s" % kv for kv in sorted(overrides.items())))
+        print("     These numbers describe a perturbed scorer and must not be "
+              "baselined.")
+    drift = attribution_constant_drift(attribution)
+    if drift:
+        print("  !! attribution constants have drifted from the %s baseline:"
+              % ATTRIBUTION_BASELINE_DATE)
+        for name, was, now in drift:
+            print("       %-22s baseline %s, live %s" % (name, was, now))
+    print()
+
+    live = {}
+    for key, rows, notes, frozen in scored:
+        title = row_name(key, show_titles)
+        if frozen is not None:
+            title += "   turns fingerprint: %s%s" % (
+                frozen["fingerprint"],
+                "  !! no fingerprint in the file; scored anyway"
+                if frozen["legacy"] else "")
+        for line in attribution.format_rows(rows, title):
+            print("  " + line)
+        route = next((r.get("route") for _a, r in rows if r.get("route")), None)
+        if route:
+            print("    hybrid route: %s   (the 2026-08-03 gate; "
+                  "pipeline._neural_refine has since gained an upward rule "
+                  "this replay does not carry)" % route)
+        for n in notes:
+            print("    note: %s" % n)
+        for arm, res in rows:
+            live[(key, arm)] = attribution.baseline_row(res)
+        print()
+    for key, why in skipped:
+        print("  %s" % row_name(key, show_titles))
+        print("    NOT MEASURED: %s" % why)
+        print()
+
+    base = flat_attribution_baseline()
+    fails = attribution.regressions(base, live)
+    moved = attribution.moved(base, live)
+    uncovered = sorted(p for p in live if p not in base)
+    compared = sorted(p for p in live if p in base)
+
+    if not base:
+        print("ATTRIBUTION BASELINE: EMPTY (%s generation 1 is deliberately "
+              "empty)." % ATTRIBUTION_BASELINE_DATE)
+        print("  %d fixture/arm result(s) were computed and NONE was gated, "
+              "because there is" % len(live))
+        print("  nothing recorded to gate them against. Record a new dated "
+              "generation from the")
+        print("  rows above once the labels are audited; until then this "
+              "section measures and")
+        print("  reports, and claims no regression coverage whatsoever.")
+    elif fails:
+        print("ATTRIBUTION REGRESSION — %d metric(s) moved the wrong way "
+              "against %s:" % (len(fails), ATTRIBUTION_BASELINE_DATE))
+        for f in fails:
+            print("  !! %s" % f)
+        print("  Do NOT adjust the baseline to match. Count accuracy and "
+              "attribution are NOT")
+        print("  tradeable: a change that buys a count and spends words on the "
+              "wrong speaker")
+        print("  fails here with the count gate still green, which is the "
+              "reason this gate exists.")
+    else:
+        print("ATTRIBUTION BASELINE REPRODUCED: all %d compared fixture/arm "
+              "pair(s) match their %s" % (len(compared), ATTRIBUTION_BASELINE_DATE))
+        print("  entry, or moved only in the better direction.")
+        print("    proves : no word moved onto a different speaker on the "
+              "labelled fixtures.")
+        print("    does NOT prove: that the labels are right, or that the "
+              "unlabelled 1:1 corpus")
+        print("                    behaves the same way. See the audit band on "
+              "each table.")
+    if moved:
+        print("  MOVED (in the better direction, so not a failure): %s"
+              % ", ".join("%s/%s" % p for p in moved))
+    if uncovered:
+        print("  UNCOVERED: %d fixture/arm result(s) have no baseline entry and "
+              "were NOT compared:" % len(uncovered))
+        print("    %s" % ", ".join("%s/%s" % p for p in uncovered))
+        print("  These are new labels, not failures. Fold them into a new dated "
+              "generation.")
+    if elapsed is not None:
+        print("\nattribution section: %d fixture(s), %d arm result(s), %.1f s"
+              % (len(scored), len(live), elapsed))
+    print()
+    return fails, moved, uncovered
+
+
+def run_attribution_section(args, fixtures, only=False):
+    """Load, score, print, gate. Returns the exit-code contribution.
+
+    With no truth files on disk — today's state, and the state of every clone —
+    this prints ONE informational line and returns 0, so that adding this
+    section did not change a single other character of --check's output.
+    """
+    real = of_corpus(fixtures, "real")
+    truthed = truthed_fixtures(fixtures)
+    planned = attribution_planned()
+    try:
+        import attribution
+    except Exception as exc:
+        print_attribution_not_measured(
+            "tools/attribution.py could not be imported (%s: %s), so nothing "
+            "could be scored." % (type(exc).__name__, exc))
+        return 0
+    # Validated BEFORE the truth check, unlike --echo-set: a whitelist that
+    # only fires when the data happens to be present is a whitelist that misses
+    # a typo on exactly the machines with nothing to catch it.
+    overrides = parse_attribution_set(args.attribution_sets, attribution)
+    if not truthed:
+        if not only and not overrides:
+            print("attribution: 0 fixtures truthed (0 of %d real, %d planned) — "
+                  "label with tools/label_turns.py" % (len(real), len(planned)))
+            return 0
+        print_attribution_not_measured(
+            "no fixture carries %s. Word-level truth is founder work on the "
+            "founder's own\n  meetings and cannot be delegated; %d fixture(s) "
+            "are planned (%s).\n  Produce one with: python tools/label_turns.py "
+            "\"<meeting>\"" % (ATTRIBUTION_TRUTH_FILE, len(planned),
+                               ", ".join(planned)))
+        return 0
+
+    saved = {k: getattr(attribution, k) for k in overrides}
+    t0 = time.time()
+    scored, skipped = [], []
+    try:
+        for k, v in overrides.items():
+            setattr(attribution, k, v)
+        for fx, path in truthed:
+            try:
+                truth = attribution.load_truth_words(path)
+            except (OSError, ValueError) as exc:
+                skipped.append((fx["key"], "%s is unusable (%s)" % (path.name, exc)))
+                continue
+            frozen, why = load_frozen_turns(fx)
+            rows, notes = attribution_arms(
+                fx, truth, frozen, args.threshold, attribution)
+            if frozen is None and why:
+                notes = ["frozen turns: %s" % why] + notes
+            if not rows:
+                skipped.append((fx["key"], "; ".join(notes) or "no arm scorable"))
+                continue
+            scored.append((fx["key"], rows, notes, frozen))
+        if not scored:
+            print_attribution_not_measured(
+                "%d fixture(s) carry truth but no arm could be scored on any of "
+                "them." % len(truthed))
+            for key, why in skipped:
+                print("  %s: %s" % (row_name(key, args.show_titles).strip(), why))
+            print()
+            return 0
+        fails, _moved, _uncov = print_attribution_report(
+            scored, skipped, fixtures, attribution, overrides,
+            args.show_titles, time.time() - t0)
+    finally:
+        for k, v in saved.items():
+            setattr(attribution, k, v)
+    return 1 if (args.check and fails) else 0
+
+
+def print_attribution_not_measured(why):
+    """Absence must read as absence here too."""
+    print("=" * 100)
+    print("ATTRIBUTION: NOT MEASURED THIS RUN")
+    print("=" * 100)
+    print("  %s" % why)
+    print("  Nothing in this run has checked which words the diarizer puts on "
+          "which speaker.")
+    print("  The count gate above cannot see that: a correct count is compatible "
+          "with every")
+    print("  word being attributed to the wrong person.")
+    print()
+
+
 def run_binding_section(fixtures, res, args):
     """Sweep + print the binding report, timed, with the fit cache installed."""
     t0 = time.time()
@@ -3171,6 +3728,19 @@ def main(argv=None):
                          "every deletion. Reads the WAVs, so it needs the raw audio "
                          "to still be on disk; degrades to 'unscorable' per deletion "
                          "when it is not.")
+    ap.add_argument("--no-attribution", action="store_true",
+                    help="skip the attribution section. The report then says NOT "
+                         "MEASURED where it would have been, because the count gate "
+                         "cannot see a word move onto the wrong speaker.")
+    ap.add_argument("--attribution-only", action="store_true",
+                    help="accuracy block plus the attribution report, nothing else")
+    ap.add_argument("--attribution-set", dest="attribution_sets", action="append",
+                    help="attribution constant override on tools/attribution.py, "
+                         "e.g. --attribution-set ATTR_HYP_PERTURB=0.1 (repeatable; "
+                         "see ATTRIBUTION_TUNABLES). Separate from --set and "
+                         "--echo-set, which sweep different subsystems. "
+                         "ATTR_HYP_PERTURB is how you check that this section "
+                         "would in fact catch a regression.")
     args = ap.parse_args(argv)
 
     # --echo-only returns before any fixture is loaded, and deliberately does
@@ -3240,7 +3810,7 @@ def main(argv=None):
     # --binding-only / --stability-only still print ACCURACY first. Every number
     # in those two sections is a statement ABOUT the accuracy figure, and a
     # section quoted without it is a section quoted without its subject.
-    if args.binding_only or args.stability_only:
+    if args.binding_only or args.stability_only or args.attribution_only:
         print_accuracy(fixtures, base, args.show_titles)
         print()
         if not fixtures:
@@ -3251,8 +3821,11 @@ def main(argv=None):
             run_binding_section(fixtures, base, args)
         if args.stability_only:
             run_stability_section(fixtures, args)
-        print("\nexit 0")
-        return 0
+        code = 0
+        if args.attribution_only:
+            code = run_attribution_section(args, fixtures, only=True)
+        print("\nexit %d" % code)
+        return code
 
     print_header(fixtures, base, args.threshold, overrides, args.variant_module,
                  args.show_titles)
@@ -3430,6 +4003,19 @@ def main(argv=None):
     # single number in it. Skipping it to save time would be saving nothing, and
     # a section that only runs on the full report is a section that is absent
     # from exactly the runs people do while iterating.
+    # The attribution path. It runs on EVERY report for the same reasons the
+    # echo section does, and it is the CO-GATE: --check fails on a count
+    # regression OR an attribution regression, independently, because the two
+    # are not tradeable. With no truth files on disk — today's state — it emits
+    # exactly one informational line and gates nothing, so adding it changed no
+    # other character of this report.
+    if args.no_attribution:
+        print_attribution_not_measured(
+            "--no-attribution was passed. Nothing here scored which words the "
+            "diarizer put on\n  which speaker.")
+    else:
+        exit_code = run_attribution_section(args, fixtures) or exit_code
+
     if args.no_echo:
         print_echo_not_measured(
             "--no-echo was passed. Nothing here replayed drop_echo over anything.")

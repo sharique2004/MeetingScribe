@@ -1,5 +1,5 @@
 // The meeting as one document: centred dateline, serif editable title,
-// people line, hairline, 17pt lead, then the two-ink body — the user's
+// people line, hairline, the display lead, then the two-ink body — the user's
 // notes at full ink structuring the page, the machine's writing one step
 // down. Every AI line can unfold its transcript evidence in place. No
 // cards, no borders; the page sits directly on the content surface.
@@ -38,7 +38,7 @@ struct MeetingPage: View {
                     // How long, how it was captured, what language it was in:
                     // facts about the recording the document never carried.
                     Text(headMeta)
-                        .font(.system(size: 13))
+                        .font(MSFont.chrome)
                         .foregroundStyle(MS.ink3)
                 }
                 .padding(.top, 10)
@@ -52,7 +52,7 @@ struct MeetingPage: View {
                 if let leadText = detail.summary?.headline
                     ?? detail.summary?.tldr.map({ String($0.split(separator: ".").first.map(String.init) ?? $0) }) {
                     Text(leadText)
-                        .font(MSFont.lead)
+                        .font(MSFont.displayLead)
                         .lineSpacing(9)
                         .foregroundStyle(MS.ink)
                         .textSelection(.enabled)
@@ -179,7 +179,7 @@ struct MeetingPage: View {
                         Circle().fill(MS.speaker(entry.key)).frame(width: 6, height: 6)
                             .msDecorative()
                         Text(entry.name)
-                            .font(.system(size: 13))
+                            .font(MSFont.chrome)
                             .foregroundStyle(MS.ink2)
                     }
                 }
@@ -265,7 +265,7 @@ struct MeetingPage: View {
                 ForEach(minor, id: \.self) { warning in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Image(systemName: "info.circle")
-                            .font(.system(size: 10))
+                            .font(MSFont.kicker.weight(.regular))
                             .foregroundStyle(MS.ink4)
                             .msDecorative()
                         Text(warning)
@@ -294,8 +294,8 @@ struct MeetingPage: View {
                     model.reprocess()
                 } label: {
                     Label("Reprocess audio", systemImage: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
+                        .font(MSFont.chrome.weight(.semibold))
+                        .foregroundStyle(MS.inkOnAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                         .background(MS.playheadFill, in: .capsule)
@@ -384,7 +384,7 @@ struct MeetingPage: View {
     private func yourNote<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Image(systemName: "pencil")
-                .font(.system(size: 9, weight: .semibold))
+                .font(MSFont.kicker.weight(.semibold))
                 .foregroundStyle(MS.ink4)
                 .frame(width: 20, alignment: .leading)
                 .offset(y: -1)
@@ -477,7 +477,7 @@ struct MeetingPage: View {
                 // up with the text and the smaller the mark the lower it sits.
                 if point.covered == true {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(MSFont.kicker.weight(.semibold))
                         .foregroundStyle(MS.ink4)
                 } else if point.covered == false {
                     // The ring the to-dos wear for "not done": the same claim
@@ -539,7 +539,7 @@ struct MeetingPage: View {
                     ForEach(meetingStats, id: \.label) { stat in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(stat.value)
-                                .font(.system(size: 17, weight: .medium))
+                                .font(MSFont.body.weight(.medium))
                                 .monospacedDigit()
                                 .foregroundStyle(MS.ink)
                             Text(stat.label)
@@ -651,8 +651,8 @@ struct MeetingPage: View {
                     model.summarize()
                 } label: {
                     Label("Write the summary", systemImage: "sparkles")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
+                        .font(MSFont.chrome.weight(.semibold))
+                        .foregroundStyle(MS.inkOnAccent)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 7)
                         .background(MS.playheadFill, in: .capsule)
@@ -854,7 +854,7 @@ struct NoticeBand<Action: View>: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
+                .font(MSFont.chrome.weight(.semibold))
                 .foregroundStyle(MS.ink2)
                 .offset(y: 1)
                 .msDecorative()
@@ -870,11 +870,9 @@ struct NoticeBand<Action: View>: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(MS.raised, in: .rect(cornerRadius: 10))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(MS.hairlineStrong, lineWidth: 1)
-        }
+        // The band keeps its own raised fill; the outline it used to wear is
+        // now the lit edge every inline card in the document shares.
+        .msSurface(MS.raised, radius: MS.radius.md)
     }
 }
 
@@ -902,7 +900,7 @@ struct EvidenceDisclosure: View {
                 ZStack {
                     if hovering && evidence != nil {
                         Image(systemName: "play.fill")
-                            .font(.system(size: 9))
+                            .font(MSFont.kicker.weight(.regular))
                             .foregroundStyle(MS.playhead)
                             .transition(.scale(scale: 0.6).combined(with: .opacity))
                             .msDecorative()
@@ -1011,7 +1009,7 @@ struct ActionRow: View {
                         .background(Circle().fill(checked ? MS.playheadFill : .clear))
                     CheckmarkShape()
                         .trim(from: 0, to: drawn)
-                        .stroke(Color.black.opacity(0.8),
+                        .stroke(MS.inkOnAccent.opacity(0.9),
                                 style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
                         .padding(5)
                 }
@@ -1079,7 +1077,7 @@ struct FollowUpEmailCard: View {
                         .kerning(0.55)
                         .foregroundStyle(MS.ink3)
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 8, weight: .bold))
+                        .font(MSFont.kicker.weight(.bold))
                         .foregroundStyle(MS.ink4)
                         .rotationEffect(.degrees(open ? 90 : 0))
                         .msDecorative()

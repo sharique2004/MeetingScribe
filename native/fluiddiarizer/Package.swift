@@ -27,7 +27,19 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio")
             ]
-        )
+        ),
+        // EVAL-ONLY, and deliberately a SEPARATE target rather than a flag on
+        // the diarizer: the shipping binary must not grow a code path (or a
+        // recompile) because an A/B needed a transcriber. Same package, same
+        // FluidAudio pin, own sources — `swift build` still produces a
+        // byte-identical fluid-diarizer, which native/asr-ab/RESULTS.md
+        // verifies by hash. Nothing in the app invokes it.
+        .executableTarget(
+            name: "fluid-transcribe",
+            dependencies: [
+                .product(name: "FluidAudio", package: "FluidAudio")
+            ]
+        ),
     ],
     swiftLanguageVersions: [.v5]
 )

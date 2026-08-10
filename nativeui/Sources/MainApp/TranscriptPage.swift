@@ -55,6 +55,11 @@ struct TranscriptPage: View {
                                 name: name(turn.speaker),
                                 color: MS.speaker(turn.speaker),
                                 active: i == active,
+                                // Paused on a line is a place; playing it is an
+                                // event, and only the event gets the beam. One
+                                // row can ever be true, so one beam can ever
+                                // exist.
+                                playing: i == active && player.playing,
                                 // Only the turn being spoken has a travelling
                                 // word to move; handing the clock to the rest
                                 // invalidates the whole transcript at 10Hz.
@@ -73,6 +78,14 @@ struct TranscriptPage: View {
                 .padding(.bottom, 112)
             }
             .background(MS.content)
+            // The two devices this page is allowed, and no third. A hard top
+            // edge, because the header is a line of controls and a blurred
+            // scroll edge under it reads as a smear rather than an edge…
+            .scrollEdgeEffectStyle(.hard, for: .top)
+            // …and a fade at the foot, so the last thing anyone said melts
+            // into the page under the transport shelf instead of being cut
+            // off mid-sentence by it.
+            .msBottomFade(MS.content)
             .onScrollPhaseChange { _, phase in
                 if phase == .interacting { following = false }
             }
@@ -99,7 +112,7 @@ struct TranscriptPage: View {
                         }
                     } label: {
                         Label("Now", systemImage: "arrow.down.to.line")
-                            .font(.system(size: 11, weight: .semibold))
+                            .font(MSFont.kicker)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                     }
@@ -198,7 +211,7 @@ struct TranscriptPage: View {
                 findFocused = true
             }
             .labelStyle(.iconOnly)
-            .font(.system(size: 10))
+            .font(MSFont.kicker)
             .foregroundStyle(MS.ink3)
             .buttonStyle(PressStyle())
             .keyboardShortcut("f", modifiers: .command)
@@ -221,7 +234,7 @@ struct TranscriptPage: View {
 
                 Button("Previous match", systemImage: "chevron.up") { step(-1) }
                     .labelStyle(.iconOnly)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(MSFont.kicker)
                     .buttonStyle(PressStyle())
                     .disabled(matches.isEmpty)
                     .keyboardShortcut("g", modifiers: [.command, .shift])
@@ -229,7 +242,7 @@ struct TranscriptPage: View {
 
                 Button("Next match", systemImage: "chevron.down") { step(1) }
                     .labelStyle(.iconOnly)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(MSFont.kicker)
                     .buttonStyle(PressStyle())
                     .disabled(matches.isEmpty)
                     .keyboardShortcut("g", modifiers: .command)
@@ -237,7 +250,7 @@ struct TranscriptPage: View {
 
                 Button("Clear the search", systemImage: "xmark") { closeFind() }
                     .labelStyle(.iconOnly)
-                    .font(.system(size: 9, weight: .bold))
+                    .font(MSFont.kicker)
                     .buttonStyle(PressStyle())
                     .foregroundStyle(MS.ink3)
                     .help("Clear (esc)")
@@ -351,6 +364,9 @@ struct TranscriptTurn: View {
     let name: String
     let color: Color
     let active: Bool
+    /// The playhead is on this turn AND the audio is moving. `active` alone is
+    /// where you are parked; this is where you are being carried.
+    let playing: Bool
     let time: Double
     /// What the find bar is looking for, "" when it is closed.
     var query: String = ""
@@ -392,8 +408,19 @@ struct TranscriptTurn: View {
             .padding(.horizontal, active ? 10 : 0)
             .background {
                 if active {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(color.opacity(0.06))
+                    MS.rr(MS.radius.md).fill(color.opacity(0.06))
+                }
+            }
+            // The beam's second home, and the last one in the app. Built only
+            // while this line is being spoken: a paused row keeps the wash and
+            // loses the light, an inactive row has neither, and the `if` means
+            // a LazyVStack walking two hundred turns never instantiates a
+            // TimelineView it would then have to keep ticking off screen. The
+            // wash underneath stays at 6% — the arc is the whole event, so
+            // nothing else about the row needs to get louder.
+            .overlay {
+                if playing {
+                    MSBeam(radius: MS.radius.md, period: 6.5, lineWidth: 1.4)
                 }
             }
         }

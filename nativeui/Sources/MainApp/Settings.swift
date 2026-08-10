@@ -290,7 +290,7 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
 
             Text("Which recogniser writes the words")
-                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
 
@@ -367,7 +367,7 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
 
             Text("What happens to the audio afterwards")
-                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
 
@@ -410,7 +410,7 @@ struct SettingsView: View {
                 .accessibilityAddTraits(.isHeader)
 
             Text("Who writes your summaries and answers")
-                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
 
@@ -479,7 +479,7 @@ private struct VocabularyEditor: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Your words")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(MSFont.chrome.weight(.semibold))
                     .foregroundStyle(MS.ink)
                 Text("Product names, jargon, and surnames a recogniser has never met. Add them here and they come out spelled your way instead of phonetically. Applies to your next recording.")
                     .font(MSFont.meta)
@@ -492,7 +492,7 @@ private struct VocabularyEditor: View {
                     ForEach(words, id: \.self) { word in
                         HStack(spacing: 5) {
                             Text(word)
-                                .font(.system(size: 12))
+                                .font(MSFont.meta)
                                 .foregroundStyle(MS.ink)
                             // An 8-point glyph is an 8-point target: the hit
                             // area was the mark itself, which is a quarter of
@@ -503,7 +503,7 @@ private struct VocabularyEditor: View {
                                 words.removeAll { $0 == word }
                             }
                             .labelStyle(.iconOnly)
-                            .font(.system(size: 8, weight: .bold))
+                            .font(MSFont.kicker.weight(.bold))
                             .foregroundStyle(MS.ink3)
                             .frame(width: 20, height: 20)
                             .contentShape(.rect)
@@ -512,7 +512,9 @@ private struct VocabularyEditor: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(MS.raised, in: .capsule)
-                        .overlay(Capsule().stroke(MS.hairline, lineWidth: 1))
+                        // A chip is small enough that the gradient edge would
+                        // overdress it: the uniform contact rim instead.
+                        .msRim(Capsule())
                     }
                 }
             }
@@ -520,7 +522,7 @@ private struct VocabularyEditor: View {
             HStack(spacing: 8) {
                 TextField("Add a word or name", text: $draft)
                     .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
+                    .font(MSFont.meta)
                     .focused($focused)
                     .onSubmit(commit)
                 Button("Add", action: commit)
@@ -529,13 +531,7 @@ private struct VocabularyEditor: View {
             }
         }
         .padding(13)
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(MS.raised.opacity(0.5))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(MS.hairline, lineWidth: 1))
-        }
+        .msSurface(MS.raised, radius: MS.radius.md)
     }
 
     private var cleaned: String {
@@ -624,7 +620,7 @@ private struct SettingPickerRow: View {
         HStack(alignment: .top, spacing: 11) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(MSFont.chrome.weight(.semibold))
                     .foregroundStyle(MS.ink)
                 Text(detail)
                     .font(MSFont.meta)
@@ -646,13 +642,7 @@ private struct SettingPickerRow: View {
             .fixedSize()
         }
         .padding(13)
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(MS.raised)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(MS.hairline, lineWidth: 1))
-        }
+        .msSurface(MS.raised, radius: MS.radius.md)
     }
 }
 
@@ -677,7 +667,7 @@ private struct VoicesSection: View {
                 .accessibilityAddTraits(.isHeader)
 
             Text("Who this Mac recognises across meetings")
-                .font(.system(size: 20, weight: .semibold, design: .serif))
+                .font(MSFont.pageTitle)
                 .foregroundStyle(MS.ink)
                 .padding(.top, 8)
 
@@ -805,7 +795,7 @@ private struct SettingToggleRow: View {
         HStack(alignment: .top, spacing: 11) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(MSFont.chrome.weight(.semibold))
                     .foregroundStyle(MS.ink)
                 Text(detail)
                     .font(MSFont.meta)
@@ -823,14 +813,15 @@ private struct SettingToggleRow: View {
                 .accessibilityHint(detail)
         }
         .padding(13)
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(on ? MS.raised : MS.raised.opacity(0.5))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(on ? MS.interactive.opacity(0.45) : MS.hairline,
-                                      lineWidth: 1))
-        }
+        // One lit card, the same one every row in Settings wears. The mint
+        // ring rides ON TOP of the edge light rather than replacing it: the
+        // light is the surface, the ring is the state, and without the ring an
+        // on row and an off row differ by a switch and nothing else.
+        .msSurface(on ? MS.raised : MS.raised.opacity(0.5), radius: MS.radius.md)
+        .overlay(MS.rr(MS.radius.md)
+            .strokeBorder(MS.interactive.opacity(0.45), lineWidth: 1)
+            .opacity(on ? 1 : 0)
+            .allowsHitTesting(false))
     }
 }
 
@@ -887,12 +878,12 @@ private struct VoiceProfileRow: View {
     var body: some View {
         HStack(spacing: 11) {
             Image(systemName: "waveform.circle")
-                .font(.system(size: 15))
+                .font(MSFont.body)
                 .foregroundStyle(MS.ink3)
                 .msDecorative()
             VStack(alignment: .leading, spacing: 2) {
                 Text(profile.name)
-                    .font(.system(size: 13.5, weight: .medium))
+                    .font(MSFont.chromeMedium)
                     .foregroundStyle(MS.ink)
                 Text(held)
                     .font(MSFont.meta)
@@ -922,13 +913,7 @@ private struct VoiceProfileRow: View {
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(MS.raised.opacity(0.5))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(MS.hairline, lineWidth: 1))
-        }
+        .msSurface(MS.raised, radius: MS.radius.md)
     }
 }
 
@@ -945,23 +930,23 @@ private struct EngineOption: View {
         Button(action: choose) {
             HStack(alignment: .top, spacing: 11) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 15))
+                    .font(MSFont.body)
                     .foregroundStyle(selected ? MS.interactive : MS.ink4)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 7) {
                         Text(title)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(MSFont.chrome.weight(.semibold))
                             .foregroundStyle(MS.ink)
                         if !available {
                             Text("unavailable")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(MSFont.kicker)
                                 .foregroundStyle(MS.ink3)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(MS.raised, in: .capsule)
                         } else if recommended {
                             Text("recommended")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(MSFont.kicker)
                                 .foregroundStyle(MS.playhead)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
@@ -976,14 +961,14 @@ private struct EngineOption: View {
                 Spacer()
             }
             .padding(13)
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(selected ? MS.raised : MS.raised.opacity(0.5))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(selected ? MS.interactive.opacity(0.45) : MS.hairline,
-                                          lineWidth: 1))
-            }
+            .msSurface(selected ? MS.raised : MS.raised.opacity(0.5), radius: MS.radius.md)
+            // The chosen engine keeps its mint ring over the edge light: the
+            // radio dot alone is a 15pt glyph deciding which of four cards is
+            // in force.
+            .overlay(MS.rr(MS.radius.md)
+                .strokeBorder(MS.interactive.opacity(0.45), lineWidth: 1)
+                .opacity(selected ? 1 : 0)
+                .allowsHitTesting(false))
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())

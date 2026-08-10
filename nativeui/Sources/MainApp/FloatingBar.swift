@@ -1,7 +1,11 @@
-// The one floating glass element: the transport capsule — play, waveform,
+// The one floating glass element: the transport SHELF — play, waveform,
 // clocks, track — present in both modes, with Ask folded in behind the
 // sparkle button (⌘J). Asking expands the same piece of glass upward;
 // nothing else ever floats.
+//
+// A shelf, not a pill: it spans the pane with a 12pt margin either side and
+// carries the document's own radius, so the controls read as the bottom edge
+// of the page rather than an object hovering over it.
 import SwiftUI
 
 enum PageMode { case document, transcript }
@@ -41,9 +45,17 @@ struct FloatingBar: View {
             }
             transportRow
         }
-        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-        .frame(maxWidth: 620)
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)   // the app's one shadow
+        // Full pane width, inset 12 either side: the shelf is as wide as the
+        // thing it controls. The old 620 cap left it floating mid-air over a
+        // wider column, which is the one place a transport should never be.
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: MS.radius.lg))
+        .msEdgeLit(radius: MS.radius.lg)
+        .overlay(alignment: .top) { liveRail }
+        // The app's one shadow became the app's one RAMP: four tinted layers,
+        // blur doubling and opacity decaying, violet rather than black.
+        .msElevation(.floating)
+        .padding(.horizontal, 12)
         .padding(.bottom, 18)
         .animation(Motion.enter, value: askOpen)
         .animation(Motion.enter, value: player.failure)
@@ -86,12 +98,35 @@ struct FloatingBar: View {
 
     // MARK: - Transport
 
+    /// The live rail: while sound is moving, one hairline along the shelf's
+    /// top edge, mint at the leading end and sky at the other — the accent's
+    /// two voices at the dose chrome is allowed. It says only "this meeting
+    /// is running": the waveform already says where in it you are, so the
+    /// rail never moves, and there is nothing here to watch.
+    ///
+    /// Drawn on a full-size clear layer clipped to the shelf's own radius, so
+    /// the line stops exactly where the corners begin instead of running out
+    /// past them into nothing.
+    private var liveRail: some View {
+        Color.clear
+            .overlay(alignment: .top) {
+                LinearGradient(colors: [MS.playhead.opacity(0.14),
+                                        MS.skyFill.opacity(0.10)],
+                               startPoint: .leading, endPoint: .trailing)
+                    .frame(height: 1)
+            }
+            .clipShape(MS.rr(MS.radius.lg))
+            .opacity(player.playing ? 1 : 0)
+            .msAnimation(Motion.exit, value: player.playing)
+            .allowsHitTesting(false)
+    }
+
     /// What went wrong with the audio, in one line, above the controls that
     /// can't do anything about it.
     private func transportNotice(_ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 10))
+                .font(MSFont.kicker)
                 .foregroundStyle(MS.ink3)
             Text(text)
                 .font(MSFont.meta)
@@ -109,7 +144,7 @@ struct FloatingBar: View {
                 player.toggle()
             } label: {
                 Image(systemName: player.playing ? "pause.fill" : "play.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(MSFont.chrome.weight(.semibold))
                     .contentTransition(.symbolEffect(.replace))
                     .foregroundStyle(player.hasAudio ? MS.ink : MS.ink4)
                     .frame(width: 24, height: 24)
@@ -195,7 +230,7 @@ struct FloatingBar: View {
                 // in-flight model call in the app already wears.
                 HStack(spacing: 5) {
                     Image(systemName: "sparkle")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(MSFont.kicker.weight(.semibold))
                     Text("Ask")
                         .font(MSFont.chromeMedium)
                 }
@@ -320,13 +355,13 @@ struct FloatingBar: View {
         if message.role == .user {
             HStack(alignment: .top, spacing: 8) {
                 Text("YOU")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(MSFont.kicker.weight(.semibold))
                     .kerning(0.5)
                     .foregroundStyle(MS.ink4)
                     .frame(width: 26, alignment: .leading)
                     .offset(y: 2)
                 Text(message.text)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(MSFont.meta.weight(.medium))
                     .foregroundStyle(MS.ink)
                     .textSelection(.enabled)
             }
@@ -334,7 +369,7 @@ struct FloatingBar: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(message.text.isEmpty ? "No answer came back. Try asking again."
                                           : message.text)
-                    .font(.system(size: 12.5))
+                    .font(MSFont.meta)
                     .lineSpacing(5)
                     .foregroundStyle(MS.ink)
                     .textSelection(.enabled)
@@ -384,7 +419,7 @@ struct FloatingBar: View {
                 .contentTransition(.opacity)
             Button("Stop") { ask.cancel() }
                 .buttonStyle(.plain)
-                .font(.system(size: 10.5))
+                .font(MSFont.kicker.weight(.regular))
                 .foregroundStyle(MS.ink3)
         }
         .padding(.leading, 34)
@@ -413,7 +448,7 @@ struct FloatingBar: View {
                     send(draft)
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 18))
+                        .font(MSFont.displayLead)
                         .foregroundStyle(canSend ? AnyShapeStyle(MS.interactive)
                                                  : AnyShapeStyle(MS.ink4))
                 }
@@ -425,7 +460,7 @@ struct FloatingBar: View {
                         ask.clearAll()
                     } label: {
                         Text("Clear")
-                            .font(.system(size: 10.5))
+                            .font(MSFont.kicker.weight(.regular))
                             .foregroundStyle(MS.ink3)
                     }
                     .buttonStyle(PressStyle())
@@ -436,7 +471,7 @@ struct FloatingBar: View {
                     closeAsk()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
+                        .font(MSFont.body)
                         .foregroundStyle(MS.ink3)
                 }
                 .buttonStyle(PressStyle())

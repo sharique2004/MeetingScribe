@@ -1,0 +1,804 @@
+{
+ "arm": "mlx-fp",
+ "tag": "rerun",
+ "baseline_arm": "mlx-fp",
+ "protocol": "native/asr-ab/PROTOCOL.md",
+ "complete_run": true,
+ "evidence_class": "GATE",
+ "normalization": {
+  "raw": "lowercase, strip punctuation",
+  "normalized": "raw + digits spelled out, apostrophes and hyphens dissolved"
+ },
+ "degenerate_floors": {
+  "empty_transcript_wer_pct": 100.0,
+  "non_determinism": "results/mlx-fp-rerun.json"
+ },
+ "rows": {
+  "AMI ES2004a": {
+   "track": "Mix-Headset",
+   "corpus": "ami",
+   "audio_seconds": 1049.35,
+   "elapsed_seconds": 40.96,
+   "rtf": 25.62,
+   "segments": 215,
+   "words": 2366,
+   "chars": 11314,
+   "reference": {
+    "source": "ami_public_manual_1.6.2 words/*.xml (CC-BY)",
+    "speakers": 4,
+    "words": 2614,
+    "untimed_words": 0,
+    "clipped_past_audio_end": 0,
+    "span_seconds": 1048.64
+   },
+   "wer": 20.96,
+   "wer_detail": {
+    "rate": 0.20956801142449125,
+    "sub": 116,
+    "del": 453,
+    "ins": 18,
+    "ref_len": 2801,
+    "hyp_len": 2366,
+    "approx_regions": 0
+   },
+   "cer": 16.71,
+   "wer_normalized": 20.96,
+   "wer_empty_floor": 100.0,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2367,
+    "hyp_len": 2367,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2367
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 43.0,
+   "peak_rss_mb": 679.6,
+   "peak_footprint_mb": 5912.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "AMI IS1009c": {
+   "track": "Mix-Headset",
+   "corpus": "ami",
+   "audio_seconds": 1820.83,
+   "elapsed_seconds": 67.2,
+   "rtf": 27.09,
+   "segments": 312,
+   "words": 3775,
+   "chars": 19583,
+   "reference": {
+    "source": "ami_public_manual_1.6.2 words/*.xml (CC-BY)",
+    "speakers": 4,
+    "words": 4461,
+    "untimed_words": 0,
+    "clipped_past_audio_end": 0,
+    "span_seconds": 1788.57
+   },
+   "wer": 23.93,
+   "wer_detail": {
+    "rate": 0.23929416828061115,
+    "sub": 190,
+    "del": 897,
+    "ins": 25,
+    "ref_len": 4647,
+    "hyp_len": 3775,
+    "approx_regions": 0
+   },
+   "cer": 15.55,
+   "wer_normalized": 23.46,
+   "wer_empty_floor": 100.0,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 3775,
+    "hyp_len": 3775,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 3775
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 69.0,
+   "peak_rss_mb": 722.1,
+   "peak_footprint_mb": 4181.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call A": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 1488.92,
+   "elapsed_seconds": 48.05,
+   "rtf": 30.98,
+   "segments": 72,
+   "words": 744,
+   "chars": 3751,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 744,
+    "hyp_len": 744,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 744
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 49.8,
+   "peak_rss_mb": 760.2,
+   "peak_footprint_mb": 4225.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call B": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 2953.49,
+   "elapsed_seconds": 110.33,
+   "rtf": 26.77,
+   "segments": 512,
+   "words": 6261,
+   "chars": 30197,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 6262,
+    "hyp_len": 6262,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 6262
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 112.7,
+   "peak_rss_mb": 803.7,
+   "peak_footprint_mb": 6814.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call C": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 1049.79,
+   "elapsed_seconds": 38.39,
+   "rtf": 27.35,
+   "segments": 164,
+   "words": 1450,
+   "chars": 7052,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 1450,
+    "hyp_len": 1450,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 1450
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 40.3,
+   "peak_rss_mb": 754.3,
+   "peak_footprint_mb": 4196.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call D": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 2876.18,
+   "elapsed_seconds": 57.44,
+   "rtf": 50.07,
+   "segments": 175,
+   "words": 2995,
+   "chars": 15078,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2995,
+    "hyp_len": 2995,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2995
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 59.2,
+   "peak_rss_mb": 782.9,
+   "peak_footprint_mb": 4309.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call E": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 2047.34,
+   "elapsed_seconds": 45.22,
+   "rtf": 45.27,
+   "segments": 306,
+   "words": 3807,
+   "chars": 17796,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 3807,
+    "hyp_len": 3807,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 3807
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 46.9,
+   "peak_rss_mb": 951.5,
+   "peak_footprint_mb": 4252.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call F": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 1908.33,
+   "elapsed_seconds": 60.48,
+   "rtf": 31.55,
+   "segments": 261,
+   "words": 4139,
+   "chars": 20079,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 4138,
+    "hyp_len": 4138,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 4138
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 62.4,
+   "peak_rss_mb": 731.8,
+   "peak_footprint_mb": 4251.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call G": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 1207.15,
+   "elapsed_seconds": 25.99,
+   "rtf": 46.44,
+   "segments": 139,
+   "words": 1713,
+   "chars": 8276,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 1712,
+    "hyp_len": 1712,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 1712
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 27.7,
+   "peak_rss_mb": 813.3,
+   "peak_footprint_mb": 4190.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call H": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 2716.1,
+   "elapsed_seconds": 58.43,
+   "rtf": 46.49,
+   "segments": 449,
+   "words": 5876,
+   "chars": 27912,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 5877,
+    "hyp_len": 5877,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 5877
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 60.3,
+   "peak_rss_mb": 872.4,
+   "peak_footprint_mb": 4286.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call J": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 23.4,
+   "elapsed_seconds": 0.99,
+   "rtf": 23.62,
+   "segments": 3,
+   "words": 59,
+   "chars": 262,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 59,
+    "hyp_len": 59,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 59
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 2.5,
+   "peak_rss_mb": 766.2,
+   "peak_footprint_mb": 1675.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call K": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 1620.33,
+   "elapsed_seconds": 32.67,
+   "rtf": 49.6,
+   "segments": 210,
+   "words": 2516,
+   "chars": 12386,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2516,
+    "hyp_len": 2516,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2516
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 34.1,
+   "peak_rss_mb": 557.8,
+   "peak_footprint_mb": 4233.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call L": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 624.15,
+   "elapsed_seconds": 12.3,
+   "rtf": 50.73,
+   "segments": 60,
+   "words": 518,
+   "chars": 2689,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 517,
+    "hyp_len": 517,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 517
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 14.1,
+   "peak_rss_mb": 800.2,
+   "peak_footprint_mb": 4156.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Call N": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 49.69,
+   "elapsed_seconds": 1.17,
+   "rtf": 42.43,
+   "segments": 8,
+   "words": 50,
+   "chars": 198,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 50,
+    "hyp_len": 50,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 50
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 3.2,
+   "peak_rss_mb": 728.7,
+   "peak_footprint_mb": 1648.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Demo": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 49.43,
+   "elapsed_seconds": 1.15,
+   "rtf": 42.85,
+   "segments": 10,
+   "words": 124,
+   "chars": 721,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 124,
+    "hyp_len": 124,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 124
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 2.7,
+   "peak_rss_mb": 996.5,
+   "peak_footprint_mb": 2122.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "E2E": {
+   "track": "system",
+   "corpus": "real",
+   "audio_seconds": 22.46,
+   "elapsed_seconds": 0.6,
+   "rtf": 37.37,
+   "segments": 2,
+   "words": 22,
+   "chars": 123,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 22,
+    "hyp_len": 22,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 22
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 2.0,
+   "peak_rss_mb": 1381.7,
+   "peak_footprint_mb": 1957.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room P": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 357.14,
+   "elapsed_seconds": 9.62,
+   "rtf": 37.13,
+   "segments": 47,
+   "words": 856,
+   "chars": 4338,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 856,
+    "hyp_len": 856,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 856
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 11.2,
+   "peak_rss_mb": 574.2,
+   "peak_footprint_mb": 4790.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room Q": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 1613.38,
+   "elapsed_seconds": 45.29,
+   "rtf": 35.62,
+   "segments": 276,
+   "words": 4454,
+   "chars": 22217,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 4454,
+    "hyp_len": 4454,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 4454
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 46.9,
+   "peak_rss_mb": 725.5,
+   "peak_footprint_mb": 4194.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room R": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 1304.32,
+   "elapsed_seconds": 34.75,
+   "rtf": 37.53,
+   "segments": 140,
+   "words": 2334,
+   "chars": 13778,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2335,
+    "hyp_len": 2335,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2335
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 36.6,
+   "peak_rss_mb": 678.6,
+   "peak_footprint_mb": 4164.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room S": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 646.66,
+   "elapsed_seconds": 16.08,
+   "rtf": 40.22,
+   "segments": 51,
+   "words": 1379,
+   "chars": 7300,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 1379,
+    "hyp_len": 1379,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 1379
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 17.8,
+   "peak_rss_mb": 675.6,
+   "peak_footprint_mb": 4164.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room T": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 104.04,
+   "elapsed_seconds": 3.44,
+   "rtf": 30.28,
+   "segments": 26,
+   "words": 149,
+   "chars": 695,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 149,
+    "hyp_len": 149,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 149
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 5.1,
+   "peak_rss_mb": 900.4,
+   "peak_footprint_mb": 1725.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room U": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 1170.3,
+   "elapsed_seconds": 26.93,
+   "rtf": 43.46,
+   "segments": 120,
+   "words": 2892,
+   "chars": 15083,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2892,
+    "hyp_len": 2892,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2892
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 28.6,
+   "peak_rss_mb": 585.6,
+   "peak_footprint_mb": 4165.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room V": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 1038.02,
+   "elapsed_seconds": 22.22,
+   "rtf": 46.71,
+   "segments": 128,
+   "words": 2605,
+   "chars": 13599,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 2605,
+    "hyp_len": 2605,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 2605
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 24.0,
+   "peak_rss_mb": 734.1,
+   "peak_footprint_mb": 4148.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  },
+  "Room W": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 6651.84,
+   "elapsed_seconds": 144.14,
+   "rtf": 46.15,
+   "segments": 923,
+   "words": 12767,
+   "chars": 64991,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 12767,
+    "hyp_len": 12767,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 12767
+   },
+   "spans_dumped": 0,
+   "wall_seconds": 145.7,
+   "peak_rss_mb": 1115.6,
+   "peak_footprint_mb": 4485.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  }
+ }
+}

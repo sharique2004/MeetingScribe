@@ -131,6 +131,27 @@ class NudgeEngine:
             self._pending_at = now
         return nudge
 
+    def test_fire(self, title="Test meeting"):
+        """A synthetic nudge through the real pending machinery.
+
+        Exists so the whole delivery chain — poll, system notification,
+        Record-now / Not-this-meeting actions — can be verified on demand
+        instead of waiting for a real calendar event. The key is unique per
+        call, so accepting or dismissing one test never debounces the next;
+        the accept path will try to start a real recording, exactly as a
+        real nudge would.
+        """
+        now = self._now()
+        self._pending = {
+            "id": f"cal-test-{int(now)}",
+            "kind": "calendar",
+            "title": f"“{title}” is starting",
+            "body": "Join and start recording?",
+            "meeting_title": title,
+        }
+        self._pending_at = now
+        return self._pending
+
     def _calendar_nudge(self, now):
         event = self._calendar_event()
         if not event:

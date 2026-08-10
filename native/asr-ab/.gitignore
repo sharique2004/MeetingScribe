@@ -1,0 +1,13 @@
+# Per-fixture transcripts and divergent-span dumps. These are VERBATIM PRIVATE
+# SPEECH from real meetings — the aggregate numbers in results/*.json are
+# pseudonym-keyed and safe to commit, these are not, ever.
+results/transcripts/
+results/.tmp-*.json
+results/rss/
+
+# AMI manual word annotations (ami_public_manual_1.6.2, CC-BY). Third-party and
+# bulky; re-downloadable from the official corpus mirror — see PROTOCOL.md §5.
+refs/
+
+# CoreML checkpoints downloaded by fluid-transcribe (large, re-fetched on demand)
+models/

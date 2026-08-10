@@ -17,12 +17,22 @@ enum MSFont {
     static let body = Font.system(size: 15)
     /// 15pt section headings — same size, weight is the hierarchy.
     static let sectionHeading = Font.system(size: 15, weight: .semibold)
-    /// 17pt regular lead — light weight at large size reads as warmth.
-    static let lead = Font.system(size: 17)
+    /// 20pt regular lead under a display line (the Today stat sentence).
+    static let displayLead = Font.system(size: 20)
     /// 26pt semibold serif page title.
     static let pageTitle = Font.system(size: 26, weight: .semibold, design: .serif)
-    /// 34pt greeting — the app speaking, so SF, not serif.
-    static let greeting = Font.system(size: 34, weight: .semibold)
+    /// 40pt expanded display — the greeting, and nothing else at this size.
+    /// The width axis is the drama: almost nobody ships SF Expanded, so it
+    /// reads as a custom cut while staying native. Pair with tracking(-0.8).
+    static let display = Font.system(size: 40, weight: .semibold).width(.expanded)
+    /// Hero numerals (Today stat, talk share, HUD elapsed): SF Rounded, the
+    /// one-off that used to live inline in TodayPage promoted to a token.
+    static let numeral = Font.system(size: 20, weight: .semibold, design: .rounded)
+    // The HUD pill's own three voices — it had fourteen raw font calls and
+    // zero tokens, which is how a surface drifts off-system.
+    static let hudLabel = Font.system(size: 12, weight: .semibold)
+    static let hudBody = Font.system(size: 12.5)
+    static let hudCaption = Font.system(size: 11)
     /// Spoken words: New York 15/25.
     static let spoken = Font.system(size: 15, design: .serif)
     /// Unfolded evidence: New York 14/22.

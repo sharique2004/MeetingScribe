@@ -123,7 +123,18 @@ struct LivePage: View {
                 .documentMeasure()
                 .padding(.bottom, 112)
             }
-            .background(MS.content)
+            // The meeting happens under the sky: the same field as the rail and
+            // the Today band, in phase with both, at the lowest dose of the
+            // three. Nothing in this window is a document being read — it is
+            // notes being taken while something is happening — so the weather
+            // is allowed all the way across it, and content underneath keeps
+            // every ink measured against a surface, not against the mesh.
+            .background {
+                ZStack {
+                    MS.content
+                    MSAuroraField(strength: 0.45).msGrain()
+                }
+            }
             .onChange(of: center.sentNotes.count) {
                 withAnimation(Motion.seek) { proxy.scrollTo("live-composer", anchor: .bottom) }
             }
@@ -158,7 +169,7 @@ struct LivePage: View {
                 ForEach(Array(notes.enumerated()), id: \.offset) { _, note in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Image(systemName: "info.circle")
-                            .font(.system(size: 10))
+                            .font(MSFont.kicker)
                             .foregroundStyle(MS.ink4)
                         Text(note)
                             .font(MSFont.meta)

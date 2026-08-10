@@ -1,0 +1,50 @@
+{
+ "arm": "mlx-fp",
+ "tag": "flacw",
+ "baseline_arm": "mlx-fp",
+ "protocol": "native/asr-ab/PROTOCOL.md",
+ "complete_run": false,
+ "evidence_class": "SMOKE",
+ "normalization": {
+  "raw": "lowercase, strip punctuation",
+  "normalized": "raw + digits spelled out, apostrophes and hyphens dissolved"
+ },
+ "degenerate_floors": {
+  "empty_transcript_wer_pct": 100.0,
+  "non_determinism": "results/mlx-fp-rerun.json"
+ },
+ "rows": {
+  "Room W": {
+   "track": "mic",
+   "corpus": "real",
+   "audio_seconds": 6651.84,
+   "elapsed_seconds": 158.73,
+   "rtf": 41.91,
+   "segments": 923,
+   "words": 12767,
+   "chars": 64991,
+   "divergence_pct": 0.0,
+   "divergence_detail": {
+    "rate": 0.0,
+    "sub": 0,
+    "del": 0,
+    "ins": 0,
+    "ref_len": 12767,
+    "hyp_len": 12767,
+    "approx_regions": 0
+   },
+   "divergence_normalized_pct": 0.0,
+   "word_time": {
+    "median_ms": 0.0,
+    "p95_ms": 0.0,
+    "agreeing_words": 12767
+   },
+   "spans_dumped": 0,
+   "audio_container": ".flac",
+   "wall_seconds": 160.9,
+   "peak_rss_mb": 615.1,
+   "peak_footprint_mb": 4485.0,
+   "repo": "mlx-community/parakeet-tdt-0.6b-v2"
+  }
+ }
+}

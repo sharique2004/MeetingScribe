@@ -72,7 +72,7 @@ struct SpeakerRibbon: View {
                 Spacer(minLength: 0)
                 if hovering {
                     Text("Click a name to rename")
-                        .font(.system(size: 10))
+                        .font(MSFont.kicker.weight(.regular))
                         .foregroundStyle(MS.ink4)
                         .transition(.opacity)
                 }
@@ -108,7 +108,7 @@ private struct SpeakerLaneRow: View {
                     Circle().fill(lane.color).frame(width: 6, height: 6)
                     TextField("Speaker", text: $name)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(MSFont.meta.weight(.medium))
                         .foregroundStyle(MS.ink)
                         .lineLimit(1)
                         .focused($editing)
@@ -138,7 +138,7 @@ private struct SpeakerLaneRow: View {
 
             if !lane.insight.isEmpty {
                 Text(lane.insight)
-                    .font(.system(size: 10.5))
+                    .font(MSFont.kicker.weight(.regular))
                     .foregroundStyle(MS.ink3)
                     .padding(.leading, 11)   // under the name, past the identity dot
             }

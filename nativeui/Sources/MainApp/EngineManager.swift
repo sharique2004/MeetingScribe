@@ -44,9 +44,25 @@ final class EngineManager: ObservableObject {
     /// answering, so by the time a death is CONFIRMED nothing is recording
     /// any more. The question a death has to ask is about the recent past.
     var wasRecordingRecently: () -> Bool = { false }
+    /// A meeting was being recorded when the engine died, and the watchdog
+    /// brought the engine back by itself — so `state` returns to .running and
+    /// the failure banner that would have explained it never appears. Fired
+    /// once per such death, for whoever owns a surface that is always visible.
+    var onLostRecording: (() -> Void)?
 
     private let dataDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".meetingscribe")
+
+    /// How many times the watchdog quietly puts the engine back before it
+    /// gives up and hands the failure to the user, and how long it waits in
+    /// between. Three attempts is enough to ride out the two deaths that
+    /// actually happen — a helper that took the interpreter down with it, and
+    /// an OOM under a transcription — without turning a genuinely broken
+    /// install into a restart loop the user cannot see or stop.
+    private let autoRestartAttempts = 3
+    private let autoRestartGap: UInt64 = 5_000_000_000
+    /// When the watchdog last brought the engine back by itself. See recover.
+    private var recoveredAt: Date?
 
     func ensureRunning() async {
         if await healthy() {
@@ -57,15 +73,26 @@ final class EngineManager: ObservableObject {
         spawn()
     }
 
-    /// Start again after a death (or after a failed start). Adopts an engine
-    /// that came back on its own, spawns one otherwise.
+    /// Start again after a death (or after a failed start), because the user
+    /// asked. Adopts an engine that came back on its own, spawns one otherwise.
     func restart() async {
         monitorTask?.cancel()
         monitorTask = nil
+        // The user has read the banner; the death it described is now theirs
+        // to have seen. Only this path clears it — and their restart earns the
+        // watchdog its one automatic save back.
+        lostRecording = false
+        recoveredAt = nil
+        await relaunch()
+    }
+
+    /// The restart itself, without touching the monitor task — so the watchdog
+    /// can use the very same path from inside its own loop without cancelling
+    /// itself halfway through the thing it is doing.
+    private func relaunch() async {
         if let process, process.isRunning { process.terminate() }
         process = nil
         spawnedByUs = false
-        lostRecording = false
         state = .checking
         await ensureRunning()
     }
@@ -92,12 +119,79 @@ final class EngineManager: ObservableObject {
                 misses += 1
                 guard misses >= 3 else { continue }
                 guard !Task.isCancelled, self.state == .running else { return }
-                self.lostRecording = self.wasRecordingRecently()
-                self.state = .failed(self.deathMessage())
+                // A death used to end here, in a banner asking the user to
+                // press a button the app could perfectly well press itself.
+                if await self.recover() {
+                    misses = 0
+                    continue          // back on its feet, and still watched
+                }
+                guard !Task.isCancelled else { return }
                 self.monitorTask = nil
                 return
             }
         }
+    }
+
+    /// The engine stopped answering. Put it back before telling anyone.
+    ///
+    /// Returns true when the engine is running again — in which case the
+    /// caller keeps its post, because a watchdog that stops watching after the
+    /// first save is a watchdog for exactly one death.
+    private func recover() async -> Bool {
+        // Both readings are taken HERE, at the death: fifteen seconds of
+        // retries would push the recording out of the window
+        // `wasRecordingRecently` looks back over, and a `process` that gets
+        // replaced by the first attempt can no longer say how it exited.
+        let lost = wasRecordingRecently()
+        let why = deathMessage()
+        // An engine that dies again within a minute of being revived is not
+        // having a blip, it is failing on startup in slow motion — and quietly
+        // restarting it forever would be an invisible loop the user can
+        // neither see nor stop. One save per engine, then it is their call.
+        if let recoveredAt, Date().timeIntervalSince(recoveredAt) < 60 {
+            lostRecording = lost
+            state = .failed(why + " It was restarted a moment ago and stopped again.")
+            return false
+        }
+        for attempt in 1...autoRestartAttempts {
+            // A user-driven restart cancels this task. It owns the engine from
+            // that moment; stop here rather than spawn a second one behind it
+            // or overwrite the state it is setting.
+            guard !Task.isCancelled else { return true }
+            await relaunch()
+            if await settled() {
+                recoveredAt = Date()
+                if lost { onLostRecording?() }
+                // Nothing is on screen to carry this any more: the banner it
+                // captions is gone with the failure. It was reported above.
+                lostRecording = false
+                return true
+            }
+            guard !Task.isCancelled else { return true }
+            if attempt < autoRestartAttempts {
+                try? await Task.sleep(nanoseconds: autoRestartGap)
+            }
+        }
+        // Three attempts and it is still not answering: this is not a blip,
+        // and the user's Mac is the only place it can be fixed now. Say that
+        // the app already tried, so the banner's Restart button is offered as
+        // one more go rather than as the thing nobody thought to do.
+        lostRecording = lost
+        state = .failed(why + " Restarting it three times didn't bring it back.")
+        return false
+    }
+
+    /// Wait for a relaunch to declare itself. `spawn` reports its outcome
+    /// through `state`, from a task of its own, so the answer is read there
+    /// rather than raced with a second health poll of our own.
+    private func settled() async -> Bool {
+        for _ in 0..<90 {          // 45s; spawn allows the engine 30 to come up
+            if state == .running { return true }
+            if case .failed = state { return false }
+            if Task.isCancelled { return state == .running }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        return state == .running
     }
 
     private func deathMessage() -> String {
@@ -161,11 +255,26 @@ final class EngineManager: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["MEETINGSCRIBE_DATA"] = dataDir.path
         env["MEETINGSCRIBE_NO_BROWSER"] = "1"
+        // Never write .pyc files: the bundled runtime lives inside the signed,
+        // read-only .app and its resource seal must survive execution.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        // A crash report that is still sitting in a 4 KB stdio buffer when the
+        // process dies is a crash report nobody ever reads. The last thing the
+        // engine says before it goes is the one line worth having.
+        env["PYTHONUNBUFFERED"] = "1"
         if let bin = Bundle.main.resourceURL?.appendingPathComponent("bin"),
            FileManager.default.fileExists(atPath: bin.path) {
             env["MEETINGSCRIBE_PREBUILT"] = bin.path
         }
         p.environment = env
+        // Both streams to one file, appended. Until now they went to the
+        // parent's stdout — which for a double-clicked .app is /dev/null — so
+        // "the engine quit unexpectedly (exit code 1)" was the entire account
+        // of every failure this app has ever had, and the traceback that would
+        // have explained it was discarded as it was written.
+        let logHandle = engineLog()
+        p.standardOutput = logHandle ?? FileHandle.nullDevice
+        p.standardError = logHandle ?? FileHandle.nullDevice
         do {
             try p.run()
         } catch {
@@ -191,6 +300,33 @@ final class EngineManager: ObservableObject {
             }
             state = .failed("The engine didn't come up in time.")
         }
+    }
+
+    /// ~/.meetingscribe/app.log, open for appending, rolled once it gets big.
+    ///
+    /// One generation back (app.log.1) and a 20 MB ceiling: enough to still
+    /// hold the death that happened this morning, little enough that a chatty
+    /// engine left running for a month cannot quietly eat someone's disk —
+    /// which on a machine that also stores hours of uncompressed audio is not
+    /// a hypothetical.
+    private func engineLog() -> FileHandle? {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dataDir, withIntermediateDirectories: true)
+        let url = dataDir.appendingPathComponent("app.log")
+        if let attrs = try? fm.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? Int, size > 20 * 1024 * 1024 {
+            let rolled = dataDir.appendingPathComponent("app.log.1")
+            try? fm.removeItem(at: rolled)
+            try? fm.moveItem(at: url, to: rolled)
+        }
+        if !fm.fileExists(atPath: url.path) {
+            fm.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
+        // Appending, not truncating: the previous run's last words are the
+        // most useful thing in the file the moment this run starts.
+        handle.seekToEndOfFile()
+        return handle
     }
 
     /// Whether an interpreter exists at all, so onboarding knows if the
