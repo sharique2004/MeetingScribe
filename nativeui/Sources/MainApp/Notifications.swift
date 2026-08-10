@@ -32,6 +32,8 @@ private let readyCategory = "MS_TRANSCRIPT"
 private let openActionID = "MS_OPEN"
 private let nudgeIDKey = "nudge_id"
 private let nudgeCategory = "MS_NUDGE"
+private let updateVersionKey = "update_version"
+private let updateCategory = "MS_UPDATE"
 // Spelled exactly as the legacy shell spelled them: these strings are the
 // contract, and a renamed action is an action macOS silently never delivers.
 private let recordNowActionID = "RECORD_NOW"
@@ -86,10 +88,16 @@ enum MSNotifications {
                                           title: "Record now", options: [.foreground])
         let snooze = UNNotificationAction(identifier: snoozeActionID,
                                           title: "Not this meeting")
+        // The update notice has no actions, and should not: there is exactly
+        // one thing to do with it, the banner body already says so, and a
+        // "Download" button beside a banner whose whole text is "click to
+        // download" is a second way to press the same thing.
         center.setNotificationCategories([
             UNNotificationCategory(identifier: readyCategory, actions: [open],
                                    intentIdentifiers: []),
             UNNotificationCategory(identifier: nudgeCategory, actions: [record, snooze],
+                                   intentIdentifiers: []),
+            UNNotificationCategory(identifier: updateCategory, actions: [],
                                    intentIdentifiers: []),
         ])
     }
@@ -256,6 +264,38 @@ enum MSNotifications {
     /// same identifier space (see postTranscriptReady).
     private static func nudgeRequestID(_ id: String) -> String { "nudge-\(id)" }
 
+    /// A newer MeetingScribe exists.
+    ///
+    /// The quietest thing this file posts, and the only one that is not about
+    /// a meeting: no sound, .passive, so it lands in Notification Center
+    /// without taking the screen. The two banners above interrupt because they
+    /// are worth minutes; a release is worth a day, and one that shouts over a
+    /// call would make the two that matter easier to ignore.
+    ///
+    /// UpdateChecker posts this at most once per version, ever — see
+    /// notifyOnce, which is where that promise is kept, not here.
+    static func postUpdateAvailable(version: String) {
+        guard usable, !version.isEmpty else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "MeetingScribe \(version) is available"
+        // What the user is actually deciding, which is not "shall I read a
+        // changelog" but "is this safe": a local-first recorder's update is
+        // frightening in exactly one way, and the answer is one clause long.
+        content.body = "Click to download it. Your meetings and settings stay where they are."
+        content.categoryIdentifier = updateCategory
+        content.userInfo = [updateVersionKey: version]
+        content.threadIdentifier = updateCategory
+        content.interruptionLevel = .passive
+        // One identifier for all versions, not one per version: the only thing
+        // worse than an unread update banner is two of them, and if 3.3 ships
+        // while the 3.2 notice is still sitting in Notification Center the
+        // newer one should REPLACE it rather than queue behind a notice that
+        // is now wrong.
+        let request = UNNotificationRequest(identifier: "update-available",
+                                            content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     // MARK: - Clicks
 
     /// Bring the app forward and ask for this meeting.
@@ -342,6 +382,18 @@ private final class MSNotificationDelegate: NSObject, UNUserNotificationCenterDe
         // value across the isolation boundary for no gain.
         let info = response.notification.request.content.userInfo
         let action = response.actionIdentifier
+        if info[updateVersionKey] != nil {
+            // Straight to the download, not into the app: the app the user
+            // would be brought forward into is the old one, and the thing the
+            // banner offered lives on the web. Only a real click counts —
+            // sweeping the banner out of Notification Center is housekeeping,
+            // and housekeeping must not open a browser.
+            if action == UNNotificationDefaultActionIdentifier {
+                Task { @MainActor in UpdateChecker.openDownload() }
+            }
+            completionHandler()
+            return
+        }
         if let nudgeID = info[nudgeIDKey] as? String {
             Task { @MainActor in MSNotifications.handleNudge(action: action, id: nudgeID) }
             completionHandler()

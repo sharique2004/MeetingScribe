@@ -216,6 +216,9 @@ struct SettingsView: View {
                 Rectangle().fill(MS.hairline).frame(height: 1)
                     .padding(.vertical, 26)
                 VoicesSection(settings: settings)
+                Rectangle().fill(MS.hairline).frame(height: 1)
+                    .padding(.vertical, 26)
+                VersionFooter()
             }
             .frame(maxWidth: 640, alignment: .leading)
             .padding(.horizontal, 34)
@@ -780,6 +783,49 @@ private struct VoicesSection: View {
                 try? await API.deleteVoiceProfile(profile.id)
             }
             await reload()
+        }
+    }
+}
+
+// MARK: - Which MeetingScribe this is
+
+/// The app's own version, and the one place in the interface where a newer one
+/// can be found without opening a menu.
+///
+/// A footer rather than a section: it is not a setting, nobody arrives in
+/// Settings to read it, and the whole point is that it is simply THERE —
+/// underneath the last thing on the page, quiet, for the user who dismissed
+/// the update banner three weeks ago and now wants the number back. One row,
+/// meta type, quiet ink, and exactly one accented thing on it when there is
+/// something worth accenting.
+private struct VersionFooter: View {
+    @ObservedObject private var updates = UpdateChecker.shared
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("MeetingScribe \(UpdateChecker.currentVersion)")
+                .font(MSFont.meta)
+                .foregroundStyle(MS.ink3)
+                .textSelection(.enabled)
+
+            if case .available(let version, _, _) = updates.state {
+                // The accent is the entire signal, and it is enough: mint is
+                // this app's word for "clickable" everywhere else (every
+                // timestamp in a transcript), and on this screen it otherwise
+                // appears only on a switch that is on. No badge, no banner, no
+                // card — a settings footer that grew a coloured box would be
+                // shouting from the quietest corner of the app.
+                Button { UpdateChecker.openDownload() } label: {
+                    Text("Update to \(version) available — Download")
+                        .font(MSFont.meta.weight(.medium))
+                        .foregroundStyle(MS.interactive)
+                }
+                .buttonStyle(PressStyle())
+                .help("Opens the MeetingScribe download in your browser. "
+                    + "Your meetings and settings stay where they are.")
+            }
+
+            Spacer(minLength: 0)
         }
     }
 }

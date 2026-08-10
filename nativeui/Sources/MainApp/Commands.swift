@@ -62,6 +62,7 @@
 //       .onMSMeetingChange { id in … }
 //
 import SwiftUI
+import AppKit
 import Combine
 
 // MARK: - Commands
@@ -256,6 +257,16 @@ struct MeetingScribeCommands: Commands {
 
     var body: some Commands {
         // ── MeetingScribe ───────────────────────────────────────────────
+        // Directly under "About MeetingScribe", where every Mac app that
+        // updates itself puts this — and this one has to, because nothing
+        // else does: the app arrives as a DMG off GitHub Releases, so a copy
+        // that is a year old has never been told and has never been asked.
+        // See UpdateChecker for the automatic half; this is the half a user
+        // reaches for when they have heard a fix exists.
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { checkForUpdates() }
+        }
+
         // Settings is a route in the main window, not a scene, so the app
         // menu's own item has to be replaced: without a `SwiftUI.Settings`
         // scene macOS leaves a "Settings…" that opens nothing.
@@ -440,6 +451,60 @@ struct MeetingScribeCommands: Commands {
                 .disabled(!ctx.hasTranscript)
             Button("Undo Tidy") { bus.send(.undoTidy) }
                 .disabled(!ctx.canUndoTidy)
+        }
+    }
+
+    /// The manual check, answered out loud — every time, including the boring
+    /// answer and the failed one.
+    ///
+    /// A menu item that silently does nothing is indistinguishable from a
+    /// broken one, and this item is pressed precisely by someone who wants to
+    /// be TOLD. "You're up to date" is the most common outcome and the one it
+    /// would be most tempting to swallow; swallowing it is what makes a person
+    /// press the item twice and then go and look at the website anyway.
+    ///
+    /// NSAlert rather than a SwiftUI `.alert`: a Commands body is not a view,
+    /// it owns no window to attach a sheet to and has nowhere to keep the
+    /// @State a presentation binding needs. MainAppDelegate already makes the
+    /// same choice for the quit refusal, for the same reason. The command
+    /// itself is not an MSCommand either — it acts on the app, not on whatever
+    /// meeting is selected, which is what the contract at the top of this file
+    /// says an MSCommand is for.
+    @MainActor
+    private func checkForUpdates() {
+        Task {
+            let state = await UpdateChecker.shared.checkNow()
+            let alert = NSAlert()
+            // A menu item can be picked with the app behind something else,
+            // and a modal on an inactive app is a beachball nobody can find.
+            NSApp.activate()
+            switch state {
+            case .available(let version, let notes, _):
+                alert.messageText = "MeetingScribe \(version) is available."
+                let excerpt = UpdateChecker.notesExcerpt(notes)
+                alert.informativeText = excerpt.isEmpty
+                    ? "You have \(UpdateChecker.currentVersion). "
+                        + "Downloading opens the disk image in your browser."
+                    : excerpt
+                alert.addButton(withTitle: "Download Update")
+                alert.addButton(withTitle: "Later")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    UpdateChecker.openDownload()
+                }
+                return
+            case .upToDate(let current):
+                alert.messageText = "You're up to date"
+                alert.informativeText = "MeetingScribe \(current) is the newest version."
+            case .failed(let message):
+                alert.messageText = "Couldn't check for updates"
+                alert.informativeText = message
+            case .checking:
+                // Unreachable: checkNow only returns once an answer has
+                // settled. Saying nothing is still better than a blank alert.
+                return
+            }
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
         }
     }
 }

@@ -52,6 +52,13 @@ final class MainAppDelegate: NSObject, NSApplicationDelegate {
         // The engine died under a live meeting and the watchdog quietly put it
         // back, so no failure banner will be left on screen to say so. The
         // pill is the one surface that is always there to say it instead.
+        // The app arrives as a DMG and nothing has ever updated it. This looks
+        // once, a few seconds from now — never on this tick, where it would be
+        // a network round trip standing between the user and their window —
+        // and then once a day. See UpdateChecker for what it does and does not
+        // send.
+        UpdateChecker.shared.start()
+
         EngineManager.shared.onLostRecording = {
             center.alert = RecorderAlert(
                 kind: .lost,
