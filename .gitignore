@@ -63,3 +63,11 @@ recordings
 
 # iOS simulator build output
 ios/.build/
+
+# The syscap spike's local artifacts. The capture is a raw system-audio
+# recording from this machine and the binary is a build product — in a
+# public repo, neither may ever ride along on a broad `git add`. The spike's
+# SOURCE (syscap_spike.swift) stays addable.
+native/syscap-spike/capture.wav
+native/syscap-spike/syscap-spike
+*.bak
