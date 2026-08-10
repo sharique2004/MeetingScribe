@@ -1,21 +1,26 @@
 """Speaker diarization: figure out who spoke when by clustering voice-prints.
 
-Uses the ungated speechbrain ECAPA-TDNN speaker-embedding model (downloads
-automatically on first use, no account or token needed) plus agglomerative
-clustering. No cloud calls — everything runs locally.
+Uses the ungated speechbrain ECAPA-TDNN speaker-embedding model — the same
+checkpoint as ever, exported to a single ONNX graph and run by onnxruntime on
+the CPU (see _get_embedder) — plus agglomerative clustering. The model ships
+INSIDE the app instead of downloading; config.seed_ecapa_onnx() puts it where
+this file reads it. No cloud calls — everything runs locally.
 """
 
+import hashlib
 import logging
 import math
-import sys
+import os
+import subprocess
+import threading
 
 import numpy as np
 
 from config import (
-    MODELS_DIR,
+    ECAPA_ONNX_PATH,
+    ECAPA_ONNX_SHA256,
     ModelDownloadError,
-    ensure_hf_files,
-    hf_download_plan,
+    seed_ecapa_onnx,
 )
 
 log = logging.getLogger("meetingscribe.diarization")
@@ -217,9 +222,39 @@ FOLD_MAX_DURATION_RATIO = 0.50
 # Version 1 IS the behaviour shipped up to and including this revision. Caches
 # written before the marker existed were produced by exactly this behaviour, so
 # a MISSING marker is read as version 1 (see pipeline.recluster_meeting).
+#
+# THE TORCH -> ONNXRUNTIME SWAP DELIBERATELY DID NOT BUMP THIS, and the reason
+# is measurement, not optimism: it is the same checkpoint through the same
+# arithmetic, so the values are the same values. Re-embedding the 595 windows
+# behind a shipped analysis.npz and comparing against that cache gives max
+# element drift 1.5e-6 on unit-norm vectors, nearest-neighbour ordering
+# unchanged for 595 of 595 windows, and identical agglomerative labels at
+# k=2..6 — i.e. nothing cluster() can see moved. Bumping would have thrown away
+# every cached embedding in the corpus to recompute the same numbers.
 EMBED_VERSION = 1
 
+
+# --- The embedder ------------------------------------------------------------
+# ONE onnxruntime session on the CPU, built once per process. It replaced
+# speechbrain-on-torch, which was 2.5 GB of install (torch + torchaudio +
+# speechbrain) for one 84 MB model, and this is the only thing that used them.
+#
+# THE WEIGHTS ARE UNCHANGED. tools/export_ecapa_onnx.py traces the real
+# speechbrain modules out of the same checkpoint into one graph; see
+# EMBED_VERSION above for the parity measurement that says so.
+#
+# WHY THE DEVICE PICK AND THE GPU FALLBACK ARE GONE. The old code ran on MPS
+# and fell back to torch-CPU, which was 78x slower — 595 windows in 4.5 s on
+# MPS against 351 s on CPU, a cliff worth a log line screaming about. ort-CPU
+# does those same 595 windows in 15.4-16.7 s at 4 threads. There is no GPU path
+# to lose any more and nothing to fall back FROM, so a failure here is just a
+# failure: pipeline's caller turns it into "everyone shares one label" and the
+# meeting completes (see diarize_track's callers in pipeline._label_and_assemble).
 _EMBEDDER = None
+# Built under a lock because two meetings can process concurrently, each on its
+# own request thread. Only the BUILD is serialised: InferenceSession.run is
+# thread-safe and is what the concurrency is actually for.
+_EMBEDDER_LOCK = threading.Lock()
 
 
 def load_mono_16k(path):
@@ -235,148 +270,154 @@ def load_mono_16k(path):
     return np.ascontiguousarray(mono, dtype=np.float32)
 
 
-def _pick_device():
-    """Apple-GPU (MPS) when available — the voice embeddings are the last
-    CPU-heavy step, and moving them to the GPU keeps the laptop cool."""
-    try:
-        import torch
-
-        if sys.platform == "darwin" and torch.backends.mps.is_available():
-            return "mps"
-    except Exception:
-        pass
-    return "cpu"
-
-
-ECAPA_REPO = "speechbrain/spkrec-ecapa-voxceleb"
-# The files EncoderClassifier.from_hparams pulls for this checkpoint:
-# hyperparams.yaml names the other four in its pretrainer block. Listed here so
-# the download can be counted and reported BEFORE speechbrain starts fetching
-# them one silent file at a time; embedding_model.ckpt is 83 MB of the 89.
-# Anything speechbrain wants that is not here still downloads, just without
-# progress, and anything here that a future checkpoint drops is skipped on 404.
-ECAPA_FILES = ("hyperparams.yaml", "embedding_model.ckpt",
-               "mean_var_norm_emb.ckpt", "classifier.ckpt", "label_encoder.txt")
 ECAPA_LABEL = "the speaker model"
 
 
-def _ecapa_savedir():
-    return MODELS_DIR / "ecapa"
+def _intra_op_threads():
+    """How many threads the session gets.
 
-
-def _copy_skip_cache():
-    """speechbrain's COPY_SKIP_CACHE strategy, or None when it has no such
-    concept. Plain copies instead of symlinks — creating symlinks on Windows
-    requires admin rights and fails with WinError 1314."""
-    try:
-        from speechbrain.utils.fetching import LocalStrategy
-    except ImportError:  # speechbrain < 1.0
-        return None
-    return LocalStrategy.COPY_SKIP_CACHE
-
-
-def _ecapa_where(strategy):
-    """Where this speechbrain will put the files, as hf_hub_download kwargs.
-
-    COPY_SKIP_CACHE means it downloads STRAIGHT INTO savedir (it passes
-    local_dir=savedir), bypassing the shared HuggingFace cache; without it the
-    files land in the cache under HF_HOME and are copied out. The prefetch has
-    to aim at whichever of the two the load will read, or the "already
-    downloaded" files are in the wrong place and the user pays twice.
+    The PERFORMANCE cores, not every core. An M-series reports its efficiency
+    cores in hw.logicalcpu too (this M4: 10 logical = 4 performance + 6
+    efficiency), and handing ort all ten makes every batch wait on the slow
+    six. 4 threads is also what the benchmark behind this port measured:
+    595 windows in 15.4-16.7 s.
     """
-    if strategy is not None:
-        return {"local_dir": str(_ecapa_savedir())}
-    return {}
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.perflevel0.logicalcpu"],
+            capture_output=True, text=True, timeout=5, check=True).stdout
+        n = int(out.strip())
+        if n > 0:
+            return n
+    except Exception:  # noqa: BLE001 — not macOS, no sysctl, odd output
+        pass
+    # Everywhere else: half the logical cores, which is the same "skip the
+    # hyperthreads/small cores" guess without a way to ask.
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+def _sha256_file(path):
+    """The file's digest. config._sha256 is the same loop — what must not be
+    duplicated is the CONSTANT, and that is imported from config, not retyped."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _verified_model_path():
+    """The ecapa.onnx this build is allowed to load, or ModelDownloadError.
+
+    NOTHING IS DOWNLOADED HERE. The model rides inside the app bundle and
+    config.seed_ecapa_onnx() installs it at ECAPA_ONNX_PATH on startup; the
+    call below is that same seeding, retried at the point of use because the
+    two entry points that matter most never run app.py's startup — the
+    tools/embed_worker.py subprocess and the test/eval harnesses.
+
+    THE HASH IS CHECKED HERE, ONCE PER PROCESS, not at seed time. Seeding
+    verifies before it copies, and then deliberately never re-hashes an
+    installed model on later launches; this is the other half of that bargain,
+    so a file that was swapped, truncated or left behind by an older build
+    cannot reach onnxruntime. It costs 0.05 s for 84 MB — measured on this M4,
+    against ~16 s of embedding it gates.
+
+    IT RAISES ModelDownloadError, whose name is now half wrong since nothing
+    downloads — but whose CHANNEL is exactly right, which is why it is still
+    the one used. pipeline.diarize() has a dedicated arm for that type which
+    shows str(exc) to the user as the reason and labels the track with a single
+    speaker, and app.py's prefetch route treats it as user-facing copy. A plain
+    RuntimeError lands in the generic arm and is presented as an internal
+    failure, which a missing file with a one-command fix is not.
+    """
+    path = ECAPA_ONNX_PATH
+    if not path.exists():
+        seed_ecapa_onnx()
+    if not path.is_file():
+        raise ModelDownloadError(
+            f"The speaker model is missing. It normally ships inside the app, "
+            f"so a packaged install should never see this; a source checkout "
+            f"makes one with `python tools/export_ecapa_onnx.py` (dev-only, "
+            f"needs torch) or by copying ecapa.onnx out of a built "
+            f"MeetingScribe.app at Contents/Resources/models/ecapa.onnx. It "
+            f"belongs at {path}.")
+    digest = _sha256_file(path)
+    if digest != ECAPA_ONNX_SHA256:
+        # Self-heal before refusing: the mismatch is almost always an OLD
+        # model left behind by a previous build (the install path is not
+        # versioned; the pin moves with the app), and the correct copy is
+        # sitting in the bundle right now. Without this, the day the artifact
+        # is ever regenerated every existing install would fail this check on
+        # every meeting, forever, with the models page still showing green —
+        # a landmine this function would otherwise plant and never defuse.
+        path.unlink(missing_ok=True)
+        seed_ecapa_onnx()
+        if path.is_file() and _sha256_file(path) == ECAPA_ONNX_SHA256:
+            log.warning("speaker model at %s did not match this build "
+                        "(sha256 %s…); reinstalled the bundled copy", path,
+                        digest[:12])
+            return path
+        raise ModelDownloadError(
+            f"The speaker model at {path} is not the one this build expects "
+            f"(sha256 {digest[:12]}…, expected {ECAPA_ONNX_SHA256[:12]}…), "
+            f"and no good bundled copy was available to reinstall. Delete "
+            f"that file and reinstall MeetingScribe.")
+    return path
 
 
 def embedder_download_size():
     """(bytes still to download, bytes in total) for the speaker model.
 
-    (0, total) once it is on disk, (None, None) with no network. Lets a caller
-    show a real total before committing the user to the wait.
+    (0, 0) — ALWAYS, and honestly: the model is bundled, so there is no
+    download to size and none to wait for. Kept as the uniform answer for a
+    caller that sizes every model the same way (pipeline.model_download_sizes
+    still asks; app.py's survey no longer does — _speaker_spec sets
+    "plan": None), and "nothing to fetch" is what such a caller needs to hear.
     """
-    return hf_download_plan(ECAPA_REPO, ECAPA_FILES,
-                            **_ecapa_where(_copy_skip_cache()))
-
-
-def _load_embedder(device, progress_cb=None):
-    try:
-        from speechbrain.inference.speaker import EncoderClassifier
-    except ImportError:  # speechbrain < 1.0
-        from speechbrain.pretrained import EncoderClassifier
-    # speechbrain 1.1 sets self.device_type only for cpu/cuda and then reads
-    # it unconditionally (its autocast context), so "mps" crashes the init.
-    # A class-level default fills the gap; modules still land on self.device.
-    if not hasattr(EncoderClassifier, "device_type"):
-        EncoderClassifier.device_type = "cpu"
-    kwargs = {
-        "source": ECAPA_REPO,
-        "savedir": str(_ecapa_savedir()),
-        "run_opts": {"device": device},
-    }
-    # Fetch first, report the megabytes, THEN hand a fully cached directory to
-    # speechbrain: from_hparams reports nothing at all while it downloads, and
-    # on a fresh install this is 89 MB of dead air.
-    strategy = _copy_skip_cache()
-    if strategy is not None:
-        _prefetch_ecapa(progress_cb, strategy)
-        try:
-            return EncoderClassifier.from_hparams(local_strategy=strategy, **kwargs)
-        except TypeError:  # from_hparams predates the local_strategy argument
-            pass
-    _prefetch_ecapa(progress_cb, None)
-    return EncoderClassifier.from_hparams(**kwargs)
-
-
-def _prefetch_ecapa(progress_cb, strategy, bytes_cb=None):
-    return ensure_hf_files(ECAPA_REPO, ECAPA_FILES, label=ECAPA_LABEL,
-                           progress_cb=progress_cb, bytes_cb=bytes_cb,
-                           **_ecapa_where(strategy))
+    return 0, 0
 
 
 def download_speaker_model(progress_cb=None):
-    """Fetch the speaker model NOW, into the folder _load_embedder reads.
+    """Put the speaker model in place NOW. Returns 0 bytes; nothing downloads.
 
-    For a caller that wants the download to happen somewhere the user expects a
-    wait (onboarding) rather than in the middle of their first meeting. Returns
-    the bytes downloaded, raises ModelDownloadError, and is idempotent and cheap
-    once the model is on disk.
-
-    progress_cb(done_bytes, total_bytes, label): the numeric form, for a caller
-    drawing its own bar. Use _prefetch_ecapa / the pipeline path for the
-    one-string form.
+    Onboarding's fetch hook. All it can do is the bundle copy — the same
+    idempotent config.seed_ecapa_onnx() the loader and app startup call — so
+    the byte count it returns is 0 and progress_cb is never called: there is no
+    transfer to report. Raises ModelDownloadError when the model cannot be put
+    in place at all, because a fetch that quietly does nothing would leave the
+    UI saying "still missing" without ever saying why.
     """
-    return _prefetch_ecapa(None, _copy_skip_cache(), bytes_cb=progress_cb)
+    _verified_model_path()  # seeds from the bundle if needed, then verifies
+    return 0
 
 
 def _get_embedder(progress_cb=None):
-    global _EMBEDDER
-    if _EMBEDDER is None:
-        device = _pick_device()
-        try:
-            _EMBEDDER = _load_embedder(device, progress_cb)
-            if device != "cpu":  # prove the GPU path works before trusting it
-                import torch
+    """The onnxruntime session, built once and reused.
 
-                with torch.no_grad():
-                    _EMBEDDER.encode_batch(
-                        torch.zeros(1, EMBED_SR), wav_lens=torch.ones(1)
-                    )
-        except ModelDownloadError:
-            # A download that did not finish is not a GPU problem, and the CPU
-            # retry below would spend another three attempts arriving at the
-            # same answer. The message already says what to do.
-            raise
-        except Exception as exc:
-            if device == "cpu":
-                raise
-            # Loud on purpose: this fallback is 78x slower (595 windows:
-            # 4.5 s on MPS, 351 s on CPU) and peaks at 3.1 GB where MPS
-            # stays under 0.7 — a meeting still completes, but if this line
-            # appears in a log, THAT is why diarization crawled.
-            log.error("GPU (%s) embedder failed (%s); falling back to CPU — "
-                      "expect ~78x slower embedding and ~3 GB peak", device, exc)
-            _EMBEDDER = _load_embedder("cpu", progress_cb)
+    progress_cb is accepted and unused. It existed so a first meeting could
+    show an 89 MB download; the load is now a hash and a session init, 0.15 s
+    together on this M4, with nothing in it worth a line of UI.
+    """
+    global _EMBEDDER
+    if _EMBEDDER is not None:
+        return _EMBEDDER
+    with _EMBEDDER_LOCK:
+        if _EMBEDDER is None:
+            import onnxruntime as ort
+
+            path = _verified_model_path()
+            threads = _intra_op_threads()
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = threads
+            # CPU explicitly, not "whatever is installed": onnxruntime on macOS
+            # also offers CoreML, and this graph has never been measured there.
+            _EMBEDDER = ort.InferenceSession(
+                str(path), opts, providers=["CPUExecutionProvider"])
+            # Once per process, and it is the replacement for the old "GPU
+            # failed, falling back" line: thread count is now the only thing
+            # that explains a run that took far longer than it should have.
+            log.info("speaker embedder ready: onnxruntime CPU, %d thread(s)",
+                     threads)
     return _EMBEDDER
 
 
@@ -400,62 +441,66 @@ def build_windows(segments):
 
 
 def embed_windows(audio, windows, progress_cb=None):
-    """ECAPA embedding for each (start, end) window. Returns (N, D) L2-normalised."""
-    import torch
+    """ECAPA embedding for each (start, end) window. Returns (N, D) L2-normalised.
 
-    # progress_cb reaches the loader, not just the embedding loop: on a fresh
-    # install the first thing this call does is download 89 MB.
+    THE BATCHES ARE BUILT EXACTLY AS THEY ALWAYS WERE. The session takes the
+    same two arrays speechbrain's encode_batch took — wavs [B, T] float32 zero
+    padded to the batch's own longest member, wav_lens [B] float32 as fractions
+    of that length — because the ONNX graph IS speechbrain's encode_batch,
+    traced. Slicing, the MIN_WINDOW_S zero-fill, BATCH_SIZE, the float64 cast
+    and the L2 normalisation are all unchanged; anything altered here changes
+    embedding values and needs EMBED_VERSION bumped with it.
+    """
     model = _get_embedder(progress_cb)
     embeddings = []
     total = len(windows)
-    with torch.no_grad():
-        for batch_start in range(0, total, BATCH_SIZE):
-            batch = windows[batch_start : batch_start + BATCH_SIZE]
-            chunks = []
-            for (t0, t1) in batch:
-                # KNOWN OFF-BY-start_offset, DELIBERATELY NOT FIXED HERE.
-                # Window times are on the MEETING timeline: pipeline._apply_offset
-                # shifted this track's transcript by meta["tracks"][key]
-                # ["start_offset"] so the two tracks line up with each other.
-                # `audio` is the raw track WAV, whose samples start at 0. Slicing
-                # at t * EMBED_SR therefore reads each window start_offset seconds
-                # late; the arithmetically correct index is (t - start_offset).
-                #
-                # MEASURED MAGNITUDE: max 0.021 s across all 15 recordings
-                # (Call D, system track — meetings are named by the corpus
-                # pseudonyms in docs/DIARIZATION_AUDIT_ADDENDUM.md §0, the same
-                # labels tools/eval_diarization.py prints); mic tracks are 0.000 s
-                # on 14 of 15 and every other value is <= 0.016 s. That is about 1%
-                # of a 2.0 s window.
-                #
-                # WHY IT IS DEFERRED: correcting it changes embedding VALUES while
-                # leaving window COORDINATES byte-identical, so every already-cached
-                # analysis.npz stays perfectly loadable while silently disagreeing
-                # with freshly recomputed embeddings — the recluster path reads the
-                # cache, Reprocess recomputes, and the same meeting gets two
-                # different answers. It was also measured to flip the auto speaker
-                # count on 3 of 9 real meetings, including Call H going
-                # 1 -> 2 against a ground truth of 1 remote speaker: a regression.
-                #
-                # It belongs in the clustering wave, where embeddings are recomputed
-                # anyway. Doing it there means bumping EMBED_VERSION above, which
-                # forces every stale cache to be rebuilt instead of silently mixed.
-                i0, i1 = int(t0 * EMBED_SR), int(t1 * EMBED_SR)
-                chunk = audio[max(0, i0) : min(len(audio), i1)]
-                if len(chunk) < int(MIN_WINDOW_S * EMBED_SR):
-                    chunk = np.zeros(int(MIN_WINDOW_S * EMBED_SR), dtype=np.float32)
-                chunks.append(chunk)
-            max_len = max(len(c) for c in chunks)
-            wavs = torch.zeros(len(chunks), max_len)
-            lens = torch.zeros(len(chunks))
-            for i, c in enumerate(chunks):
-                wavs[i, : len(c)] = torch.from_numpy(np.ascontiguousarray(c))
-                lens[i] = len(c) / max_len
-            out = model.encode_batch(wavs, wav_lens=lens)
-            embeddings.append(out.squeeze(1).cpu().numpy())
-            if progress_cb and total > BATCH_SIZE:
-                done = min(batch_start + BATCH_SIZE, total)
-                progress_cb(f"Analyzing voices… {done}/{total}")
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = windows[batch_start : batch_start + BATCH_SIZE]
+        chunks = []
+        for (t0, t1) in batch:
+            # KNOWN OFF-BY-start_offset, DELIBERATELY NOT FIXED HERE.
+            # Window times are on the MEETING timeline: pipeline._apply_offset
+            # shifted this track's transcript by meta["tracks"][key]
+            # ["start_offset"] so the two tracks line up with each other.
+            # `audio` is the raw track WAV, whose samples start at 0. Slicing
+            # at t * EMBED_SR therefore reads each window start_offset seconds
+            # late; the arithmetically correct index is (t - start_offset).
+            #
+            # MEASURED MAGNITUDE: max 0.021 s across all 15 recordings
+            # (Call D, system track — meetings are named by the corpus
+            # pseudonyms in docs/DIARIZATION_AUDIT_ADDENDUM.md §0, the same
+            # labels tools/eval_diarization.py prints); mic tracks are 0.000 s
+            # on 14 of 15 and every other value is <= 0.016 s. That is about 1%
+            # of a 2.0 s window.
+            #
+            # WHY IT IS DEFERRED: correcting it changes embedding VALUES while
+            # leaving window COORDINATES byte-identical, so every already-cached
+            # analysis.npz stays perfectly loadable while silently disagreeing
+            # with freshly recomputed embeddings — the recluster path reads the
+            # cache, Reprocess recomputes, and the same meeting gets two
+            # different answers. It was also measured to flip the auto speaker
+            # count on 3 of 9 real meetings, including Call H going
+            # 1 -> 2 against a ground truth of 1 remote speaker: a regression.
+            #
+            # It belongs in the clustering wave, where embeddings are recomputed
+            # anyway. Doing it there means bumping EMBED_VERSION above, which
+            # forces every stale cache to be rebuilt instead of silently mixed.
+            i0, i1 = int(t0 * EMBED_SR), int(t1 * EMBED_SR)
+            chunk = audio[max(0, i0) : min(len(audio), i1)]
+            if len(chunk) < int(MIN_WINDOW_S * EMBED_SR):
+                chunk = np.zeros(int(MIN_WINDOW_S * EMBED_SR), dtype=np.float32)
+            chunks.append(chunk)
+        max_len = max(len(c) for c in chunks)
+        wavs = np.zeros((len(chunks), max_len), dtype=np.float32)
+        lens = np.zeros(len(chunks), dtype=np.float32)
+        for i, c in enumerate(chunks):
+            wavs[i, : len(c)] = c
+            lens[i] = len(c) / max_len
+        # [B, 192] already: the exported graph does encode_batch's squeeze(1).
+        embeddings.append(model.run(None, {"wavs": wavs, "wav_lens": lens})[0])
+        if progress_cb and total > BATCH_SIZE:
+            done = min(batch_start + BATCH_SIZE, total)
+            progress_cb(f"Analyzing voices… {done}/{total}")
     emb = np.concatenate(embeddings, axis=0).astype(np.float64)
     norms = np.linalg.norm(emb, axis=1, keepdims=True)
     norms[norms == 0] = 1.0

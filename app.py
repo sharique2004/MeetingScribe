@@ -35,8 +35,9 @@ import tech_vocabulary
 import tidy
 import voice_profiles
 from audio_recorder import MeetingRecorder
-from config import (BASE_DIR, MODELS_DIR, RECORDINGS_DIR, ModelDownloadError,
-                    human_bytes, load_config)
+from config import (BASE_DIR, ECAPA_ONNX_PATH, MODELS_DIR, RECORDINGS_DIR,
+                    ModelDownloadError, human_bytes, load_config,
+                    seed_ecapa_onnx)
 
 try:  # macOS only - raises ImportError elsewhere
     import macos_audio
@@ -676,10 +677,11 @@ def cli_engines():
 # THE AMBUSH THIS EXISTS TO REMOVE
 # --------------------------------
 # A fresh install ships no speech models. Parakeet (~2.4 GB) is pulled from
-# HuggingFace by pipeline._get_parakeet, the ECAPA speaker embedder (~89 MB) by
-# diarization._load_embedder, and the neural diarizer's CoreML bundle (~22 MB)
-# by the fluid-diarizer helper — all of them LAZILY, on the first meeting the
-# user records. On a real fresh install that meeting sat on one static
+# HuggingFace by pipeline._get_parakeet and the neural diarizer's CoreML bundle
+# (~22 MB) by the fluid-diarizer helper — both LAZILY, on the first meeting the
+# user records. (The ECAPA speaker embedder was the third: it is now carried
+# inside the bundle instead, which is why _speaker_spec below downloads
+# nothing.) On a real fresh install that meeting sat on one static
 # "Loading model…" for as long as a multi-gigabyte transfer takes: "working"
 # and "hung" looked identical, and a stalled connection simply never ended.
 #
@@ -719,7 +721,9 @@ _MODEL_SIZE_CACHE = {}
 
 # Used only where nothing can be asked about a size (offline, or a component
 # with no download plan of its own). Measured on this machine, 2026-08-04.
-_FALLBACK_BYTES = {"asr": 2_471_596_000, "speakers": 89_100_000, "turns": 22_000_000}
+# The speaker model has no entry: it is not downloaded from anywhere, so its
+# spec quotes 0 rather than a guess at a transfer that never happens.
+_FALLBACK_BYTES = {"asr": 2_471_596_000, "turns": 22_000_000}
 # How often the sampler reads the byte counter, and how long without a single
 # new byte counts as stalled. A stalled transfer is the "it never stopped" half
 # of the bug report: it has to be SAYABLE, not just endured.
@@ -786,19 +790,24 @@ def _cached_file(repo, names, cache_dir):
 # perform later, into exactly the folder that loader reads, so a pre-fetched
 # model makes the first meeting instant rather than merely warm.
 #
-# The two that matter are pipeline.py's and diarization.py's own entry points:
+# The one that matters is pipeline.py's own entry point:
 #
 #   pipeline.download_asr_model(cfg, bytes_cb)   -> bytes fetched
-#   diarization.download_speaker_model(bytes_cb) -> bytes fetched
 #       bytes_cb(done_bytes, total_bytes, label). Raises ModelDownloadError,
-#       whose str() is user-facing. Idempotent and cheap once on disk, and
-#       they retry a stalled transfer themselves (see config.ensure_hf_files).
-#   pipeline.asr_download_size(cfg) / diarization.embedder_download_size()
+#       whose str() is user-facing. Idempotent and cheap once on disk, and it
+#       retries a stalled transfer itself (see config.ensure_hf_files).
+#   pipeline.asr_download_size(cfg)
 #       -> (bytes still to fetch, bytes in total), or (None, None) offline.
 #
-# Everything below is for the components those two do not cover: the Whisper
-# backends a machine without Parakeet falls back to, and the CoreML diarizer,
-# which is fetched by a Swift helper and has no Python-side counter at all.
+# diarization keeps both entry points (download_speaker_model,
+# embedder_download_size), but the speaker model now ships in the bundle: they
+# copy from Resources rather than fetch, and both answer 0 bytes. Only the
+# first is wired in below — _speaker_spec sets "plan": None, because a size
+# that is always 0 is not worth a call. Everything else here is for the
+# components with no entry point of
+# their own — the Whisper backends a machine without Parakeet falls back to,
+# and the CoreML diarizer, which is fetched by a Swift helper and has no
+# Python-side counter at all.
 
 
 def _fetch_snapshot(repo):
@@ -901,27 +910,26 @@ def _asr_spec(cfg):
 def _speaker_spec():
     """ECAPA voice embeddings — how many people spoke, and which is which.
 
-    Presence is checked in BOTH places speechbrain can leave the files: it
-    downloads straight into savedir under LocalStrategy.COPY_SKIP_CACHE, and
-    into the shared HuggingFace cache on a build that has no such strategy
-    (diarization._ecapa_where decides). Checking only one of them would report
-    "not downloaded" for a model that is right there.
+    THE ONE COMPONENT THAT NEVER DOWNLOADS. It rides inside the app bundle and
+    config.seed_ecapa_onnx() installs it at ECAPA_ONNX_PATH on startup, so by
+    the time anything polls this route a packaged install is already present
+    and there is nothing for a prefetch to do. It is still listed because the
+    survey is the user's inventory of what this Mac has, and a required model
+    missing from it must be visible — which is the source-checkout case, where
+    `fetch` can only re-run the bundle copy and then say, in the words
+    diarization gives it, that the model has to be generated.
     """
-    savedir = MODELS_DIR / "ecapa"
-
-    def present():
-        if all((savedir / n).exists() for n in diarization.ECAPA_FILES):
-            return True
-        return _cached_file(diarization.ECAPA_REPO, ("embedding_model.ckpt",), None)
-
+    path = ECAPA_ONNX_PATH
     return {
         "key": "speakers", "label": "Speaker voice model",
-        "detail": "ECAPA-TDNN", "required": True,
-        "dir": savedir, "repo": diarization.ECAPA_REPO,
-        "files": diarization.ECAPA_FILES,
-        "fallback": _FALLBACK_BYTES["speakers"], "reports_bytes": True,
-        "present": present,
-        "plan": diarization.embedder_download_size,
+        "detail": "ECAPA-TDNN (ONNX, bundled)", "required": True,
+        "dir": path.parent, "repo": None, "files": None,
+        # No download to quote, so no fallback size to guess with: _survey
+        # reports a model that is here at what it occupies on disk, and one
+        # that is not at 0, because 0 is what fetching it costs.
+        "fallback": 0, "reports_bytes": False,
+        "present": path.is_file,
+        "plan": None,
         "fetch": diarization.download_speaker_model,
     }
 
@@ -1087,14 +1095,14 @@ def _model_view():
 def _download_one(spec):
     """Fetch one component, keeping a real byte count on screen throughout.
 
-    Two sources, in order of honesty. pipeline.download_asr_model and
-    diarization.download_speaker_model count the bytes they transfer and hand
-    them over (`reports_bytes`), which is exact and survives a resume. The rest
-    have no counter, so progress is read from the only place it is visible:
-    bytes landing in the target folder. That under-reports a resumed download
-    (the part already there is the baseline) but still moves and still finishes
-    at 100%, and a fresh install — the case this whole path exists for — is
-    exact either way.
+    Two sources, in order of honesty. pipeline.download_asr_model counts the
+    bytes it transfers and hands them over (`reports_bytes`), which is exact
+    and survives a resume. The rest have no counter, so progress is read from
+    the only place it is visible: bytes landing in the target folder (the
+    speaker model's bundle copy is one of these, and lands in one go). That
+    under-reports a resumed download (the part already there is the baseline)
+    but still moves and still finishes at 100%, and a fresh install — the case
+    this whole path exists for — is exact either way.
 
     One sampler either way, because it also owns the stall flag: bytes that
     stop moving is what "it never stopped" looked like from the outside, and
@@ -3555,6 +3563,13 @@ if __name__ == "__main__":
         swift_helpers.install_all_prebuilt()
     except Exception as _exc:  # never block startup on this
         app.logger.warning("installing pre-built helpers failed: %s", _exc)
+    # And the bundled speaker model, for the same reason: diarization wants a
+    # plain file under <DATA_DIR>/models, not one sealed inside the bundle.
+    # Costs one 84 MB copy on the first launch after an install, nothing after.
+    try:
+        seed_ecapa_onnx()
+    except Exception as _exc:  # a failure here is diagnosed at the point of use
+        app.logger.warning("installing the bundled speaker model failed: %s", _exc)
     _recover_interrupted()
     _backfill_notes()
     _backfill_transcripts()

@@ -59,6 +59,18 @@ if ! "$VENV/bin/python" -m pip install -r "$APP_SRC/requirements.txt"; then
     echo "ERROR: dependency installation failed (check your internet connection)."
     exit 5
 fi
+# Same removal setup.sh does, for the same reason: mlx-whisper declares a
+# `torch` dependency that nothing in its own import graph — or in this app —
+# ever uses, so pip drags 533 MB of PyTorch (plus sympy, networkx, mpmath)
+# onto every Apple Silicon Mac. The bundled-runtime builds avoid it with
+# --no-deps against tools/requirements.bundle.lock, whose header carries the
+# verification; this path has no lock to be authoritative, so it uninstalls
+# after the fact. Best effort: the app works either way.
+if "$VENV/bin/python" -c "import torch" >/dev/null 2>&1; then
+    echo "Removing PyTorch, which this app does not use…"
+    "$VENV/bin/python" -m pip uninstall -y torch torchaudio sympy networkx mpmath \
+        >/dev/null 2>&1 || true
+fi
 
 # The on-device Speech/AI helpers ship pre-built inside the app bundle and are
 # installed by the backend at startup (swift_helpers.install_all_prebuilt) —

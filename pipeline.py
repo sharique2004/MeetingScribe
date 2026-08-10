@@ -138,8 +138,9 @@ _PARAKEET_LOCK = threading.Lock()
 # file-backed clean pages the OS reclaims for free. What never came back was
 # MLX's buffer cache (~470 MB of decode scratch, measured on a 120 s decode:
 # active 1270 MB / peak 2886 MB, all but ~180 MB of RSS returned by
-# clear_cache) and, separately, the torch embedder (see tools/embed_worker.py
-# — torch returns nothing on unload, so it gets a process that exits instead).
+# clear_cache) and, separately, the ECAPA embedder (see tools/embed_worker.py
+# — onnxruntime's CPU arena gives nothing back on unload, exactly as torch did
+# before it, so that one gets a process that exits instead).
 #
 # Two mechanisms, both serialized on _PARAKEET_LOCK:
 #   * _release_mlx() after every decode — returns the buffer cache while the
@@ -1694,8 +1695,8 @@ def _embed_windows_subprocess(track_file, windows, progress_cb):
     """diarization.embed_windows in a child process that exits, or None to
     say "embed in-process instead".
 
-    See tools/embed_worker.py for why (torch keeps the embedder's ~520 MB no
-    matter what is deleted; only process exit returns it) and for the argv
+    See tools/embed_worker.py for why (the embedder's runtime keeps its memory
+    no matter what is deleted; only process exit returns it) and for the argv
     contract. Every failure here is an inconvenience, never an error: the
     caller's in-process fallback computes the same numbers, it just keeps
     the memory. The child's stdout lines are its progress reports, forwarded
@@ -1756,9 +1757,9 @@ def _embed_track(track_file, segs, progress_cb):
     measured on a 3-hour recording). Handing it windows and embeddings computed
     here means the embedding read of that file happens in the worker through
     the blocked loader at 0.87 GB — and, since the worker is its own process,
-    neither the waveform nor torch's model memory survives in the engine at
-    all. The in-process fallback below keeps the same 0.87 GB profile the
-    blocked loader always had.
+    neither the waveform nor the embedder's runtime memory survives in the
+    engine at all. The in-process fallback below keeps the same 0.87 GB profile
+    the blocked loader always had.
 
     The paths are otherwise the same code: diarize_track's own branch is
     build_windows() then embed_windows(), which is exactly what happens here

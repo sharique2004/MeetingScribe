@@ -49,6 +49,26 @@ mkdir -p "$HOME/.meetingscribe"
 "$VENV/bin/python" -m pip install --upgrade pip
 "$VENV/bin/python" -m pip install -r requirements.txt
 
+# Drop PyTorch, which nothing here runs. A3 replaced the torch/speechbrain
+# speaker embedder with onnxruntime, but mlx-whisper 0.4.3 still declares an
+# unconditional `torch` dependency, so pip installs 533 MB of it (plus sympy,
+# networkx and mpmath) on every Apple Silicon Mac. It is dead there too: the
+# only file in the mlx_whisper wheel that imports torch is torch_whisper.py,
+# and nothing in the package imports THAT — mlx_whisper/__init__ pulls audio,
+# decoding, load_models and transcribe, none of which reach it. Verified by
+# running the whole test battery, including a real Parakeet decode and a real
+# ONNX embed, in a venv built exactly this way. requirements.txt cannot say
+# this itself: pip has no per-package --no-deps and requirements files do not
+# accept the global flag. Best effort — the app runs fine either way, this
+# only reclaims the disk. Guarded on torch actually being there so machines
+# where mlx-whisper never installed (anything but Apple Silicon) neither see
+# the message nor pay for the call.
+if "$VENV/bin/python" -c "import torch" >/dev/null 2>&1; then
+    echo "Removing PyTorch, which this app does not use…"
+    "$VENV/bin/python" -m pip uninstall -y torch torchaudio sympy networkx mpmath \
+        >/dev/null 2>&1 || true
+fi
+
 chmod +x run.command setup.sh 2>/dev/null || true
 
 # Compile the Apple SpeechAnalyzer transcriber (macOS 26+). This is the fast,

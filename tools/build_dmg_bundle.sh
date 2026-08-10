@@ -60,8 +60,31 @@ if [ ! -x "$RUNTIME/bin/python3" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$WANT"
     rm -rf "$RUNTIME_ROOT"
     mkdir -p "$RUNTIME_ROOT"
     tar -xzf "$CACHE/$PBS_ASSET" -C "$RUNTIME_ROOT"   # extracts to python/
+    # --no-deps, and it is load-bearing, not tidiness. The lock is a full
+    # freeze — it already names every transitive dependency — so a resolving
+    # pip can only ADD to it. Since A3 that addition is concrete: mlx-whisper
+    # 0.4.3 declares an unconditional `torch`, and a resolving pip would pull
+    # 533 MB of it (plus sympy, networkx, mpmath) back into a bundle whose
+    # whole point was dropping it. Nothing in mlx_whisper's import graph
+    # touches torch; the lock's header has the verification. Keep them
+    # together: the lock is only authoritative while this flag is here.
     PYTHONDONTWRITEBYTECODE=1 "$RUNTIME/bin/python3" -m pip install \
-        --no-warn-script-location --no-compile -r "$LOCK"
+        --no-warn-script-location --no-compile --no-deps -r "$LOCK"
+    # Prove the freeze really is complete. `pip check` walks the installed
+    # metadata and reports anything unsatisfied; --no-deps means a lock that
+    # forgot a package would otherwise surface as an ImportError on a user's
+    # Mac. The ONE expected complaint is mlx-whisper's dead torch dependency.
+    CHECK_OUT="$("$RUNTIME/bin/python3" -m pip check 2>&1)" || true
+    UNEXPECTED="$(printf '%s\n' "$CHECK_OUT" \
+        | grep -v '^No broken requirements found' \
+        | grep -v 'mlx-whisper .* requires torch' || true)"
+    if [ -n "$UNEXPECTED" ]; then
+        echo "ERROR: tools/requirements.bundle.lock is not dependency-complete."
+        echo "       --no-deps installed exactly what it names, and pip check"
+        echo "       found gaps beyond mlx-whisper's documented dead torch dep:"
+        printf '%s\n' "$UNEXPECTED" | sed 's/^/  /'
+        exit 1
+    fi
     # Belt and suspenders: never write .pyc inside the sealed bundle, even if
     # someone runs the bundled interpreter without the env var.
     SITEPKGS="$("$RUNTIME/bin/python3" -c 'import site; print(site.getsitepackages()[0])')"
@@ -84,6 +107,15 @@ EOF
     # tools/test_*.py against the pruned runtime (identical output to
     # ~/.meetingscribe/venv) plus a real ECAPA forward pass, a real Parakeet
     # decode, a real numba nopython compile and the cffi audio bindings.
+    #
+    # THOSE TWO FIGURES ARE HISTORICAL. They were measured while torch,
+    # torchaudio and speechbrain were still in the lock, and torch's C++
+    # headers were much the largest single item; A3 deleted those packages
+    # outright, so the pruning below now saves correspondingly less on a
+    # correspondingly smaller runtime. The numbers are left as measured
+    # rather than guessed at — re-measure them if the saving ever has to be
+    # quoted, and the steps that only ever existed for torch/speechbrain are
+    # gone from the list.
     echo "Pruning build-only weight from the runtime…"
 
     # 1. C/C++/Cython headers and static libs. Nothing in the bundle compiles
@@ -92,7 +124,7 @@ EOF
     #    through llvmlite rather than a C toolchain.
     find "$SITEPKGS" \( -name '*.h' -o -name '*.hpp' -o -name '*.cuh' \
         -o -name '*.pxd' -o -name '*.pyx' -o -name '*.a' \) -delete
-    rm -rf "$SITEPKGS/torch/include" "$SITEPKGS/mlx/include"
+    rm -rf "$SITEPKGS/mlx/include"
 
     # 2. .pyi stubs are for type checkers, with one runtime exception:
     #    lazy_loader.attach_stub() PARSES a package's .pyi during import, so
@@ -108,7 +140,7 @@ EOF
     done
     rm -f "$KEEP_STUBS"
 
-    # 3. Vendored test suites (scipy, numpy, numba, sklearn, sympy, PyObjC).
+    # 3. Vendored test suites (scipy, numpy, numba, sklearn, PyObjC).
     find "$SITEPKGS" -maxdepth 3 -type d \( -name tests -o -name test \) \
         -prune -exec rm -rf {} +
     rm -rf "$SITEPKGS/PyObjCTest"
@@ -120,20 +152,19 @@ EOF
            "$SITEPKGS"/pkg_resources "$SITEPKGS"/_distutils_hack \
            "$SITEPKGS"/distutils-precedence.pth
 
-    # 5. torch ships two identical 4 MB copies of protoc. Its neighbour
-    #    torch_shm_manager is NOT optional: "import torch" raises
-    #    "Unable to find torch_shm_manager" without it, so name protoc alone.
-    rm -f "$SITEPKGS"/torch/bin/protoc "$SITEPKGS"/torch/bin/protoc-*
-
-    # 6. speechbrain unpacks its repository docs/build/recipes into site-packages.
-    rm -rf "$SITEPKGS/docs" "$SITEPKGS/build" "$SITEPKGS/recipes"
+    # STEPS 5 AND 6 ARE GONE, and both for the same reason: A3 replaced the
+    # torch/speechbrain ECAPA embedder with onnxruntime and dropped all three
+    # packages from tools/requirements.bundle.lock, so the paths they named no
+    # longer exist in this runtime. For the record, they were: torch's two
+    # identical 4 MB copies of protoc (torch/bin/protoc*, deleted by name
+    # because the neighbouring torch_shm_manager is NOT optional — "import
+    # torch" raised "Unable to find torch_shm_manager" without it), and
+    # speechbrain's habit of unpacking its repository docs/build/recipes
+    # straight into site-packages. The same commit retired the note that used
+    # to sit here explaining why sympy, mpmath and networkx were kept: they
+    # were torch's dependencies, and they left with it.
 
     find "$RUNTIME" -name "__pycache__" -type d -prune -exec rm -rf {} +
-    # NOT pruned, and the reason: sympy, mpmath and networkx are torch's own
-    # dependencies. torch imports them only for compile/fx/export paths that
-    # ECAPA's eager forward never enters, so deleting them passes today's
-    # tests, but they are worth 5.8 MB compressed against a real chance of a
-    # future ImportError deep inside torch. Not a trade worth making.
     echo "$WANT" > "$STAMP"
 else
     echo "Bundled runtime is up to date (dist/runtime-build)."

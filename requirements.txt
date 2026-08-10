@@ -4,10 +4,17 @@ scipy
 soundfile
 scikit-learn
 faster-whisper>=1.0
+# mlx-whisper declares an unconditional `torch` dependency it never uses (the
+# only file in the wheel that imports torch is torch_whisper.py, which nothing
+# in the package imports). pip has no per-package --no-deps and requirements
+# files do not accept the flag, so the removal happens after the install —
+# see setup.sh and tools/bootstrap.sh, and the header of
+# tools/requirements.bundle.lock for the bundled runtime's version of it.
 mlx-whisper; sys_platform == "darwin" and platform_machine == "arm64"
 parakeet-mlx; sys_platform == "darwin" and platform_machine == "arm64"
 PyAudioWPatch; sys_platform == "win32"
 sounddevice; sys_platform != "win32"
-torch
-torchaudio
-speechbrain>=1.0
+# The speaker embedder (diarization._get_embedder) runs models/ecapa.onnx on
+# onnxruntime — a DIRECT dependency since A3, not the transitive one that
+# faster-whisper's Silero VAD used to drag in on its own.
+onnxruntime

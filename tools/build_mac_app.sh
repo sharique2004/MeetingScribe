@@ -92,6 +92,31 @@ APP_SRC="$DEST/Contents/Resources/app"
 cp "$PROJECT/tools/bootstrap.sh" "$DEST/Contents/Resources/bootstrap.sh"
 chmod +x "$DEST/Contents/Resources/bootstrap.sh"
 
+# The speaker-embedding model rides INSIDE the bundle, unlike the speech models
+# (which download on first use). It has to: with the torch/speechbrain runtime
+# gone this file IS the diarizer, and at 84 MB rather than 2.4 GB it is
+# small enough to carry. It lands beside Resources/app — never inside it, which
+# is why the rsync above excludes models/ — and config.seed_ecapa_onnx() copies
+# it into <DATA_DIR>/models/ecapa-onnx at startup, checking it against the
+# sha256 that tools/export_ecapa_onnx.py printed when it made this file.
+#
+# Missing artifact is a HARD STOP. dist/ is gitignored, so a fresh checkout has
+# no copy and a warn-and-continue here would produce a bundle that installs,
+# launches, records — and then cannot diarize a single meeting.
+echo "Bundling the speaker model…"
+ECAPA_ONNX="$PROJECT/dist/models/ecapa-onnx-v1/ecapa.onnx"
+if [ ! -f "$ECAPA_ONNX" ]; then
+    echo "ERROR: the ONNX speaker model is missing:"
+    echo "  $ECAPA_ONNX"
+    echo "Generate it once with:  python tools/export_ecapa_onnx.py"
+    echo "(dev-only — it needs torch + speechbrain back; that file's docstring"
+    echo " has the alternative: copy ecapa.onnx out of an already-built bundle.)"
+    exit 1
+fi
+mkdir -p "$DEST/Contents/Resources/models"
+cp "$ECAPA_ONNX" "$DEST/Contents/Resources/models/ecapa.onnx"
+echo "  Resources/models/ecapa.onnx ($(du -h "$ECAPA_ONNX" | awk '{print $1}'))"
+
 # Optional: bundle a relocatable CPython runtime (site-packages included) so
 # the downloaded app needs no Python, no pip and no first-launch install.
 # tools/build_dmg_bundle.sh prepares the runtime and points us at it.
@@ -283,11 +308,14 @@ while :; do
 done
 
 # Executables: EVERYTHING whose magic says Mach-O, wherever it lives. The
-# old two-directory scan missed wheel-vendored tools (torch ships
-# bin/protoc and torch_shm_manager inside site-packages) and Apple's notary
-# rejects the whole submission over a single unsigned executable. Restrict
-# the walk to files with an exec bit so we don't read magic bytes on ~50k
-# library sources.
+# old two-directory scan missed wheel-vendored tools — torch shipped
+# bin/protoc and torch_shm_manager inside site-packages — and Apple's notary
+# rejects the whole submission over a single unsigned executable. A3 dropped
+# torch, and today's package set vendors no such binary at all (verified by
+# this same magic-byte walk over site-packages), but the walk stays broad on
+# purpose: the next wheel to hide a helper under site-packages costs a failed
+# notarization to discover. Restrict it to files with an exec bit so we don't
+# read magic bytes on ~50k library sources.
 find "$DEST/Contents/Resources" -type f -perm -u+x \
     ! -name "*.so" ! -name "*.dylib" ! -name "*.py" ! -name "*.sh" -print0 \
     | while IFS= read -r -d '' f; do

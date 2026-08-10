@@ -1,8 +1,10 @@
 """Shared paths and user configuration for MeetingScribe."""
 
+import hashlib
 import json
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -174,14 +176,97 @@ for _d in (DATA_DIR, RECORDINGS_DIR, MODELS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 
+# --- The bundled speaker model ------------------------------------------------
+# The ECAPA speaker embedder is the one model that ships INSIDE the .app instead
+# of downloading on first use. It has to: with the torch/speechbrain runtime
+# gone it IS the entire diarizer, at 84 MB rather than 2.4 GB it is small
+# enough to carry, and a download would mean a first meeting that records
+# perfectly and then cannot say who spoke. tools/export_ecapa_onnx.py generates
+# it, tools/build_mac_app.sh copies it to Contents/Resources/models/ecapa.onnx,
+# and seed_ecapa_onnx() below puts it where the engine reads it.
+#
+# THIS IS THE ONE PLACE THE HASH IS WRITTEN DOWN. The seeding here and the
+# loader in diarization must both check ECAPA_ONNX_SHA256 — never their own
+# copy of the digits — so regenerating the artifact is a one-line change to the
+# value the export script prints at the end of its run.
+ECAPA_ONNX_SHA256 = "ed50545296e861f6cf4b4d96a9444a95000aa4c9298016b34ecbc6c2cb59cb29"
+
+# Where the engine loads it from: writable, under DATA_DIR with the other
+# models, so a source checkout and the packaged app agree on one path.
+ECAPA_ONNX_PATH = MODELS_DIR / "ecapa-onnx" / "ecapa.onnx"
+
+# Where the packaged app carries it. BASE_DIR is Contents/Resources/app (that is
+# what the rsync in build_mac_app.sh fills), and the model is copied into
+# Contents/Resources/models — a SIBLING of BASE_DIR, not a child, because the
+# same rsync excludes models/. Absent from a source checkout, where BASE_DIR's
+# parent is just the directory the repo happens to sit in; the sha256 check
+# below is what makes that harmless.
+BUNDLED_ECAPA_ONNX = BASE_DIR.parent / "models" / "ecapa.onnx"
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def seed_ecapa_onnx():
+    """Put the bundled speaker model in place. Returns its path, or None.
+
+    Called once at startup, next to swift_helpers.install_all_prebuilt() and for
+    the same reason: what runs later wants an ordinary readable file at a fixed
+    path, and a copy sealed inside a signed read-only bundle is not that.
+
+    Idempotent and cheap. An already-seeded model is left alone and NOT
+    re-hashed — 84 MB of sha256 on every launch buys nothing that the loader
+    cannot do once, at the point of use. A source checkout has no bundled copy
+    and this is a no-op there.
+    """
+    if ECAPA_ONNX_PATH.exists():
+        return ECAPA_ONNX_PATH
+    if not BUNDLED_ECAPA_ONNX.is_file():
+        return None
+    try:
+        # Verified BEFORE the copy: whatever ends up in the models directory is
+        # never re-checked by anything that runs on a normal launch, so the
+        # wrong bytes must not get that far.
+        digest = _sha256(BUNDLED_ECAPA_ONNX)
+        if digest != ECAPA_ONNX_SHA256:
+            log.error("bundled speaker model %s has sha256 %s, expected %s — "
+                      "not installing it", BUNDLED_ECAPA_ONNX, digest,
+                      ECAPA_ONNX_SHA256)
+            return None
+        ECAPA_ONNX_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ECAPA_ONNX_PATH.parent / f".ecapa.onnx.{os.getpid()}.partial"
+        shutil.copyfile(BUNDLED_ECAPA_ONNX, tmp)
+        # And again on the copy. The realistic failure is a full disk, and a
+        # truncated 84 MB model would otherwise surface much later as an
+        # unreadable protobuf in the middle of someone's first meeting.
+        if _sha256(tmp) != ECAPA_ONNX_SHA256:
+            tmp.unlink()
+            log.error("copying the speaker model into %s produced a short or "
+                      "corrupt file (disk full?) — not installing it",
+                      ECAPA_ONNX_PATH.parent)
+            return None
+        os.replace(tmp, ECAPA_ONNX_PATH)  # whole file or nothing, never half
+        log.info("installed the bundled speaker model at %s", ECAPA_ONNX_PATH)
+        return ECAPA_ONNX_PATH
+    except OSError as exc:
+        log.warning("could not install the bundled speaker model: %s", exc)
+        return None
+
+
 # --- Model downloads ----------------------------------------------------------
-# A fresh install fetches ~2.5 GB before its first meeting can be processed: the
-# Parakeet speech model (2.4 GB) in pipeline._get_parakeet and the ECAPA speaker
-# model (89 MB) in diarization._load_embedder. Both used to block inside a
-# library call that reports nothing, so the UI held one static line for however
-# long the download took and "working" looked exactly like "hung" — the bug this
-# section exists to kill. There was no wall-clock bound either, so a link that
-# died mid-file could hold the pipeline forever.
+# A fresh install fetches ~2.4 GB before its first meeting can be processed: the
+# Parakeet speech model, in pipeline._get_parakeet. (The 89 MB ECAPA speaker
+# model used to be the other half of this and is now the bundled file above, so
+# nothing here applies to it any more.) It used to block inside a library call
+# that reports nothing, so the UI held one static line for however long the
+# download took and "working" looked exactly like "hung" — the bug this section
+# exists to kill. There was no wall-clock bound either, so a link that died
+# mid-file could hold the pipeline forever.
 #
 # THE MECHANISM: hf_hub_download's public `tqdm_class` argument, with the files
 # fetched HERE rather than by the model library. It is the one hook that covers
