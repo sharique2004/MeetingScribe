@@ -215,7 +215,9 @@ hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format "$DMG_FORMAT
     -fs HFS+ "$DMG" >/dev/null
 rm -f "$STAGE/Applications"
 
-echo "Compressing $TARBALL…"
+# ${braces} matter: macOS bash 3.2 under a C locale folds a following
+# multibyte character into the bare $NAME lookup and dies on set -u.
+echo "Compressing ${TARBALL}…"
 rm -f "$TARBALL"
 tar -czf "$TARBALL" -C "$STAGE" "$APP_NAME.app"
 
