@@ -61,8 +61,6 @@ recordings
 /tap_state.json
 /note-drafts/
 
-# iOS simulator build output
-ios/.build/
 
 # The syscap spike's local artifacts. The capture is a raw system-audio
 # recording from this machine and the binary is a build product — in a
