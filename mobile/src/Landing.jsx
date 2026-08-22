@@ -1,7 +1,7 @@
-// Landing page for signed-out visitors. Terminal-first: the page runs the
-// same install command it asks you to run, and the app it installs opens
-// right below it. Phones hide the install paths and lead to the synced
-// viewer instead. The direction contract lives in mobile/index.html.
+// Landing page for signed-out visitors. Product-first: six real screenshots
+// of the app carry the page; text is captions. Desktop leads with the
+// install command; phones say it is a Mac app and offer the synced viewer.
+// The direction contract lives in mobile/index.html.
 
 import React from "react";
 
@@ -9,37 +9,24 @@ import React from "react";
 // GitHub release asset (mobile/vercel.json); when the file moves to different
 // hosting, only that redirect changes and every published link keeps working.
 const DMG_URL = "https://meetingscribe.shariquekhatri.com/MeetingScribe.dmg";
-
-const INSTALL_CMD =
-  "curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh";
-
+const SITE_URL = "https://meetingscribe.shariquekhatri.com";
+const INSTALL_CMD = `curl -fsSL ${SITE_URL}/install.sh | sh`;
 const GITHUB_URL = "https://github.com/sharique2004/MeetingScribe";
 
-const IS_MAC = /Macintosh|Mac OS X/.test(navigator.userAgent);
 const REDUCED =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/* ------------------------------ motion hooks ------------------------------ */
-
-// Types `text` one character at a time once `active` turns true.
-function useTyped(text, active, { speed = 16, delay = 500 } = {}) {
-  const [n, setN] = React.useState(() => (REDUCED ? text.length : 0));
-  React.useEffect(() => {
-    if (REDUCED || !active || n >= text.length) return;
-    const t = setTimeout(() => setN((v) => v + 1), n === 0 ? delay : speed);
-    return () => clearTimeout(t);
-  }, [active, n, text, speed, delay]);
-  return { shown: text.slice(0, n), done: n >= text.length };
-}
+/* ------------------------------ motion hook ------------------------------- */
 
 // Flips true once, the first time the element scrolls into view.
-function useReveal(threshold = 0.2) {
+function useReveal(threshold = 0.15) {
   const ref = React.useRef(null);
   const [inView, setInView] = React.useState(REDUCED);
   React.useEffect(() => {
     const el = ref.current;
     if (!el || inView) return;
+    if (typeof IntersectionObserver !== "function") { setInView(true); return; }
     const io = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
@@ -55,24 +42,11 @@ function useReveal(threshold = 0.2) {
   return [ref, inView];
 }
 
-// Words that land one by one when their container is revealed.
-function Words({ text, on, step = 60, from = 0 }) {
-  return text.split(" ").map((w, i) => (
-    <span
-      key={i}
-      className={"lp-w" + (on ? " on" : "")}
-      style={{ transitionDelay: `${from + i * step}ms` }}
-    >
-      {w}{" "}
-    </span>
-  ));
-}
-
 /* --------------------------------- assets --------------------------------- */
 
 function MicIcon({ size = 20 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true"
          stroke="#5eead4" strokeWidth="2" strokeLinecap="round">
       <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
@@ -84,387 +58,229 @@ function MicIcon({ size = 20 }) {
 function DownloadGlyph() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-         strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+         aria-hidden="true" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3v12" /><path d="M7 11l5 5 5-5" /><path d="M4 20h16" />
     </svg>
   );
 }
 
-/* ------------------------------ demo content ------------------------------ */
-// Demo meeting fixture (same fictional meeting as ui-demos/data.js).
+/* ------------------------------ screenshots ------------------------------- */
 
-const SPEAKER_COLOR = { You: "#5b8cff", "Priya Nair": "#c07af6", "Marcus Bell": "#2fbf87" };
+const SHOTS = {
+  notes: {
+    alt: "MeetingScribe's Notes tab for a meeting called Quarterly planning call: speaker chips for You, Priya Nair and Marcus Bell, a summary, decisions, open questions, and an audio player.",
+  },
+  home: {
+    alt: "The Today screen: a sidebar listing four meetings, the greeting Up late, Sharique, and the prompt In a meeting right now? Start recording.",
+  },
+  record: {
+    alt: "The Set up this meeting sheet: a title field named after your calendar, Online call or In person, language set to Auto-detect, and how many voices set to Work it out.",
+  },
+  transcript: {
+    alt: "The Transcript tab: turns labelled You, Priya Nair and Marcus Bell with timestamps, plus Copy and Find in transcript.",
+  },
+  ask: {
+    alt: "The Ask panel answering What did we decide? with a short answer and timestamp citations 0:29, 0:41 and 0:03.",
+  },
+  settings: {
+    alt: "Settings, Who writes your summaries and answers: Apple Intelligence, Claude marked recommended, Codex, Gemini, Copilot marked unavailable, and a toggle to summarise every meeting automatically.",
+  },
+};
 
-const DEMO_TURNS = [
-  { t: "00:03", s: "You",
-    text: "Okay, we're recording. Let's keep this to the three things that actually block Q3: pricing, the mobile beta, and the data retention work." },
-  { t: "00:19", s: "Priya Nair",
-    text: "After last week's customer calls, the usage based tier is the one people keep asking for. Everyone above roughly forty seats wants to pay for what they actually use." },
-  { t: "01:02", s: "Marcus Bell",
-    text: "Metering itself isn't the hard part. The hard part is making the numbers trustworthy enough to put on an invoice. I'd want two weeks just for that." },
-  { t: "01:28", s: "You", live: true,
-    text: "Two weeks is fine if it means we don't refund half the first month. Trustworthy metering is the gate for the pricing launch." },
-];
-
-const DEMO_ACTIONS = [
-  { who: "Priya Nair", what: "Pricing page copy for the usage tier", due: "Thu" },
-  { who: "Marcus Bell", what: "Metering reconciliation design doc", due: "Thu" },
-];
-
-/* -------------------------------- terminal -------------------------------- */
-
-// Mirrors what tools/install.sh actually prints.
-const TERM_OUTPUT = [
-  { text: "downloading MeetingScribe.app (310 MB)", cls: "" },
-  { text: "installed to /Applications", cls: "ok" },
-  { text: "Gatekeeper verified the app (Developer ID + notarized)", cls: "ok" },
-  { text: "opening MeetingScribe", cls: "ok" },
-];
-
-function Terminal() {
-  const { shown, done } = useTyped(INSTALL_CMD, true, { speed: 14, delay: 700 });
-  const [lines, setLines] = React.useState(REDUCED ? TERM_OUTPUT.length : 0);
-  React.useEffect(() => {
-    if (!done || lines >= TERM_OUTPUT.length) return;
-    const t = setTimeout(() => setLines((v) => v + 1), lines === 0 ? 500 : 330);
-    return () => clearTimeout(t);
-  }, [done, lines]);
-
+function Shot({ name, hero = false }) {
   return (
-    <div className="lp-beam">
-      <div className="lp-term" role="img"
-           aria-label="Terminal running the MeetingScribe install command">
-        <div className="lp-termbar">
-          <span className="lp-tl" /><span className="lp-tl" /><span className="lp-tl" />
-          <span className="lp-termtitle">meetingscribe · zsh</span>
-          <CopyButton />
-        </div>
-        <div className="lp-termbody" aria-hidden="true">
-          <div className="lp-cmdline">
-            <span className="lp-prompt">$</span> {shown}
-            {!done && <span className="lp-caret" />}
-          </div>
-          {TERM_OUTPUT.slice(0, lines).map((l, i) => (
-            <div className={"lp-out " + l.cls} key={i}>
-              {l.cls === "ok" && <span className="lp-check">✓</span>} {l.text}
-            </div>
-          ))}
-          {lines >= TERM_OUTPUT.length && (
-            <div className="lp-cmdline"><span className="lp-prompt">$</span> <span className="lp-caret idle" /></div>
-          )}
-        </div>
-      </div>
-    </div>
+    <figure className={"lp-shot" + (hero ? " hero" : "")}>
+      <img
+        src={`/shots/${name}.webp`}
+        srcSet={`/shots/${name}.webp 1x, /shots/${name}@2x.webp 2x`}
+        width="1280"
+        height="800"
+        alt={SHOTS[name].alt}
+        loading={hero ? "eager" : "lazy"}
+        fetchpriority={hero ? "high" : undefined}
+        decoding={hero ? "sync" : "async"}
+      />
+    </figure>
   );
 }
 
-function CopyButton({ compact = false }) {
+// The story, in the app's own order.
+const SECTIONS = [
+  { id: "home", shot: "home", num: "01",
+    heading: "Start from Today.",
+    line: "This week's meetings on the left; one click to record the next one." },
+  { id: "record", shot: "record", num: "02",
+    heading: "Set up the meeting.",
+    line: "Left blank, the title comes from your calendar, read on your Mac." },
+  { id: "transcript", shot: "transcript", num: "03",
+    heading: "Who said what, when.",
+    line: "Speakers are told apart on-device; a 45-minute meeting takes about a minute." },
+  { id: "ask", shot: "ask", num: "04",
+    heading: "Ask the meeting.",
+    line: "Answers cite the moments they came from; click one to replay it." },
+  { id: "engine", shot: "settings", num: "05",
+    heading: "Choose who writes the notes.",
+    line: "Apple Intelligence stays offline; Claude, Codex, Gemini or Copilot use your own account and see text only." },
+];
+
+function Section({ id, shot, num, heading, line }) {
+  const [ref, inView] = useReveal(0.15);
+  return (
+    <section id={id} ref={ref} className={"lp-section" + (inView ? " in" : "")}>
+      <div className="lp-caption-row">
+        <div>
+          <span className="lp-num">{num}</span>
+          <h2 className="lp-h2">{heading}</h2>
+        </div>
+        <p className="lp-line">{line}</p>
+      </div>
+      <Shot name={shot} />
+    </section>
+  );
+}
+
+function Divider() {
+  return <hr className="lp-hr" aria-hidden="true" />;
+}
+
+/* ------------------------------- controls --------------------------------- */
+
+// Copies `text`; shows "Copied" for a moment. `onFail` runs if the clipboard
+// promise rejects so the caller can reveal the text another way.
+function CopyButton({ text, label = "Copy", ariaLabel, className = "lp-copy", onFail }) {
   const [copied, setCopied] = React.useState(false);
   const copy = () => {
-    navigator.clipboard.writeText(INSTALL_CMD).then(() => {
+    const p = navigator.clipboard && navigator.clipboard.writeText
+      ? navigator.clipboard.writeText(text)
+      : Promise.reject(new Error("no clipboard"));
+    p.then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
-    });
+    }).catch(() => { if (onFail) onFail(); });
   };
   return (
-    <button className={"lp-copy" + (compact ? " compact" : "")} onClick={copy}
-            aria-label="Copy the install command">
-      {copied ? "Copied" : "Copy"}
-    </button>
+    <>
+      <button
+        type="button"
+        className={className}
+        onClick={copy}
+        aria-label={copied ? "Copied" : ariaLabel}
+      >
+        {copied ? "Copied" : label}
+      </button>
+      <span className="lp-sr" role="status" aria-live="polite">{copied ? "Copied" : ""}</span>
+    </>
   );
 }
 
-/* ------------------------------- app window ------------------------------- */
-
-function AppWindow() {
-  const [ref, on] = useReveal(0.35);
+function CommandRow() {
   return (
-    <div className="lp-window" ref={ref} role="img"
-         aria-label="The MeetingScribe app showing a transcribed demo meeting with summary and action items">
-      <div className="lp-titlebar">
-        <span className="lp-tl" /><span className="lp-tl" /><span className="lp-tl" />
-        <span className="lp-wintitle">Q3 Roadmap Sync · 24:18</span>
-        <span className="lp-wintag">demo meeting</span>
-      </div>
-      <div className="lp-winbody">
-        <div className="lp-transcript">
-          {DEMO_TURNS.map((turn) => (
-            <div className={"lp-turn" + (turn.live ? " live" : "")} key={turn.t}>
-              <span className="lp-ts">{turn.t}</span>
-              <div>
-                <span className="lp-who" style={{ color: SPEAKER_COLOR[turn.s] }}>{turn.s}</span>
-                <p>{turn.live ? <Words text={turn.text} on={on} step={55} from={400} /> : turn.text}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-        <aside className="lp-rail">
-          <div className="lp-railhead">Summary</div>
-          <p className="lp-tldr">
-            The quarter narrows to one bet: hardening the usage event pipeline
-            for billing, mobile sync, and enterprise purge proof. Marcus is the
-            critical path.
-          </p>
-          <div className="lp-railhead">Decisions</div>
-          <ul className="lp-decisions">
-            <li>Usage based pricing waits for reconciled metering</li>
-            <li>Mobile beta ships Friday with a known issues note</li>
-          </ul>
-          <div className="lp-railhead">Action items</div>
-          {DEMO_ACTIONS.map((a) => (
-            <div className="lp-action" key={a.what}>
-              <span className="lp-owner" style={{ background: SPEAKER_COLOR[a.who] }} />
-              <span className="lp-actiontext">{a.what}</span>
-              <span className="lp-due">{a.due}</span>
-            </div>
-          ))}
-        </aside>
+    <div className="lp-beam">
+      <div className="lp-cmd">
+        <span className="lp-prompt" aria-hidden="true">$</span>
+        <code>{INSTALL_CMD}</code>
+        <CopyButton text={INSTALL_CMD} ariaLabel="Copy the install command" />
       </div>
     </div>
   );
 }
 
-/* ------------------------------- proof rows ------------------------------- */
-
-function ProofRow({ head, body, children, flip = false }) {
-  const [ref, on] = useReveal(0.3);
+function DownloadRow() {
   return (
-    <div className={"lp-proofrow" + (flip ? " flip" : "") + (on ? " in" : "")} ref={ref}>
-      <div className="lp-prooftext">
-        <h3>{head}</h3>
-        <p>{body}</p>
-      </div>
-      <div className="lp-proofart">{children}</div>
+    <div className="lp-dlrow">
+      <a className="lp-btn ghost" href={DMG_URL} download>
+        <DownloadGlyph /> Download the DMG <span className="lp-size">· 225&nbsp;MB</span>
+      </a>
+      <span className="lp-req">free · open&nbsp;source, GPLv3 · Apple&nbsp;Silicon · macOS&nbsp;26</span>
     </div>
   );
 }
 
-function CaptionArt() {
-  const [ref, on] = useReveal(0.5);
+// Phone: the app is for the Mac; give people the link to take there.
+function MacCard({ onOpenApp }) {
+  const [showUrl, setShowUrl] = React.useState(false);
   return (
-    <div className="lp-art lp-captionart" ref={ref}>
-      <div className="lp-artlabel">live captions · demo</div>
-      <p className="lp-caption">
-        <Words on={on} step={70}
-          text="We can hold the launch until metering is signed off, that feels safer." />
+    <section className="lp-maccard">
+      <h2 className="lp-cardtitle">It's a Mac app.</h2>
+      <CopyButton
+        text={SITE_URL}
+        label="Copy the link"
+        ariaLabel="Copy the MeetingScribe link"
+        className="lp-btn primary full"
+        onFail={() => setShowUrl(true)}
+      />
+      {showUrl && <code className="lp-url">{SITE_URL}</code>}
+      <p className="lp-req">
+        meetingscribe.shariquekhatri.com · free · open&nbsp;source, GPLv3 · Apple&nbsp;Silicon · macOS&nbsp;26
       </p>
-      <p className="lp-caption dim">
-        <Words on={on} from={1300} step={70}
-          text="Agreed. I'll own the reconciliation piece and report Thursday." />
-      </p>
-    </div>
+      <button type="button" className="lp-link" onClick={onOpenApp}>
+        Open your synced meetings →
+      </button>
+      <p className="lp-helper">For people who already record on their Mac.</p>
+    </section>
   );
 }
 
-function SpeakerArt() {
-  const [ref, on] = useReveal(0.5);
-  const rows = [
-    { name: "You", share: 41 },
-    { name: "Priya Nair", share: 34 },
-    { name: "Marcus Bell", share: 25 },
-  ];
+/* --------------------------------- page ----------------------------------- */
+
+export default function Landing({ phone = false, onOpenApp }) {
   return (
-    <div className={"lp-art" + (on ? " in" : "")} ref={ref}>
-      <div className="lp-artlabel">talk time · demo</div>
-      {rows.map((r) => (
-        <div className="lp-speakrow" key={r.name}>
-          <span className="lp-who" style={{ color: SPEAKER_COLOR[r.name] }}>{r.name}</span>
-          <span className="lp-sharebar">
-            <span className="lp-sharefill"
-                  style={{ width: `${r.share}%`, background: SPEAKER_COLOR[r.name] }} />
-          </span>
-          <span className="lp-sharepct">{r.share}%</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SpeedArt() {
-  const [ref, on] = useReveal(0.5);
-  return (
-    <div className={"lp-art" + (on ? " in" : "")} ref={ref}>
-      <div className="lp-artlabel">on the neural engine</div>
-      <div className="lp-speedrow">
-        <span className="lp-speedlabel">meeting</span>
-        <span className="lp-speedbar"><span className="lp-speedfill slow" style={{ width: "100%" }} /></span>
-        <span className="lp-speedtime">45:00</span>
-      </div>
-      <div className="lp-speedrow">
-        <span className="lp-speedlabel">transcript</span>
-        <span className="lp-speedbar"><span className="lp-speedfill fast" style={{ width: "3.4%" }} /></span>
-        <span className="lp-speedtime aqua">~1:30</span>
-      </div>
-    </div>
-  );
-}
-
-function PhoneArt() {
-  return (
-    <div className="lp-art lp-phoneart">
-      <div className="lp-phone">
-        <div className="lp-phonehead">Your meetings <span className="lp-wintag">demo</span></div>
-        <div className="lp-phonerow">
-          <b>Q3 Roadmap Sync</b><span>Today · 24:18</span>
-        </div>
-        <div className="lp-phonerow">
-          <b>Design review</b><span>Tue · 41:02</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* --------------------------------- page ---------------------------------- */
-
-export default function Landing({ onOpenApp, phone = false }) {
-  const showDownload = !phone;
-  const [appRef, appOn] = useReveal(0.15);
-
-  return (
-    <div className="landing">
-      <nav className="lp-nav">
+    <div className={"landing" + (phone ? " phone" : "")}>
+      <nav className="lp-nav" aria-label="Site">
         <div className="brand"><MicIcon size={20} /><span>MeetingScribe</span></div>
-        <div className="lp-navlinks">
-          <a className="lp-navlink" href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
-          <button className="lp-link" onClick={onOpenApp}>View your meetings →</button>
-        </div>
+        {!phone && (
+          <div className="lp-navlinks">
+            <a className="lp-navlink" href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
+            <button type="button" className="lp-link" onClick={onOpenApp}>View your meetings →</button>
+          </div>
+        )}
       </nav>
 
       <header className="lp-hero">
-        <h1 className="lp-h1">
-          Transcribed in seconds.<br />Never leaves your Mac.
-        </h1>
+        <h1 className="lp-h1">Every meeting, transcribed on your Mac.</h1>
         <p className="lp-sub">
-          MeetingScribe records any call or conversation, captions it live,
-          labels every speaker, and writes the summary with action items. A 45
-          minute meeting lands in about 90 seconds on the Apple Neural Engine.
+          It records the call, labels who said what, writes the notes and
+          answers your questions. Audio never leaves your Mac.
         </p>
-
-        {showDownload ? (
-          <>
-            <Terminal />
-            <div className="lp-heroactions">
-              <a className="lp-btn ghost" href={DMG_URL} download>
-                <DownloadGlyph /> Download the DMG
-              </a>
-              <span className="lp-req">
-                free · open source, MIT · Apple Silicon · macOS 26 Tahoe · 365 MB DMG
-              </span>
-            </div>
-            {!IS_MAC && (
-              <p className="lp-notmac">
-                You're not on a Mac right now, but you can still sign in and
-                read the meetings you synced.
-              </p>
-            )}
-          </>
+        {phone ? (
+          <MacCard onOpenApp={onOpenApp} />
         ) : (
-          <div className="lp-heroactions phone">
-            <button className="lp-btn primary" onClick={onOpenApp}>
-              View your meetings <span className="lp-arrow">→</span>
-            </button>
-            <span className="lp-req">
-              You record on your Mac. The meetings you sync are readable here.
-            </span>
+          <div className="lp-heroactions">
+            <CommandRow />
+            <DownloadRow />
           </div>
         )}
+        <Shot name="notes" hero />
       </header>
 
-      <section className={"lp-app" + (appOn ? " in" : "")} ref={appRef}>
-        <h2 className="lp-h2">Then it opens.</h2>
-        <AppWindow />
-        <p className="lp-quiet">
-          Everything in this window happened on one Mac. The audio never left
-          it. Summaries use your own Claude account with transcript text only,
-          or stay fully offline with Apple Intelligence.
-        </p>
-      </section>
+      <div className="lp-story">
+        {SECTIONS.map((s) => (
+          <React.Fragment key={s.id}>
+            <Divider />
+            <Section {...s} />
+          </React.Fragment>
+        ))}
+      </div>
 
-      <section className="lp-proof">
-        <ProofRow
-          head="Live captions while people talk"
-          body="Words land on screen as they are spoken, transcribed by the Neural
-                Engine while the meeting is still going. No bot joins the call,
-                so nobody gets a recording notice from a stranger.">
-          <CaptionArt />
-        </ProofRow>
-        <ProofRow flip
-          head="Every voice gets a name"
-          body="Zoom, Meet, Teams, or the room. Speakers are told apart
-                automatically, and renaming one sticks across the whole
-                transcript.">
-          <SpeakerArt />
-        </ProofRow>
-        <ProofRow
-          head="A 45 minute call, transcribed in about 90 seconds"
-          body="Recording stops and the full speaker labelled transcript is
-                moments away. One click then writes the TL;DR, decisions, and
-                action items with owners.">
-          <SpeedArt />
-        </ProofRow>
-        <ProofRow flip
-          head="Read it on your phone"
-          body="Sync is opt in and per meeting, and it moves text only. This
-                site is that viewer: sign in and your synced meetings are
-                waiting.">
-          <PhoneArt />
-        </ProofRow>
-        <p className="lp-also">
-          also in the box · a nudge when a call starts unrecorded · one click
-          transcript tidy up · follow up email drafts
-        </p>
-      </section>
-
-      {showDownload ? (
-        <section className="lp-install">
-          <h2 className="lp-h2">Install it</h2>
-          <p className="lp-installlead">
-            One command, no security prompts. It puts MeetingScribe.app in
-            /Applications and opens it.
-          </p>
-          <div className="lp-beam sm">
-            <div className="lp-cmd">
-              <code>{INSTALL_CMD}</code>
-              <CopyButton compact />
-            </div>
-          </div>
-          <h3 className="lp-installsub">Prefer the disk image?</h3>
-          <ol>
-            <li>Open the DMG and drag <b>MeetingScribe</b> into <b>Applications</b>.</li>
-            <li>Double-click it. That's it: releases are signed with a Developer
-              ID and notarized by Apple, so there are no security warnings.</li>
-          </ol>
-          <p className="lp-installnote">
-            First run downloads the speech models and walks you through setup.
-            System audio (the other side of a call) is captured without any
-            driver; macOS asks once for System Audio Recording permission on
-            your first recording.
-          </p>
-          <a className="lp-btn primary" href={DMG_URL} download>
-            <DownloadGlyph /> Download the DMG
-          </a>
-        </section>
+      {phone ? (
+        <MacCard onOpenApp={onOpenApp} />
       ) : (
-        <section className="lp-install">
-          <h2 className="lp-h2">Your meetings, on your phone</h2>
-          <p className="lp-installlead">
-            You record and summarize on your Mac. The meetings you choose to
-            sync show up here to read anywhere, with the same account as the
-            Mac app.
-          </p>
-          <button className="lp-btn primary" onClick={onOpenApp}>
-            View your meetings <span className="lp-arrow">→</span>
-          </button>
+        <section className="lp-install" id="install">
+          <h2 className="lp-h2">Install it.</h2>
+          <p className="lp-line">One command puts MeetingScribe.app in /Applications and opens it.</p>
+          <CommandRow />
+          <DownloadRow />
         </section>
       )}
 
       <footer className="lp-foot">
-        <div className="brand"><MicIcon size={16} /><span>MeetingScribe</span></div>
+        <div className="brand"><span>MeetingScribe</span></div>
         <div className="lp-footlinks">
           <a href={GITHUB_URL} target="_blank" rel="noreferrer">GitHub</a>
           <a href="https://shariquekhatri.com" target="_blank" rel="noreferrer">Made by Sharique Khatri</a>
-          <button className="lp-link" onClick={onOpenApp}>View your meetings</button>
+          <button type="button" className="lp-footbtn" onClick={onOpenApp}>
+            {phone ? "Open your synced meetings" : "View your meetings"}
+          </button>
         </div>
       </footer>
     </div>
