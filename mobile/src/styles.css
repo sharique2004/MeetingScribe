@@ -170,7 +170,7 @@ a { color: var(--accent); }
   outline-offset: 2px;
 }
 .landing .lp-link:focus-visible, .landing .lp-navlink:focus-visible,
-.landing .lp-footlinks a:focus-visible, .landing .lp-footbtn:focus-visible { border-radius: 6px; }
+.landing .lp-footlinks a:focus-visible, .landing .lp-footbtn:focus-visible { border-radius: 7px; }
 .lp-sr {
   position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
   clip: rect(0 0 0 0); white-space: nowrap; border: 0;
@@ -191,7 +191,7 @@ a { color: var(--accent); }
 }
 .lp-nav .brand { display: flex; align-items: center; gap: 9px; }
 .lp-nav .brand span {
-  font-family: var(--lp-display); font-weight: 600; font-size: 16.5px;
+  font-family: var(--lp-display); font-weight: 600; font-size: 16px;
   letter-spacing: -0.01em;
 }
 .lp-navlinks { display: flex; align-items: center; gap: 22px; }
@@ -201,7 +201,7 @@ a { color: var(--accent); }
 }
 .lp-navlink:hover { color: var(--lp-ink); }
 .lp-link {
-  color: var(--lp-aqua); font-weight: 600; font-size: 14px;
+  color: var(--lp-aqua); font-weight: 600; font-size: 14.5px;
   background: none; border: 0; padding: 0;
 }
 .lp-link:hover { text-decoration: underline; }
@@ -228,19 +228,19 @@ a { color: var(--accent); }
   margin: 16px 0 0; flex-wrap: wrap;
 }
 .lp-req {
-  font-family: var(--lp-mono); font-size: 11.5px; color: var(--lp-faint);
+  font-family: var(--lp-mono); font-size: 12px; color: var(--lp-faint);
   letter-spacing: -0.01em; line-height: 1.6; margin: 0;
 }
 /* The DMG is the secondary path: a text link, so the command row leads. */
 .lp-dlrow .lp-btn.ghost {
-  height: auto; padding: 0; border: 0; background: none; border-radius: 4px;
+  height: auto; padding: 0; border: 0; background: none; border-radius: 7px;
   color: var(--lp-dim); font-size: 13.5px; font-weight: 500; gap: 7px;
   text-decoration: underline; text-underline-offset: 3px;
   text-decoration-color: rgba(255, 255, 255, 0.28);
   transition: color 0.15s var(--lp-ease-out), text-decoration-color 0.15s var(--lp-ease-out);
 }
 .lp-dlrow .lp-btn.ghost:hover { color: var(--lp-ink); text-decoration-color: currentColor; }
-.lp-size { font-family: var(--lp-mono); font-size: 11.5px; color: var(--lp-faint); font-weight: 400; }
+.lp-size { font-family: var(--lp-mono); font-size: 12px; color: var(--lp-faint); font-weight: 400; }
 
 /* ------------------------- border-beam signature -------------------------- */
 .lp-beam { position: relative; border-radius: 12px; max-width: 620px; margin: 0 auto; }
@@ -265,7 +265,7 @@ a { color: var(--accent); }
 .lp-cmd {
   display: flex; align-items: center; gap: 10px; text-align: left;
   background: rgba(13, 13, 22, 0.88); border: 1px solid var(--lp-line);
-  border-radius: 11px; padding: 0 8px 0 18px; height: 50px;
+  border-radius: 12px; padding: 0 8px 0 18px; height: 50px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .lp-prompt { color: var(--lp-sky); font-family: var(--lp-mono); font-size: 13.5px; flex: none; }
@@ -363,25 +363,23 @@ a { color: var(--accent); }
   font-family: var(--lp-display); font-size: 20px; font-weight: 600;
   letter-spacing: -0.02em; margin: 0 0 14px;
 }
-.lp-maccard .lp-req { margin-top: 10px; word-break: break-word; text-wrap: balance; font-size: 11px; line-height: 1.7; }
+.lp-maccard .lp-req { margin-top: 10px; word-break: break-word; text-wrap: balance; line-height: 1.7; }
 .lp-url {
-  display: block; margin-top: 10px; font-family: var(--lp-mono); font-size: 12.5px;
+  display: block; margin-top: 10px; font-family: var(--lp-mono); font-size: 13.5px;
   color: var(--lp-ink); user-select: all; -webkit-user-select: all; word-break: break-all;
 }
 .lp-maccard .lp-link { display: inline-block; margin-top: 14px; text-align: left; }
-.lp-helper { font-size: 12.5px; color: var(--lp-faint); margin: 4px 0 0; line-height: 1.5; }
+.lp-helper { font-size: 13.5px; color: var(--lp-faint); margin: 4px 0 0; line-height: 1.5; }
 .landing.phone .lp-hero { text-align: left; padding-top: 36px; }
 .landing.phone .lp-h1 {
   font-size: clamp(36px, 10vw, 44px); margin: 0; max-width: none;
 }
-.landing.phone .lp-sub { margin-left: 0; font-size: 16.5px; }
+.landing.phone .lp-sub { margin-left: 0; }
 .landing.phone .lp-shot.hero { margin-top: 32px; }
 .landing.phone .lp-shot.hero::before { display: none; }
 .landing.phone .lp-shot { box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.11), 0 14px 40px rgba(59, 130, 246, 0.10); }
 .landing.phone .lp-story { padding-top: 64px; }
 .landing.phone .lp-section { padding: 32px 0; }
-.landing.phone .lp-h2 { font-size: 22px; }
-.landing.phone .lp-line { font-size: 15.5px; }
 .landing.phone .lp-story + .lp-maccard { margin-top: 64px; }
 .landing.phone .lp-foot { margin-top: 72px; }
 

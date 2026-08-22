@@ -12,19 +12,19 @@ Mac-owning professionals who sit in meetings and interviews all day and do not t
 
 ## Product Purpose
 
-MeetingScribe records any call or conversation on a Mac, shows live captions, produces a speaker-labelled transcript, and turns it into an AI summary with action items, all running on the user's own machine. Success for the landing page: a visitor understands the local-first difference and either runs the install one-liner or downloads the DMG.
+MeetingScribe records any call or conversation on a Mac, shows live captions, produces a speaker-labelled transcript, writes the notes, decisions and action items, and answers questions about any meeting with timestamp citations, all running on the user's own machine. Success for the landing page: a visitor sees the product, understands it runs on the Mac, and either runs the install one-liner or downloads the DMG.
 
 ## Positioning
 
-"Granola removed the bot from your meeting. MeetingScribe removes the cloud." No bot joins the call; audio is captured at the OS layer and never uploaded. User-confirmed lead story for the landing: privacy and speed carry EQUAL weight (dual-claim hero; 2026-07-31 interview).
+"Granola removed the bot from your meeting. MeetingScribe removes the cloud." No bot joins the call; audio is captured at the OS layer and never uploaded. Lead story for the landing (owner, 2026-08-22, superseding the 2026-07-31 dual-claim hero): show the product. Real screenshots carry the page, copy is minimal, the local claim appears once in the hero sentence.
 
 ## Operating Context
 
-Distribution: self-contained .app (bundled CPython runtime) on GitHub Releases; primary install is `curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh` (zero Gatekeeper dialogs), secondary is the DMG with a macOS 26 "Open Anyway" walkthrough. Requirements: Apple Silicon, macOS 26 Tahoe, ~370 MB download (1.2 GB on disk), speech models fetched on first run. Optional BlackHole driver for system audio; summaries use the user's Claude CLI or the on-device Apple engine. The site is a Vite + React 18 SPA (plain CSS) deployed to InsForge hosting behind meetingscribe.shariquekhatri.com; /install.sh must keep serving from the site root; the signed-in viewer and phone routing in App.jsx must keep working.
+Distribution: self-contained .app (bundled CPython runtime) on GitHub Releases; primary install is `curl -fsSL https://meetingscribe.shariquekhatri.com/install.sh | sh` (zero Gatekeeper dialogs), secondary is the DMG with a macOS 26 "Open Anyway" walkthrough. Requirements: Apple Silicon, macOS 26 Tahoe, 225 MB DMG (release v3.3.0), speech models fetched on first run. System audio is captured with a Core Audio process tap (no driver; macOS asks once for System Audio Recording). Summaries and Ask use Apple Intelligence on-device, or the user's own Claude, Codex, Gemini or Copilot account with transcript text only. The site is a Vite + React 18 SPA (plain CSS) deployed to InsForge hosting behind meetingscribe.shariquekhatri.com; /install.sh must keep serving from the site root; the signed-in viewer and phone routing in App.jsx must keep working.
 
 ## Capabilities and Constraints
 
-Live captions, speaker diarization, AI summaries with action items, phone sync of text only. Claims the user approved for the landing (2026-07-31): a 45-minute call transcribes in about 90 seconds on the Apple Neural Engine; free and open source under GPLv3 (relicensed from MIT 2026-08-02) (github.com/sharique2004/MeetingScribe); nothing leaves the Mac (audio and transcripts stay local; only text the user chooses to sync reaches the phone viewer). The old hero capsule ("100% local · your audio never leaves your Mac") is banned by the user; the local claim may appear once, subtly, elsewhere. No em dashes anywhere in site copy (user mandate, matches the app design brief's ban).
+Live captions, speaker diarization, AI summaries with action items, phone sync of text only. Claims verified for the landing (2026-08-22): a 45-minute meeting takes about a minute, on-device (README; Parakeet on the Apple GPU, Apple Speech fallback); free and open source under GPLv3 (LICENSE; relicensed from MIT 2026-08-02) (github.com/sharique2004/MeetingScribe); nothing leaves the Mac (audio and transcripts stay local; only text the user chooses to sync reaches the phone viewer); Ask answers cite the moments they came from and a click replays them (FloatingBar.swift). The old hero capsule ("100% local · your audio never leaves your Mac") is banned by the user; the local claim may appear once, subtly, elsewhere. No em dashes anywhere in site copy (user mandate, matches the app design brief's ban).
 
 ## Brand Commitments
 
@@ -32,11 +32,11 @@ The landing must inhabit the shipped app's converged visual world (user-binding)
 
 ## Evidence on Hand
 
-Real demo meeting data for product mocks: ui-demos/data.js (Q3 Roadmap Sync; You/Priya/Marcus; 20 turns). Reference implementations of the app's skin: templates/index.html (shipped), ui-demos/converged.html, ui-demos/aurora.html. Release evidence: v2.0.0 on GitHub with 365 MB DMG. No testimonials, user counts, or press exist; do not fabricate any.
+Six real screenshots of the shipped app in mobile/public/shots (home, record, notes, transcript, ask, settings; 1280x800 + @2x WebP), captured from a showcase data set: the synthesized demo meeting under fictional titles with speakers renamed Priya Nair / Marcus Bell, so no real meeting or person appears. Recapture recipe in the project memory (product-screenshot-recipe). Release evidence: v3.3.0 on GitHub, 225 MB DMG. No testimonials, user counts, or press exist; do not fabricate any.
 
 ## Product Principles
 
 - Privacy is the product, speed is the proof: every claim must reinforce that local-first costs nothing in capability.
-- The site is the app's first screen: same world, same materials, same restraint as the shipped transcript UI.
+- The site is the app's first screen: real screenshots of it, in the same world and with the same restraint; never a CSS imitation.
 - One command is the whole funnel: nothing on the page may upstage the install one-liner and DMG button.
 - Honest indie: state requirements and the Gatekeeper reality plainly; never imitate big-vendor marketing apparatus.
