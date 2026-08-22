@@ -19,7 +19,10 @@ const REDUCED =
 
 /* ------------------------------ motion hook ------------------------------- */
 
-// Flips true once, the first time the element scrolls into view.
+// Flips true once, the first time the element scrolls into view. The flag
+// only ADDS a rise animation: a section is visible whether or not the
+// observer ever fires (hidden tabs, old engines), so no screenshot can be
+// missing from the page.
 function useReveal(threshold = 0.15) {
   const ref = React.useRef(null);
   const [inView, setInView] = React.useState(REDUCED);
@@ -96,8 +99,8 @@ function Shot({ name, hero = false }) {
         width="1280"
         height="800"
         alt={SHOTS[name].alt}
-        loading={hero ? "eager" : "lazy"}
-        fetchpriority={hero ? "high" : undefined}
+        loading="eager"
+        fetchpriority={hero ? "high" : "auto"}
         decoding={hero ? "sync" : "async"}
       />
     </figure>
