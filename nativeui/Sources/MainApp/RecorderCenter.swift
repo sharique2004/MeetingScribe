@@ -32,21 +32,28 @@ struct RecordOptions: Equatable {
     /// event has to carry its own count here.
     var attendees: Int?
 
-    /// The count to send. The engine's arithmetic, kept identical: calendar
-    /// attendees exclude you, an online call wants the OTHER speakers, and a
-    /// room around one microphone wants everybody in it.
-    var resolvedSpeakers: Int? {
-        if let expectedSpeakers { return expectedSpeakers }
+    /// The calendar's guess, in the engine's arithmetic: attendees exclude
+    /// you, an online call wants the OTHER speakers, and a room around one
+    /// microphone wants everybody in it. Sent as `speaker_count_hint`, which
+    /// the engine applies as a cap on its automatic count — never as
+    /// `expected_speakers`, which it honours literally and which is reserved
+    /// for a number a person picked.
+    var calendarHint: Int? {
         guard let attendees, attendees > 0 else { return nil }
         return min(8, max(1, inPerson ? attendees + 1 : attendees))
     }
+
+    /// What the engine will treat as the count: an explicit pick, else the
+    /// calendar's cap. Display only — the request sends the two apart.
+    var resolvedSpeakers: Int? { expectedSpeakers ?? calendarHint }
 
     var requestBody: [String: Any] {
         var body: [String: Any] = ["mode": inPerson ? "inperson" : "online"]
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { body["title"] = trimmed }
         if language != "auto" { body["language"] = language }
-        if let n = resolvedSpeakers { body["expected_speakers"] = n }
+        if let n = expectedSpeakers { body["expected_speakers"] = n }
+        if let n = calendarHint { body["speaker_count_hint"] = n }
         return body
     }
 }

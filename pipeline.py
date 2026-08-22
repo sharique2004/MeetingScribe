@@ -1197,7 +1197,112 @@ def drop_echo(mic_segs, sys_segs):
     return kept, dropped, trimmed
 
 
+# --- Self-echo: the user's OWN voice coming back on the system track -------------
+# The far end sometimes sends the user's voice back: a remote participant on
+# open speakers with a weak canceller, "original sound" mode, two remote
+# people in one room. That copy lands on the system track a network round
+# trip AFTER the mic heard it, and drop_echo above cannot see it — it only
+# ever deletes MIC segments — so it was clustered and published as a phantom
+# far-end "Speaker N" saying the user's words.
+#
+# The signature is the LAG, and it was measured (2026-08-21, scratch probe
+# over the 20 saved meetings that carry both tracks, scoring every far-end
+# segment of >= ECHO_MIN_TOKENS words against the mic words around it, after
+# drop_echo had run):
+#
+#   * one call carries real self-echo: 10 far-end segments, 6-92 words each,
+#     word containment 0.71-1.00, every one at a lag of 0.33-0.41 s;
+#   * the far end REPLYING in the user's words ("Great talking to you too",
+#     "I'm good, thank you") matches at 0.75-0.80 but at 0.97-1.21 s — a
+#     person answering, not a wire echoing;
+#   * leak residue drop_echo missed (the far end in the mic) matches with the
+#     mic copy at or AFTER the far-end copy: lag -0.10 to +0.01 s;
+#   * a decoy (mic shifted 600 s) scores zero matches at any ratio.
+#
+# So: containment at the word path's own bar, and the median lag of the
+# matched words inside [SELF_ECHO_MIN_LAG_S, SELF_ECHO_MAX_LAG_S]. The lower
+# edge is causality (an echo cannot precede its cause, and the leak residue
+# sits at zero); the upper edge is placed inside the empty band between the
+# slowest echo seen (0.41 s) and the fastest reply (0.97 s). Both edges are
+# set by ONE call each — re-measure when a second self-echo call lands.
+SELF_ECHO_MIN_LAG_S = 0.15
+SELF_ECHO_MAX_LAG_S = 0.7
+# How far back from a far-end segment to gather mic words for the comparison.
+# Wider than SELF_ECHO_MAX_LAG_S on purpose: the lag gate, not the window,
+# decides, and a narrow window would hide a slow echo instead of rejecting it.
+SELF_ECHO_SEARCH_S = 1.5
+
+
+def _timed_tokens(seg):
+    """[(start, normalised word)] for one segment, from its word timestamps
+    when it has them, else every token at the segment start."""
+    words = seg.get("words") or []
+    out = []
+    if words:
+        for w in words:
+            for tok in _norm_text(w["w"]).split():
+                out.append((float(w["s"]), tok))
+    else:
+        for tok in _norm_text(seg["text"]).split():
+            out.append((float(seg["start"]), tok))
+    return out
+
+
+def drop_self_echo(sys_segs, mic_segs):
+    """Remove system-track segments that are the user's own voice echoed back.
+
+    Run AFTER drop_echo, on the mic segments it kept: the leaked far-end
+    copies drop_echo removes would otherwise match their own originals here
+    at zero lag (the lag gate rejects them anyway, but there is no reason to
+    let them into the comparison).
+
+    Returns (kept_system_segments, dropped_count).
+    """
+    mic_words = []
+    for m in mic_segs:
+        mic_words.extend(_timed_tokens(m))
+    if not mic_words:
+        return list(sys_segs), 0
+    mic_words.sort(key=lambda w: w[0])
+    mic_starts = [w[0] for w in mic_words]
+
+    kept, dropped = [], 0
+    for seg in sys_segs:
+        sys_words = _timed_tokens(seg)
+        toks = [w[1] for w in sys_words]
+        if len(toks) < ECHO_MIN_TOKENS:
+            kept.append(seg)
+            continue
+        start, end = float(seg["start"]), float(seg["end"])
+        lo = bisect_left(mic_starts, start - SELF_ECHO_SEARCH_S)
+        hi = bisect_right(mic_starts, end - SELF_ECHO_MIN_LAG_S)
+        window = mic_words[lo:hi]
+        win_toks = [w[1] for w in window]
+        if _echo_containment(toks, win_toks) < ECHO_DROP_RATIO:
+            kept.append(seg)
+            continue
+        # The lag of the match: far-end word time minus the mic time of the
+        # same word, over every matched word, so one stray alignment cannot
+        # set it. Median, so the number is a lag and not an average of lags.
+        sm = difflib.SequenceMatcher(None, toks, win_toks, autojunk=False)
+        lags = []
+        for block in sm.get_matching_blocks():
+            for k in range(block.size):
+                lags.append(sys_words[block.a + k][0] - window[block.b + k][0])
+        if not lags:
+            kept.append(seg)
+            continue
+        lags.sort()
+        lag = lags[len(lags) // 2]
+        if SELF_ECHO_MIN_LAG_S <= lag <= SELF_ECHO_MAX_LAG_S:
+            dropped += 1
+        else:
+            kept.append(seg)
+    return kept, dropped
+
+
 ECHO_WARNING_PREFIX = "Mic audio contained speaker echo"
+SELF_ECHO_WARNING_PREFIX = "Call audio contained your own voice"
 
 # EVERY warning _label_and_assemble can emit starts with this word — both the
 # per-track failure notice and MIC_ONLY_WARNING are built from it below. That
@@ -1217,7 +1322,8 @@ DIARIZATION_WARNING_PREFIX = "Diarization"
 # the echo warning — which recluster never recomputes, because echo cleanup
 # happens during transcription — and the meeting would silently lose it on the
 # first speaker-count change.
-PIPELINE_WARNING_PREFIXES = (DIARIZATION_WARNING_PREFIX, "Removed ", ECHO_WARNING_PREFIX)
+PIPELINE_WARNING_PREFIXES = (DIARIZATION_WARNING_PREFIX, "Removed ", ECHO_WARNING_PREFIX,
+                             SELF_ECHO_WARNING_PREFIX)
 
 
 def _build_turns(labelled_segments):
@@ -1352,6 +1458,14 @@ MIC_ONLY_WARNING = (
     "cannot be told apart from the others, so nobody is labelled \"You\". "
     "Rename the speakers above. To capture the call on its own track next "
     "time, open System Settings, Privacy and Security, Screen and System "
+    "Audio Recording, and allow MeetingScribe."
+)
+MIC_ONLY_WARNING_PINNED = (
+    DIARIZATION_WARNING_PREFIX + " fell back to the microphone: the call-audio "
+    "track was silent, so both sides of the conversation were recorded on the "
+    "mic. The voices were separated by sound, and yours was recognised from "
+    "earlier calls and labelled \"You\". To capture the call on its own track "
+    "next time, open System Settings, Privacy and Security, Screen and System "
     "Audio Recording, and allow MeetingScribe."
 )
 
@@ -1515,11 +1629,37 @@ def _mic_holds_a_second_voice(state, threshold):
 
 
 # Written by recluster_meeting() when the count came from the speaker-count
-# control, i.e. from a person looking at the result. Everywhere else
-# meta["expected_speakers"] is a guess: at record time app.py fills it in from
-# the calendar invitee count, which is a prediction about the meeting, not an
-# observation of the recording.
+# control, i.e. from a person looking at the result.
 SPEAKER_COUNT_USER = "user"
+
+# --- The calendar's guess lives under its OWN key -------------------------------
+# meta["speaker_count_hint"] is app.py's record-time guess from the calendar
+# invitee count: online, people besides you; in-person, people in the room.
+# It is a prediction about the meeting, not an observation of the recording,
+# and it is applied as a CAP on the auto path (diarization.cluster's
+# max_speakers — surplus small clusters fold down to it, a voice with
+# HINT_OVERRIDE_S of speech stays regardless). It is NEVER passed as
+# n_speakers: that branch returns exactly N clusters with no cleanup, which is
+# how a 3-person invite on a 1:1 call used to ship two phantom speakers, and a
+# 1:1 invite on a 3-person call a monologue. meta["expected_speakers"] is now
+# only ever a number a person typed — at record time or in the speaker-count
+# control — and is still honoured literally.
+#
+# BACK-COMPAT: meetings recorded before this key existed carry the calendar's
+# guess IN expected_speakers with no speaker_count_source, indistinguishable
+# from a count typed on the record form. They keep today's forced behaviour;
+# an Auto recluster clears it. Nothing is migrated, because nothing on disk
+# says which of the two it was.
+SPEAKER_COUNT_HINT = "speaker_count_hint"
+
+
+def _speaker_count_hint(meta):
+    """The calendar's invitee-count cap for this meeting, or None."""
+    try:
+        hint = int(meta.get(SPEAKER_COUNT_HINT) or 0)
+    except (TypeError, ValueError):
+        return None
+    return max(1, min(8, hint)) if hint > 0 else None
 
 # --- What number is meta["expected_speakers"]? ---------------------------------
 # It has always meant two different things depending on which control produced
@@ -1782,7 +1922,8 @@ def _embed_track(track_file, segs, progress_cb):
 
 
 def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_cb,
-                        precomputed=None, collect=None, allow_neural_run=True):
+                        precomputed=None, collect=None, allow_neural_run=True,
+                        hint=None):
     """Steps 3+4: cluster voices into speakers and build the final transcript.
 
     Mutates meta (speakers/turns/stats) and the transcript segments. Returns
@@ -1821,8 +1962,12 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     track_state = {}
     neural_used = []
 
-    def diarize(key, n_speakers, prefix, name_fmt, start_index):
-        """Cluster one track's voices; returns labelled segments + speaker map."""
+    def diarize(key, n_speakers, prefix, name_fmt, start_index, max_speakers=None):
+        """Cluster one track's voices; returns labelled segments + speaker map.
+
+        n_speakers is a person's count and forces the result; max_speakers is
+        the calendar's and only caps the auto path (see SPEAKER_COUNT_HINT).
+        """
         segs = transcripts.get(key) or []
         if not segs:
             return [], {}
@@ -1842,6 +1987,7 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 precomputed=(cached[:2] if cached is not None
                              else _embed_track(track_file, segs, progress_cb)),
                 state=state,
+                max_speakers=None if n_speakers else max_speakers,
             )
         except ModelDownloadError as exc:
             # The transcript is already written and is the valuable half, so a
@@ -1891,9 +2037,30 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             ordered.setdefault(seg["speaker"], speakers[seg["speaker"]])
         return new_segs, ordered
 
+    def pin_owner(segs, speaker_map):
+        """Relabel the mic cluster that matches the owner's voice print as
+        "you". Returns (segs, speaker_map, pinned). The mic is clustered here
+        because the user is one voice among several on it — in-person, or the
+        mic-only fallback — and without the print they are "Speaker N" like
+        everyone else. See voice_profiles.recognize_owner for the bars."""
+        owner = voice_profiles.recognize_owner(track_state, segs, speaker_map, cfg)
+        if not owner:
+            return segs, speaker_map, False
+        for seg in segs:
+            if seg["speaker"] == owner:
+                seg["speaker"] = "you"
+        renamed = {}
+        for k, v in speaker_map.items():
+            if k == owner:
+                renamed["you"] = "You"
+            else:
+                renamed[k] = v
+        return segs, renamed, True
+
     labelled = []
     speakers = {}
     mic_only = False
+    pinned_you = False
     if mode == "online":
         mic_segs = transcripts.get("mic") or []
         sys_segs = transcripts.get("system") or []
@@ -1950,9 +2117,14 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                     "second voice" if second_voice else "just you",
                 )
             if second_voice:
+                # The fallback's whole apology is "which one is you cannot be
+                # told". With an enrolled print, sometimes it can.
+                fallback_segs, fallback_speakers, pinned_you = pin_owner(
+                    fallback_segs, fallback_speakers)
                 labelled.extend(fallback_segs)
                 speakers.update(fallback_speakers)
-                warnings.append(MIC_ONLY_WARNING)
+                warnings.append(MIC_ONLY_WARNING_PINNED if pinned_you
+                                else MIC_ONLY_WARNING)
             else:
                 # One voice on the mic is the user talking, as usual. The
                 # fallback's output is dropped on the floor — diarize_track
@@ -1968,6 +2140,28 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
                 seg["speaker"] = "you"
                 seg["track"] = "mic"
             labelled.extend(mic_segs)
+            # The mic is the user by construction here, which makes it the one
+            # clean sample of their voice the product ever records. Embed it
+            # (once — the fallback probe above may already have) so
+            # process_meeting can enroll the owner print and so the cache
+            # carries it for any later run. Nothing is clustered.
+            if cfg.get("voice_profiles", True) and "mic" not in track_state:
+                cached = (precomputed or {}).get("mic")
+                try:
+                    pre = (cached[:2] if cached is not None else
+                           _embed_track(meeting_dir / meta["tracks"]["mic"]["file"],
+                                        mic_segs, progress_cb))
+                except Exception as exc:
+                    log.warning("mic embedding for the owner print failed (%s)", exc)
+                    pre = None
+                if pre is not None:
+                    state = {
+                        "windows": [tuple(w) for w in np.asarray(pre[0]).tolist()],
+                        "embeddings": np.asarray(pre[1], dtype=np.float64),
+                    }
+                    track_state["mic"] = state
+                    if collect is not None:
+                        collect["mic"] = state
         if sys_segs:
             # mic_only is necessarily False here: _system_track_lost() requires
             # `not sys_segs`, so reaching this block at all means the system
@@ -1976,13 +2170,16 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
             # track a "Remote 1..N" namespace, which no input could ever reach;
             # it is gone rather than left to look like a supported path.
             progress_cb("Identifying speakers…")
-            new_sys, sys_speakers = diarize("system", expected, "s", "Speaker {}", 1)
+            new_sys, sys_speakers = diarize("system", expected, "s", "Speaker {}", 1,
+                                            max_speakers=hint)
             labelled.extend(new_sys)
             speakers.update(sys_speakers)
     else:  # in-person: everyone shares the mic
         if transcripts.get("mic"):
             progress_cb("Identifying speakers…")
-            mic_segs, mic_speakers = diarize("mic", expected, "s", "Speaker {}", 1)
+            mic_segs, mic_speakers = diarize("mic", expected, "s", "Speaker {}", 1,
+                                             max_speakers=hint)
+            mic_segs, mic_speakers, pinned_you = pin_owner(mic_segs, mic_speakers)
             labelled.extend(mic_segs)
             speakers.update(mic_speakers)
         if transcripts.get("system"):
@@ -2028,7 +2225,11 @@ def _label_and_assemble(meeting_dir, meta, transcripts, cfg, expected, progress_
     # Tell the UI whether "you" means anything on this meeting. See the
     # docstring: under "mic_fallback" no speaker is known to be the local user,
     # so the template must not claim one is. Cleared, never left stale.
-    if mic_only:
+    # A pinned owner is the one case the marker's sentence ("which one is you
+    # cannot be told") is false, so it is not written — and the speaker-count
+    # control then asks "besides you", which _user_speaker_count turns back
+    # into the mic total the fallback needs.
+    if mic_only and not pinned_you:
         meta["diarization_mode"] = "mic_fallback"
     else:
         meta.pop("diarization_mode", None)
@@ -2364,7 +2565,7 @@ def recluster_meeting(meeting_dir, expected_speakers, progress_cb=lambda msg: No
     collect = {}
     label_warnings = _label_and_assemble(
         meeting_dir, meta, transcripts, cfg, expected_speakers, progress_cb,
-        precomputed=precomputed, collect=collect,
+        precomputed=precomputed, collect=collect, hint=_speaker_count_hint(meta),
         # Auto recluster promises sub-second answers, so it only ever reuses
         # cached neural turns. A recluster where the user TYPED a count is an
         # explicit act worth a few seconds: the neural engine re-derives
@@ -2497,6 +2698,17 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
                 f"{ECHO_WARNING_PREFIX}: " + " and ".join(parts)
                 + " (tip: headphones avoid this entirely)."
             )
+        # The other direction: the user's voice coming back on the call audio.
+        # On the mic segments drop_echo KEPT — see drop_self_echo.
+        kept_sys, self_dropped = drop_self_echo(transcripts["system"], transcripts["mic"])
+        transcripts["system"] = kept_sys
+        if self_dropped:
+            echo_warnings.append(
+                f"{SELF_ECHO_WARNING_PREFIX}: removed {self_dropped} echoed "
+                "segment(s) from the call audio so it would not be labelled as "
+                "another speaker (the other side's echo cancellation let your "
+                "voice through)."
+            )
 
     # --- 3+4. Speaker labelling and assembly ---------------------------------------
     # Keep a pristine copy of the transcripts plus the voice embeddings so the
@@ -2504,9 +2716,23 @@ def process_meeting(meeting_dir, progress_cb=lambda msg: None):
     saved_transcripts = json.loads(json.dumps(transcripts))
     collect = {}
     label_warnings = _label_and_assemble(
-        meeting_dir, meta, transcripts, cfg, expected, progress_cb, collect=collect
+        meeting_dir, meta, transcripts, cfg, expected, progress_cb, collect=collect,
+        hint=_speaker_count_hint(meta),
     )
     _save_analysis_state(meeting_dir, saved_transcripts, collect)
+
+    # --- Owner voice print ---------------------------------------------------------
+    # A HEALTHY online call — the mic was "You" by construction and no echo
+    # cleanup fired, so nothing of the far end is in those windows — is the
+    # sample of the user's own voice that later in-person and mic-only
+    # meetings are matched against (voice_profiles.recognize_owner). A call
+    # that needed echo removal is not trusted: what escaped the word matcher
+    # would be enrolled as the user.
+    if (mode == "online" and cfg.get("voice_profiles", True)
+            and not echo_warnings and not meta.get("diarization_mode")
+            and "you" in (meta.get("speakers") or {}) and collect.get("mic")):
+        voice_profiles.enroll_owner_from_state(
+            meta.get("id") or meeting_dir.name, collect["mic"], meta.get("turns"))
 
     # Read meeting.json again, as late as possible. Transcription takes minutes,
     # and the browser can retitle the meeting or rename a speaker throughout;

@@ -84,6 +84,12 @@ sys.path.insert(0, str(REPO))
 
 import diarization as diarization_mod  # noqa: E402
 import pipeline  # noqa: E402
+import voice_profiles  # noqa: E402
+
+# The labelling step reads the voice-profile store, and this suite asserts
+# exact speaker maps, so it must never see the user's real profiles — an
+# enrolled owner print would turn a "Speaker 2" into "you" mid-check.
+voice_profiles.PROFILES_PATH = Path(tempfile.mkdtemp(prefix="ms-vp-test-")) / "voice_profiles.json"
 
 # The local corpus ships no labels.json, but tools/eval_diarization.py carries a
 # reviewed TRUTH table for 21 of its 22 meetings (how many voices are really on
@@ -1032,6 +1038,161 @@ def check_calendar_guess_never_forces(fail, corpus):
              f"mic under the fallback: speakers={meta['speakers']}")
 
 
+def check_calendar_hint_caps_without_forcing(fail, corpus):
+    """The calendar's guess is a CAP on the auto path, never a forced count.
+
+    app.py writes the invitee count to meta["speaker_count_hint"]; pipeline
+    passes it to diarization_mod.cluster(max_speakers=...) on the system track
+    (online) and the mic (in-person). Three properties, each a failure this
+    replaces:
+
+      1. a hint ABOVE the voices present manufactures nothing (cluster(n=N)
+         used to return exactly N clusters on a solo track);
+      2. a hint BELOW the voices present folds the surplus small clusters down
+         to it (a 1:1 invite keeps a 1:1 call at one far-end voice);
+      3. a voice with HINT_OVERRIDE_S of speech survives a lower hint — the
+         recording outranks the invite.
+    Plus the plumbing: an in-person labelling run with the hint in meta ends
+    up capped, and a typed count still forces exactly.
+    """
+    four = "synthetic-four-voices-20200101-000006"
+    if corpus is not SYNTHETIC:
+        print("    synthetic-only check (needs labelled voice counts)")
+        return
+    thr = float(pipeline.load_config()["diarization_threshold"])
+
+    # 1. hint above the truth on a solo track.
+    st = mic_state(corpus, corpus.solo_mic)
+    dur = [w[1] - w[0] for w in st["windows"]]
+    capped = diarization_mod.cluster(st["embeddings"], threshold=thr,
+                                 durations=dur, max_speakers=5)
+    print(f"    solo mic, hint 5 -> {len(set(capped))} cluster(s)")
+    if len(set(capped)) != 1:
+        fail(f"a hint of 5 manufactured {len(set(capped))} voices on a solo mic")
+
+    # 2. hint below the truth: four 40 s voices, hint 2 -> 2.
+    st = mic_state(corpus, four)
+    dur = [w[1] - w[0] for w in st["windows"]]
+    auto = diarization_mod.cluster(st["embeddings"], threshold=thr, durations=dur)
+    capped = diarization_mod.cluster(st["embeddings"], threshold=thr,
+                                 durations=dur, max_speakers=2)
+    print(f"    four voices: auto {len(set(auto))}, hint 2 -> {len(set(capped))}")
+    if len(set(auto)) != 4:
+        fail(f"auto path changed: four-voices clusters to {len(set(auto))}")
+    if len(set(capped)) != 2:
+        fail(f"hint 2 over four 40 s voices gave {len(set(capped))}, expected 2")
+
+    # 3. evidence overrides: same voices at >= HINT_OVERRIDE_S each.
+    scale = diarization_mod.HINT_OVERRIDE_S / 40.0 + 0.01
+    long_dur = [d * scale for d in dur]
+    kept = diarization_mod.cluster(st["embeddings"], threshold=thr,
+                               durations=long_dur, max_speakers=2)
+    print(f"    four voices at >= {diarization_mod.HINT_OVERRIDE_S:.0f} s each, "
+          f"hint 2 -> {len(set(kept))}")
+    if len(set(kept)) != 4:
+        fail(f"hint 2 folded a voice carrying >= HINT_OVERRIDE_S of speech "
+             f"({len(set(kept))} kept, expected 4)")
+
+    # 4. plumbing: in-person labelling reads the hint from meta.
+    with tempfile.TemporaryDirectory(prefix="ms-hint-test-") as tmp:
+        work = Path(tmp) / four
+        shutil.copytree(fixture_dir(corpus, four), work)
+        meta = load_meta(corpus, four)
+        meta["mode"] = "inperson"
+        meta[pipeline.SPEAKER_COUNT_HINT] = 2
+        meta["expected_speakers"] = None
+        transcripts = load_transcripts(corpus, four)
+        transcripts["system"] = []
+        pipeline._label_and_assemble(
+            work, meta, transcripts, pipeline.load_config(), None,
+            lambda msg: None, precomputed=load_precomputed(corpus, four),
+            collect={}, allow_neural_run=False,
+            hint=pipeline._speaker_count_hint(meta),
+        )
+        print(f"    in-person run, hint 2 -> speakers={json.dumps(meta['speakers'])}")
+        if len(meta["speakers"]) != 2:
+            fail(f"in-person labelling ignored the hint: {meta['speakers']}")
+
+        # A typed count still forces exactly, hint or no hint.
+        meta["expected_speakers"] = 3
+        transcripts = load_transcripts(corpus, four)
+        transcripts["system"] = []
+        pipeline._label_and_assemble(
+            work, meta, transcripts, pipeline.load_config(), 3,
+            lambda msg: None, precomputed=load_precomputed(corpus, four),
+            collect={}, allow_neural_run=False,
+            hint=pipeline._speaker_count_hint(meta),
+        )
+        print(f"    in-person run, typed 3 + hint 2 -> "
+              f"speakers={json.dumps(meta['speakers'])}")
+        if len(meta["speakers"]) != 3:
+            fail(f"a typed count of 3 was not honoured: {meta['speakers']}")
+
+
+def check_owner_print_pins_you_in_person(fail, corpus):
+    """In-person, the mic cluster matching the enrolled owner print is "you".
+
+    The owner print is built from one voice of the four-voices fixture (as an
+    online call would have enrolled it), then the fixture is labelled as an
+    in-person room: that voice's windows must come back as "you" and the other
+    three as Speaker N. With the print forgotten, nobody is "you" — the
+    pre-2026-08-21 behaviour.
+    """
+    four = "synthetic-four-voices-20200101-000006"
+    if corpus is not SYNTHETIC:
+        print("    synthetic-only check (needs labelled voice identities)")
+        return
+    labels = load_labels(corpus, four)
+    voices = labels["tracks"]["mic"]["window_voices"]
+    st = mic_state(corpus, four)
+    wins = np.asarray(st["windows"])
+    spans = [tuple(w) for w, v in zip(wins.tolist(), voices) if v == "A"]
+    centroid, seconds, speech = voice_profiles.centroid_for_spans(
+        wins, st["embeddings"], spans)
+    assert voice_profiles.enroll_owner("online-x", "you", centroid, seconds, speech)
+
+    def label_room():
+        with tempfile.TemporaryDirectory(prefix="ms-owner-test-") as tmp:
+            work = Path(tmp) / four
+            shutil.copytree(fixture_dir(corpus, four), work)
+            meta = load_meta(corpus, four)
+            meta["mode"] = "inperson"
+            meta["expected_speakers"] = None
+            transcripts = load_transcripts(corpus, four)
+            transcripts["system"] = []
+            pipeline._label_and_assemble(
+                work, meta, transcripts, pipeline.load_config(), None,
+                lambda msg: None, precomputed=load_precomputed(corpus, four),
+                collect={}, allow_neural_run=False)
+        return meta
+
+    try:
+        meta = label_room()
+        print(f"    with owner print -> speakers={json.dumps(meta['speakers'])}")
+        if meta["speakers"].get("you") != "You" or len(meta["speakers"]) != 4:
+            fail(f"owner print did not pin 'you' in-person: {meta['speakers']}")
+        # Every window-second labelled "you" is voice A and vice versa.
+        you_spans = [(t["start"], t["end"]) for t in meta["turns"] if t["speaker"] == "you"]
+        mids = (wins[:, 0] + wins[:, 1]) / 2.0
+        in_you = np.zeros(len(wins), dtype=bool)
+        for s, e in you_spans:
+            in_you |= (mids >= s) & (mids <= e)
+        is_a = np.array([v == "A" for v in voices])
+        agree = float((in_you == is_a).mean())
+        print(f"    'you' windows agree with voice A on {agree:.0%} of windows")
+        if agree < 0.95:
+            fail(f"'you' covers the wrong windows ({agree:.0%} agreement with voice A)")
+        if meta.get("diarization_mode"):
+            fail("in-person meeting acquired a diarization_mode marker")
+    finally:
+        voice_profiles.forget_meeting("online-x")
+
+    meta = label_room()
+    print(f"    print forgotten -> speakers={json.dumps(meta['speakers'])}")
+    if "you" in meta["speakers"]:
+        fail("'you' appeared in-person with no owner print")
+
+
 def check_user_count_overrides_both_ways(fail, corpus):
     """The escape hatch: a human-picked count wins in both directions.
 
@@ -1150,6 +1311,8 @@ CHECKS = [
     ("revert-to-You valve keeps 'You' on a solo mic", check_revert_to_you_valve),
     ("fallback engages on a real multi-voice mic", check_fallback_engages_on_real_room),
     ("a calendar guess never forces a count", check_calendar_guess_never_forces),
+    ("a calendar hint caps without forcing", check_calendar_hint_caps_without_forcing),
+    ("the owner print pins 'you' in-person", check_owner_print_pins_you_in_person),
     ("a user-chosen count overrides both ways", check_user_count_overrides_both_ways),
     ("recluster_meeting writes an honest meeting.json", check_recluster_writes_the_marker),
 ]

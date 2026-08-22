@@ -344,6 +344,7 @@ def load_profiles():
         out.append({
             "id": prof.get("id"),
             "name": prof.get("name"),
+            "owner": bool(prof.get("owner")),
             "centroid": centroid,
             "window_seconds": window_s,
             "speech_seconds": speech_s,
@@ -359,7 +360,7 @@ def list_profiles():
     second of speech twice, so the field simply is not offered.
     """
     return [
-        {k: p[k] for k in ("id", "name", "speech_seconds", "n_samples", "updated")}
+        {k: p[k] for k in ("id", "name", "owner", "speech_seconds", "n_samples", "updated")}
         for p in load_profiles()
     ]
 
@@ -564,7 +565,12 @@ def apply_recognition(track_state, segments, speakers, cfg):
     try:
         if not cfg.get("voice_profiles", True):
             return {}
-        profiles = load_profiles()
+        # The owner's print never names a far-end cluster: the user's voice on
+        # the call-audio track is self-echo, which pipeline.drop_self_echo
+        # removes before this runs, and a "You" label on the far side would
+        # contradict the mic. The owner is matched by recognize_owner, on the
+        # mic, on the meetings where the mic is not "You" by construction.
+        profiles = [p for p in load_profiles() if not p.get("owner")]
         if not profiles:
             return {}
         replaceable = {k for k, v in speakers.items()
@@ -593,6 +599,141 @@ def apply_recognition(track_state, segments, speakers, cfg):
     except Exception:
         log.exception("voice recognition failed — leaving default names")
         return {}
+
+
+# --- the owner's own voice ---------------------------------------------------
+# Online, the mic is "You" by construction, and until 2026-08-21 that was the
+# end of it: the mic was never embedded, so the one clean recording of the
+# user's voice the product takes on every call was thrown away, and on the
+# meetings where the mic is NOT "You" by construction — in-person, and the
+# mic-only fallback — the user was just another "Speaker N". The owner
+# profile closes that: it is enrolled automatically from healthy online calls
+# (pipeline decides what "healthy" means: no echo cleanup fired) and matched
+# against the mic clusters of in-person and fallback meetings.
+#
+# It is ONE profile, flagged "owner", displayed as OWNER_NAME, and kept out of
+# the ordinary far-end recognition (apply_recognition). It is derived data
+# like every other profile: samples per meeting, MAX_SAMPLES_PER_PROFILE
+# newest kept, SAMPLE_WEIGHT_CAP_S per sample, forgotten with the meeting and
+# deletable from the Voices list.
+
+OWNER_NAME = "You"
+
+
+def _owner_raw(doc):
+    return next((p for p in doc["profiles"] if p.get("owner")), None)
+
+
+def enroll_owner(meeting_id, speaker_key, centroid, seconds, speech_seconds=None):
+    """File one meeting's sample of the user's own voice. Returns the owner
+    profile's id, or None when the sample is refused (too little speech, or
+    no usable centroid). Same gate as any enrollment: ENROLL_MIN_WINDOW_S.
+    """
+    if centroid is None or seconds < ENROLL_MIN_WINDOW_S:
+        return None
+    vec = np.asarray(centroid, dtype=np.float64).ravel()
+    vec_norm = np.linalg.norm(vec)
+    if not np.isfinite(vec_norm) or vec_norm == 0:
+        return None
+    vec = vec / vec_norm
+    sample_key = f"{meeting_id}:{speaker_key}"
+    now = int(time.time())
+    sample = {
+        "centroid": [round(float(x), 6) for x in vec],
+        "seconds": round(float(seconds), 2),
+        "embed_version": diarization.EMBED_VERSION,
+        "updated": now,
+    }
+    if speech_seconds is not None:
+        sample["speech_seconds"] = round(float(speech_seconds), 2)
+    with _LOCK:
+        doc = _load_raw()
+        target = _owner_raw(doc)
+        if target is None:
+            target = {"id": f"vp_{uuid.uuid4().hex[:12]}", "name": OWNER_NAME,
+                      "owner": True, "created": now, "samples": {}}
+            doc["profiles"].append(target)
+        target.setdefault("samples", {})[sample_key] = sample
+        target["updated"] = now
+        if len(target["samples"]) > MAX_SAMPLES_PER_PROFILE:
+            keep = sorted(target["samples"].items(),
+                          key=lambda kv: kv[1].get("updated", 0),
+                          reverse=True)[:MAX_SAMPLES_PER_PROFILE]
+            target["samples"] = dict(keep)
+        _save_raw(doc)
+        profile_id = target["id"]
+    log.info("enrolled owner voice sample %s (%.0f window-s)", sample_key, seconds)
+    return profile_id
+
+
+def enroll_owner_from_state(meeting_id, state, turns):
+    """Enroll the owner from a finished ONLINE meeting's mic embeddings.
+
+    `state` is {windows, embeddings} of the mic track; `turns` the meeting's
+    turns, of which the ones labelled "you" on the mic are the user by
+    construction. Best effort: returns the profile id or None, never raises.
+    """
+    try:
+        if not state or not turns:
+            return None
+        spans = [(t["start"], t["end"]) for t in turns
+                 if t.get("speaker") == "you" and t.get("track", "mic") == "mic"]
+        if not spans:
+            return None
+        centroid, seconds, speech = centroid_for_spans(
+            state.get("windows"), state.get("embeddings"), spans)
+        return enroll_owner(meeting_id, "you", centroid, seconds, speech)
+    except Exception:
+        log.exception("owner voice enrollment failed")
+        return None
+
+
+def owner_profile():
+    """The owner's working profile (see load_profiles), or None."""
+    return next((p for p in load_profiles() if p.get("owner")), None)
+
+
+def recognize_owner(track_state, segments, speakers, cfg, track="mic"):
+    """Which default-named cluster on `track` is the user? Returns its
+    speaker key, or None when there is no owner profile, no cluster is close
+    enough, or two clusters are both close (then guessing would label a
+    stranger "You", which is worse than a rename).
+
+    Same bars as ordinary recognition: MATCH_MIN_WINDOW_S of window time,
+    cosine distance <= the configured threshold, and the runner-up CLUSTER at
+    least AMBIGUITY_MARGIN further away than the winner. Never raises.
+    """
+    try:
+        if not cfg.get("voice_profiles", True):
+            return None
+        owner = owner_profile()
+        if owner is None:
+            return None
+        candidates = {k for k, v in speakers.items() if is_default_name(v)}
+        if not candidates:
+            return None
+        centroids = cluster_centroids(
+            {track: (track_state or {}).get(track)},
+            [s for s in segments if s.get("track") == track])
+        scored = sorted(
+            (float(1.0 - np.dot(vec, owner["centroid"])), skey)
+            for skey, (vec, seconds) in centroids.items()
+            if skey in candidates and seconds >= MATCH_MIN_WINDOW_S)
+        if not scored:
+            return None
+        threshold = float(cfg.get("voice_profile_threshold", RECOGNIZE_MAX_DIST))
+        dist, skey = scored[0]
+        if dist > threshold:
+            return None
+        if len(scored) > 1 and (scored[1][0] - dist) < AMBIGUITY_MARGIN:
+            log.info("owner match ambiguous (%.3f vs %.3f) — skipped",
+                     dist, scored[1][0])
+            return None
+        log.info("owner voice recognized as %s (distance %.3f)", skey, dist)
+        return skey
+    except Exception:
+        log.exception("owner recognition failed — leaving default names")
+        return None
 
 
 # --- enrollment --------------------------------------------------------------

@@ -624,9 +624,61 @@ def _fold_weak_clusters(labels, embeddings, durations, threshold):
         return labels
 
 
-def cluster(embeddings, n_speakers=None, threshold=0.6, durations=None):
+# A cluster carrying this much speech is kept even when it exceeds a
+# max_speakers HINT (the calendar's invitee count). The hint is a prediction
+# about the meeting; this much speech is an observation of the recording, and
+# the observation wins. Deliberately the same ceiling as the fold cascade's
+# FOLD_KEEP_ABOVE_S: one definition of "too much speech to be a mistake".
+HINT_OVERRIDE_S = FOLD_KEEP_ABOVE_S
+
+
+def _cap_speakers(labels, embeddings, durations, max_speakers):
+    """Fold the smallest clusters into their most similar voice until at most
+    max_speakers remain — but never a cluster with HINT_OVERRIDE_S of speech.
+
+    This is how a calendar count is applied: as a CAP on the auto path, after
+    the fold cascade has already removed the same-voice splits. It is not
+    cluster(n_speakers=N), which returns exactly N clusters with no cleanup at
+    all and so turns a 1:1 invite with a third voice into a monologue, or a
+    3-person invite on a 1:1 call into two phantom speakers. Under a cap the
+    auto path keeps deciding the count; the hint can only pull surplus SMALL
+    clusters down to the invitee count, and a voice that plainly spoke at
+    length stays whatever the invite said.
+    """
+    labels = np.asarray(labels).copy()
+    embeddings = np.asarray(embeddings)
+    durations = np.asarray(durations, dtype=np.float64)
+    max_speakers = int(max_speakers)
+
+    def centroid(lab):
+        vec = embeddings[labels == lab].mean(axis=0)
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm else vec
+
+    while True:
+        unique = np.unique(labels)
+        if len(unique) <= max_speakers:
+            return labels
+        seconds = {lab: float(durations[labels == lab].sum()) for lab in unique}
+        surplus = [lab for lab in unique if seconds[lab] < HINT_OVERRIDE_S]
+        if not surplus:
+            return labels  # every voice spoke at length: the evidence outranks the hint
+        lab = min(surplus, key=seconds.get)
+        cents = {o: centroid(o) for o in unique}
+        others = [o for o in unique if o != lab]
+        best = max(others, key=lambda o: float(np.dot(cents[lab], cents[o])))
+        labels[labels == lab] = best
+
+
+def cluster(embeddings, n_speakers=None, threshold=0.6, durations=None,
+            max_speakers=None):
     """Cluster window embeddings into speakers. Returns labels 0..K-1
-    renumbered by order of first appearance."""
+    renumbered by order of first appearance.
+
+    n_speakers forces the count exactly (a human's answer); max_speakers caps
+    the auto path (a calendar's guess) and is ignored when n_speakers is given
+    — see _cap_speakers for why the two are not the same thing.
+    """
     from sklearn.cluster import AgglomerativeClustering
 
     n = len(embeddings)
@@ -655,6 +707,8 @@ def cluster(embeddings, n_speakers=None, threshold=0.6, durations=None):
         labels = _merge_tiny_clusters(labels, np.asarray(embeddings))
         if durations is not None:
             labels = _fold_weak_clusters(labels, embeddings, durations, threshold)
+            if max_speakers:
+                labels = _cap_speakers(labels, embeddings, durations, max_speakers)
 
     # Renumber so the first voice heard is speaker 0, the next new voice 1, …
     mapping = {}
@@ -667,7 +721,7 @@ def cluster(embeddings, n_speakers=None, threshold=0.6, durations=None):
 
 
 def diarize_track(wav_path, segments, n_speakers=None, threshold=0.6, progress_cb=None,
-                  precomputed=None, state=None):
+                  precomputed=None, state=None, max_speakers=None):
     """Split transcript segments by speaker.
 
     Returns (new_segments, n_found) where each new segment has a
@@ -704,7 +758,8 @@ def diarize_track(wav_path, segments, n_speakers=None, threshold=0.6, progress_c
         return out, 1
 
     durations = [w[1] - w[0] for w in windows]
-    labels = cluster(embeddings, n_speakers=n_speakers, threshold=threshold, durations=durations)
+    labels = cluster(embeddings, n_speakers=n_speakers, threshold=threshold,
+                     durations=durations, max_speakers=max_speakers)
     n_found = len(set(labels))
     if n_found == 1:
         out = [dict(seg, speaker_idx=0) for seg in segments]

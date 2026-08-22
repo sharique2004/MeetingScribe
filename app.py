@@ -1651,13 +1651,24 @@ def _do_record_start(data):
                 detail or "The audio devices could not be opened, so the "
                           "recording did not start. Check the microphone in "
                           "System Settings and try again.", 500)
-    if expected is None and event and event.get("attendees"):
+    # A client that chose a specific calendar event sends its attendee count
+    # here already in the engine's arithmetic (see RecorderCenter.swift).
+    try:
+        hint = int(data.get("speaker_count_hint") or 0) or None
+        hint = max(1, min(8, hint)) if hint else None
+    except (TypeError, ValueError):
+        hint = None
+    if hint is None and expected is None and event and event.get("attendees"):
         # Calendar attendees excludes you. Online mode wants "other speakers";
         # in-person wants the total around the shared mic, so add yourself.
+        # This is a GUESS, so it goes under its own key and the pipeline
+        # applies it as a cap, never as a forced count — see
+        # pipeline.SPEAKER_COUNT_HINT. expected_speakers stays what the user
+        # typed, or None.
         others = int(event["attendees"])
         if data.get("mode") == "inperson":
             others += 1
-        expected = max(1, min(8, others))
+        hint = max(1, min(8, others))
 
     # Space that is merely low does not stop a meeting, but it belongs on the
     # meeting's own record: it is the one warning that explains a track that
@@ -1672,6 +1683,7 @@ def _do_record_start(data):
         "created": datetime.now().isoformat(timespec="seconds"),
         "mode": "inperson" if data.get("mode") == "inperson" else "online",
         "expected_speakers": expected,
+        "speaker_count_hint": hint,
         "status": "recording",
         "tracks": info["tracks"],
         "warnings": warnings,

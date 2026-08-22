@@ -443,6 +443,60 @@ def deleting_a_meeting_forgets_what_it_taught():
     assert vp.forget_meeting("m") == (0, 0), "prefix matched the wrong meeting"
 
 
+@check
+def owner_print_is_enrolled_and_pins_the_user_on_a_room_mic():
+    """Online, the mic is "You" by construction and gets enrolled as the
+    owner; in-person, the mic cluster nearest that print becomes "you".
+    The owner never names a far-end cluster, and two clusters equally like
+    the owner pin nobody."""
+    _fresh_store()
+    me, them, other = _voice(), _voice(), _voice()
+
+    # An online meeting: mic windows are all the user; turns say so.
+    wins, embs = _windows_for(me, 40)
+    state = {"windows": wins, "embeddings": embs}
+    turns = [{"speaker": "you", "track": "mic", "start": 0.0, "end": 45.0}]
+    pid = vp.enroll_owner_from_state("online1", state, turns)
+    assert pid, "owner was not enrolled from a healthy online call"
+    owner = vp.owner_profile()
+    assert owner and owner["name"] == vp.OWNER_NAME and owner["owner"]
+    assert [p for p in vp.list_profiles() if p["owner"]], "owner missing from the listing"
+
+    # A room: user = s2, someone else = s1.
+    w1, e1 = _windows_for(them, 30, t0=0.0)
+    w2, e2 = _windows_for(me, 30, t0=100.0)
+    room = {"windows": np.concatenate([w1, w2]), "embeddings": np.concatenate([e1, e2])}
+    segs = [{"speaker": "s1", "track": "mic", "start": 0.0, "end": 32.0},
+            {"speaker": "s2", "track": "mic", "start": 100.0, "end": 132.0}]
+    speakers = {"s1": "Speaker 1", "s2": "Speaker 2"}
+    assert vp.recognize_owner({"mic": room}, segs, speakers, CFG) == "s2"
+
+    # A human-typed name on the user's cluster is not a candidate.
+    assert vp.recognize_owner({"mic": room}, segs, {"s1": "Speaker 1", "s2": "Sam"}, CFG) is None
+
+    # The far-end recognition never hands out the owner's name.
+    far = {"s1": "Speaker 1"}
+    applied = vp.apply_recognition({"system": {"windows": w2, "embeddings": e2}},
+                                   [{"speaker": "s1", "track": "system",
+                                     "start": 100.0, "end": 132.0}], far, CFG)
+    assert applied == {} and far == {"s1": "Speaker 1"}, f"owner named a far-end cluster: {far}"
+
+    # Two clusters both the user's voice (a same-voice split): ambiguous, no pin.
+    w3, e3 = _windows_for(me, 30, t0=200.0)
+    twin = {"windows": np.concatenate([w2, w3]), "embeddings": np.concatenate([e2, e3])}
+    segs2 = [{"speaker": "s1", "track": "mic", "start": 100.0, "end": 132.0},
+             {"speaker": "s2", "track": "mic", "start": 200.0, "end": 232.0}]
+    assert vp.recognize_owner({"mic": twin}, segs2, speakers, CFG) is None
+
+    # Too little speech, or the toggle off: no pin.
+    assert vp.recognize_owner({"mic": room}, segs, speakers, {"voice_profiles": False}) is None
+    assert vp.enroll_owner("m", "you", me, vp.ENROLL_MIN_WINDOW_S - 1) is None
+
+    # Forgetting the online meeting forgets the print.
+    assert vp.forget_meeting("online1")[0] == 1
+    assert vp.owner_profile() is None
+
+
 def main():
     failures = []
     for fn in CHECKS:

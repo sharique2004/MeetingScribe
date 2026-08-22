@@ -635,11 +635,12 @@ struct NewRecordingSheet: View {
                 : "\(n) other \(n == 1 ? "speaker" : "speakers") on the call, not counting you."
         }
         if let attendees = options.attendees, attendees > 0, let resolved = options.resolvedSpeakers {
-            return "From the invitation: \(attendees) guest\(attendees == 1 ? "" : "s"), so \(resolved) "
-                + (options.inPerson ? "\(resolved == 1 ? "person" : "people") in the room."
-                                    : "other \(resolved == 1 ? "speaker" : "speakers") on the call.")
+            return "From the invitation: \(attendees) guest\(attendees == 1 ? "" : "s"), so up to \(resolved) "
+                + (options.inPerson ? "\(resolved == 1 ? "person" : "people") in the room"
+                                    : "other \(resolved == 1 ? "speaker" : "speakers") on the call")
+                + " — the recording itself decides, the invitation only caps it."
         }
-        return "Left alone, the number comes from the calendar invitation, and from the recording itself when there isn't one."
+        return "Left alone, the recording decides; a calendar invitation only caps the number."
     }
 
     private var cuesField: some View {

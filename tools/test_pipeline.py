@@ -31,6 +31,7 @@ from pipeline import (  # noqa: E402
     _far_end_cover,
     _merge_spans,
     drop_echo,
+    drop_self_echo,
     process_meeting,
 )
 
@@ -335,7 +336,52 @@ def check_golden(meta, windows):
     assert meta["turns"], "no turns were produced"
 
 
+def test_drop_self_echo_removes_the_users_voice_at_network_lag():
+    """The user's sentence comes back on the call audio 0.4 s later.
+
+    Measured on the one real self-echo call: every echoed far-end segment
+    sat at 0.33-0.41 s behind the mic. Without this pass it is clustered as
+    a phantom far-end speaker saying the user's words. The control is a
+    genuine far-end sentence in the same window sharing a word or two.
+    """
+    mic = [_seg(10.0, "we need to be able to respond to the customer within a second")]
+    echoed = _seg(10.4, "we need to be able to respond to the customer within a second")
+    genuine = _seg(14.0, "right and a second is what the customer asked for")
+    kept, dropped = drop_self_echo([echoed, genuine], mic)
+    assert dropped == 1, f"expected the echoed far-end segment dropped, dropped {dropped}"
+    assert [k["text"] for k in kept] == [genuine["text"]], (
+        f"wrong segment survived: {[k['text'] for k in kept]}")
+
+
+def test_drop_self_echo_keeps_a_reply_in_the_same_words():
+    """"Great talking to you too" a second later is a person, not a wire.
+
+    The corpus's matches at 0.97-1.21 s are the far end answering in the
+    user's own words; the lag gate's upper edge sits in the empty band below
+    them. A match at zero lag is leak residue (the far end IN the mic, the
+    other direction) and is not this pass's business either.
+    """
+    mic = [_seg(10.0, "great talking to you too take care")]
+    reply = _seg(11.2, "great talking to you too take care")
+    kept, dropped = drop_self_echo([reply], mic)
+    assert dropped == 0, "a reply 1.2 s later was treated as self-echo"
+    assert kept == [reply]
+
+    leak_residue = _seg(10.0, "great talking to you too take care")
+    kept, dropped = drop_self_echo([leak_residue], mic)
+    assert dropped == 0, "a zero-lag match (leak, not self-echo) was dropped"
+
+
+def test_drop_self_echo_without_mic_speech_is_a_noop():
+    system = [_seg(0.0, "so where did we land on the pricing question")]
+    kept, dropped = drop_self_echo(system, [])
+    assert dropped == 0 and kept == system
+
+
 def main():
+    test_drop_self_echo_removes_the_users_voice_at_network_lag()
+    test_drop_self_echo_keeps_a_reply_in_the_same_words()
+    test_drop_self_echo_without_mic_speech_is_a_noop()
     test_drop_echo_without_system_speech_is_a_noop()
     test_drop_echo_catches_misheard_echo()
     test_drop_echo_keeps_short_replies_that_reuse_the_far_end_words()
